@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Despacho de pedidos - San Blas</title>
+    <!-- Iconos Tabler: se importan como dependencia local en main.jsx, no por CDN,
+         para evitar depender de que un link externo esté disponible/actualizado. -->
+    <style>
+      :root {
+        --color-background-primary: #ffffff;
+        --color-background-secondary: #f5f5f5;
+        --color-background-info: #eef4ff;
+        --color-background-success: #ecfdf5;
+        --color-background-warning: #fffbeb;
+        --color-background-danger: #fef2f2;
+        --color-text-primary: #1a1a1a;
+        --color-text-secondary: #666666;
+        --color-text-tertiary: #999999;
+        --color-text-info: #2563eb;
+        --color-text-success: #15803d;
+        --color-text-warning: #b45309;
+        --color-text-danger: #dc2626;
+        --color-border-secondary: #d4d4d4;
+        --color-border-tertiary: #e5e5e5;
+        --color-border-info: #2563eb;
+        --color-border-success: #16a34a;
+        --color-border-warning: #d97706;
+        --color-border-danger: #dc2626;
+        --border-radius-sm: 4px;
+        --border-radius-md: 8px;
+        --border-radius-lg: 12px;
+        --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: var(--font-sans);
+        color: var(--color-text-primary);
+        background: #F4F6F9;
+      }
+      button {
+        cursor: pointer;
+        border-radius: var(--border-radius-md);
+        font-family: inherit;
+      }
+      input, select {
+        font-family: inherit;
+        border-radius: var(--border-radius-md);
+        border: 0.5px solid var(--color-border-tertiary);
+        padding: 6px 8px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>

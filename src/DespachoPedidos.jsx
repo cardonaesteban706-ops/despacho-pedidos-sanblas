@@ -1,0 +1,2485 @@
+import React, { useState, useEffect, useRef, useCallback } from "react";
+import { cargarPedidosActivos, cargarHistorial, guardarPedido, eliminarPedido } from "./supabaseClient";
+import { cargarCotizaciones, guardarCotizacion, eliminarCotizacion } from "./supabaseClient";
+
+const VEHICULOS = [
+  { id: "camion", label: "Camión", icon: "ti-truck", bg: "#E6F1FB", border: "#378ADD", text: "#0C447C" },
+  { id: "motocarro", label: "Motocarro", icon: "ti-moped", bg: "#FAEEDA", border: "#BA7517", text: "#633806" },
+  { id: "tractor", label: "Tractor", icon: "ti-tractor", bg: "#EAF3DE", border: "#639922", text: "#27500A" },
+];
+
+// Colores de identidad de marca SANBLAS (tomados del logo: azul oscuro
+// institucional + celeste claro de fondo). Se usan en el header, la
+// pestaña activa y el botón principal de subir documento.
+const MARCA = {
+  azulOscuro: "#0C447C",
+  azulMedio: "#378ADD",
+  azulClaro: "#E6F1FB",
+  azulMuyOscuro: "#042C53",
+};
+
+function uid() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+
+function formatCOP(n) {
+  if (n === null || n === undefined || isNaN(n)) return "-";
+  return new Intl.NumberFormat("es-CO", { maximumFractionDigits: 0 }).format(n);
+}
+
+function todayStr() {
+  const d = new Date();
+  return d.toLocaleDateString("es-CO", { day: "2-digit", month: "2-digit", year: "numeric" });
+}
+
+// Fecha de despacho: usamos formato ISO (YYYY-MM-DD) internamente porque es
+// fácil de comparar y ordenar; el formato bonito (es-CO) es solo para mostrar.
+function todayISO() {
+  const d = new Date();
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function addDaysISO(iso, days) {
+  const [y, m, d] = iso.split("-").map(Number);
+  const dt = new Date(y, m - 1, d);
+  dt.setDate(dt.getDate() + days);
+  const yyyy = dt.getFullYear();
+  const mm = String(dt.getMonth() + 1).padStart(2, "0");
+  const dd = String(dt.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function formatFechaCorta(iso) {
+  const [y, m, d] = iso.split("-").map(Number);
+  const dt = new Date(y, m - 1, d);
+  const dias = ["dom", "lun", "mar", "mié", "jue", "vie", "sáb"];
+  return `${dias[dt.getDay()]} ${String(d).padStart(2, "0")}/${String(m).padStart(2, "0")}`;
+}
+
+function etiquetaFecha(iso, hoyIso) {
+  if (iso === hoyIso) return "Hoy";
+  if (iso === addDaysISO(hoyIso, 1)) return "Mañana";
+  return formatFechaCorta(iso);
+}
+
+// Guía de carga interna: NO es una factura ni la reemplaza (no lleva CUFE, QR
+// ni resolución DIAN). Es solo una hoja de apoyo para que el despachador sepa
+// rápido qué productos subir al vehículo, sin tener que abrir el PDF completo
+// de la factura. La factura legal y su copia siguen su proceso normal aparte.
+// Se muestra como modal en la misma página (en vez de window.open) porque el
+// artifact corre en un iframe con sandbox, y muchos navegadores bloquean las
+// ventanas emergentes ahí incluso al hacer clic directo.
+
+function nowTimeStr() {
+  const d = new Date();
+  return d.toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit" });
+}
+
+// Reconstruye filas reales del PDF agrupando fragmentos de texto por su
+// posición vertical (Y), no por orden de aparición en el stream del PDF.
+async function extractPdfLines(file) {
+  const arrayBuffer = await file.arrayBuffer();
+  const pdf = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  const page = await pdf.getPage(1);
+  const content = await page.getTextContent();
+
+  const items = content.items
+    .filter((it) => it.str && it.str.trim().length > 0)
+    .map((it) => ({ text: it.str, x: it.transform[4], y: Math.round(it.transform[5]) }));
+
+  const rows = [];
+  items.forEach((it) => {
+    let row = rows.find((r) => Math.abs(r.y - it.y) <= 2);
+    if (!row) {
+      row = { y: it.y, items: [] };
+      rows.push(row);
+    }
+    row.items.push(it);
+  });
+  rows.sort((a, b) => b.y - a.y);
+  rows.forEach((r) => r.items.sort((a, b) => a.x - b.x));
+
+  return rows.map((r) => r.items.map((it) => it.text).join(" ").replace(/\s+/g, " ").trim()).filter(Boolean);
+}
+
+function detectTipoDocumento(lines) {
+  const text = lines.join(" ");
+  if (/COTIZACION No/i.test(text)) return "cotizacion";
+  return "factura";
+}
+
+// Parser para Factura Electrónica de Venta (formato World Office / FECV).
+function parseFactura(lines) {
+  const text = lines.join(" | ");
+  const result = {
+    tipo: "factura",
+    numeroFactura: null,
+    cliente: null,
+    telefono: null,
+    telefonoContacto: null,
+    direccion: null,
+    vendedor: null,
+    total: null,
+    productos: [],
+  };
+
+  const fecvMatch = text.match(/FECV\s*No\.?\s*(\d+)/i);
+  if (fecvMatch) result.numeroFactura = fecvMatch[1];
+
+  const clienteLine = lines.find((l) => /^CLIENTE\b/i.test(l));
+  if (clienteLine) {
+    let rest = clienteLine.replace(/^CLIENTE\s*/i, "");
+    const cut = rest.search(/\bPOR CONCEPTO\b/i);
+    if (cut !== -1) rest = rest.slice(0, cut);
+    result.cliente = rest.trim();
+  }
+
+  const headerIdx = lines.findIndex((l) => /DIRECCI[ÓO]N/i.test(l) && /CIUDAD/i.test(l) && /TEL[ÉE]FONO/i.test(l));
+  if (headerIdx !== -1 && lines[headerIdx + 1]) {
+    const dataLine = lines[headerIdx + 1];
+    const telMatch = dataLine.match(/\b3\d{9}\b/);
+    if (telMatch) result.telefono = telMatch[0];
+    let rest = dataLine;
+    if (telMatch) rest = rest.slice(0, dataLine.lastIndexOf(telMatch[0])).trim();
+    const words = rest.split(/\s+/);
+    if (words.length > 1) {
+      words.pop(); // última palabra = ciudad
+      result.direccion = words.join(" ").trim();
+    } else {
+      result.direccion = rest;
+    }
+  }
+
+  const vendHeaderIdx = lines.findIndex((l) => /VENDEDOR/i.test(l) && /FORMA DE PAGO/i.test(l));
+  if (vendHeaderIdx !== -1) {
+    for (let j = vendHeaderIdx; j < Math.min(vendHeaderIdx + 2, lines.length); j++) {
+      const m = lines[j].match(/(?:\d{2}\/\d{2}\/\d{4}\s+\d{2}\/\d{2}\/\d{4}\s+)?([A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑ\s]+?)\s+(Contado|Cr[ée]dito)\b/i);
+      if (m && m[1].trim().length >= 4) {
+        result.vendedor = m[1].trim();
+        break;
+      }
+    }
+  }
+
+  const totalHeaderIdx = lines.findIndex((l) => /TOTAL FACTURA/i.test(l));
+  if (totalHeaderIdx !== -1) {
+    for (let j = totalHeaderIdx + 1; j < Math.min(totalHeaderIdx + 3, lines.length); j++) {
+      const nums = lines[j].match(/[\d.,]+/g);
+      if (nums && nums.length >= 3) {
+        const last = nums[nums.length - 1].replace(/\./g, "");
+        const parsed = parseInt(last, 10);
+        if (!isNaN(parsed) && parsed > 0) {
+          result.total = parsed;
+          break;
+        }
+      }
+    }
+  }
+
+  const tableHeaderIdx = lines.findIndex((l) => /^C[óo]digo Descripci[óo]n/i.test(l));
+  const tableEndIdx = lines.findIndex((l) => /TOTAL IT[ÉE]M/i.test(l));
+  if (tableHeaderIdx !== -1 && tableEndIdx !== -1) {
+    const productLineRegex = /^(\d{1,2})\s+([A-Z0-9]{2,12})\s+(.+?)\s+(\d{1,4}(?:[.,]\d{1,2})?)\s+(Und\.?|Bulto|Caja|Mt\.?|Kg\.?|kg|Gal\.?|Lb\.?|Mts\.?|Paq\.?|Paquete|Rollo|Glb\.?|m2)\s+([\d.,]+)\s+(\d{1,2}%)\s+([\d.,]+)\s+([\d.,]+)\s*$/i;
+    let pending = null;
+    for (let i = tableHeaderIdx + 1; i < tableEndIdx; i++) {
+      const line = lines[i].trim();
+      const m = line.match(productLineRegex);
+      if (m) {
+        // En la factura (FECV), "Valor IVA" viene por unidad, no por línea.
+        // El "Total" de la columna NO incluye IVA (es cantidad x valor unitario).
+        // Para mostrar el precio con IVA incluido: total_linea_sin_iva + (valor_iva_unitario x cantidad).
+        const cantidadNum = parseFloat(m[4].replace(",", "."));
+        const valorIvaUnitario = parseInt(m[8].replace(/\./g, ""), 10) || 0;
+        const totalSinIva = parseInt(m[9].replace(/\./g, ""), 10) || 0;
+        const ivaLinea = Math.round(valorIvaUnitario * cantidadNum);
+        const totalConIva = totalSinIva + ivaLinea;
+
+        result.productos.push({
+          codigo: m[2],
+          descripcion: m[3].trim(),
+          cantidad: m[4],
+          unidad: m[5],
+          total: String(totalConIva),
+        });
+        pending = result.productos[result.productos.length - 1];
+      } else if (pending && line.length > 0 && line.length < 30 && !/^\d/.test(line)) {
+        // Continuación de una descripción larga partida en 2 líneas (ej: "3H", "ATLANTIS")
+        pending.descripcion = pending.descripcion + " " + line;
+      }
+    }
+  }
+
+  return result;
+}
+
+// Parser para Cotización (mismo proveedor, formato de columnas distinto: sin
+// columna de "Valor IVA" en pesos, y el bloque de cliente/dirección/vendedor
+// está ordenado de forma distinta a la factura).
+function parseCotizacion(lines) {
+  const text = lines.join(" | ");
+  const result = {
+    tipo: "cotizacion",
+    numeroFactura: null,
+    cliente: null,
+    telefono: null,
+    telefonoContacto: null,
+    direccion: null,
+    vendedor: null,
+    total: null,
+    productos: [],
+  };
+
+  const numMatch = text.match(/COTIZACION No\.?\s*(\d+)/i);
+  if (numMatch) result.numeroFactura = numMatch[1];
+
+  const clienteLine = lines.find((l) => /CLIENTE\b/i.test(l));
+  if (clienteLine) {
+    let rest = clienteLine.replace(/^,?\s*CLIENTE\s*/i, "");
+    const cut = rest.search(/\bP[áa]gina\b/i);
+    if (cut !== -1) rest = rest.slice(0, cut);
+    result.cliente = rest.trim();
+  }
+
+  const headerIdx = lines.findIndex((l) => /DIRECCION/i.test(l) && /CIUDAD/i.test(l) && /TELEFONO/i.test(l));
+  if (headerIdx !== -1) {
+    for (let j = headerIdx + 1; j < Math.min(headerIdx + 4, lines.length); j++) {
+      const l = lines[j];
+      if (/No informada/i.test(l) || /\d{6,10}/.test(l)) {
+        const nums = l.match(/\d{6,10}/g);
+        if (nums) result.telefono = nums[nums.length - 1];
+        let rest = l.replace(/\d{6,10}\s*$/, "").trim();
+        const words = rest.split(/\s+/);
+        if (words.length > 1 && !/No informada/i.test(rest)) {
+          words.pop();
+          result.direccion = words.join(" ").trim();
+        } else {
+          result.direccion = rest;
+        }
+        break;
+      }
+    }
+  }
+
+  // Cuando el teléfono oficial no está registrado, a veces el asesor anota un
+  // celular de contacto real en la línea de "información extra" bajo el
+  // encabezado VENDEDOR/FORMA DE PAGO.
+  if (!result.telefono || result.telefono === "111111111") {
+    const celLine = lines.find((l) => /\bcel\b/i.test(l) && /\b3\d{9}\b/.test(l));
+    if (celLine) {
+      const celMatch = celLine.match(/\b3\d{9}\b/);
+      if (celMatch) result.telefonoContacto = celMatch[0];
+    }
+  }
+
+  const vendHeaderIdx = lines.findIndex((l) => /VENDEDOR/i.test(l) && /FORMA DE PAGO/i.test(l));
+  if (vendHeaderIdx !== -1) {
+    for (let j = vendHeaderIdx + 1; j < Math.min(vendHeaderIdx + 3, lines.length); j++) {
+      const m = lines[j].match(/^([A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑ\s]+?)\s+(Contado|Cr[ée]dito)\b/i);
+      if (m) {
+        result.vendedor = m[1].trim();
+        break;
+      }
+    }
+  }
+
+  const totalHeaderIdx = lines.findIndex((l) => /TOTAL PEDIDO/i.test(l));
+  if (totalHeaderIdx !== -1 && lines[totalHeaderIdx + 1]) {
+    const nums = lines[totalHeaderIdx + 1].match(/[\d.,]+/g);
+    if (nums && nums.length) {
+      const last = nums[nums.length - 1].replace(/\./g, "");
+      const parsed = parseInt(last, 10);
+      if (!isNaN(parsed) && parsed > 0) result.total = parsed;
+    }
+  }
+
+  const tableHeaderIdx = lines.findIndex((l) => /^CODIGO DESCRIPCION/i.test(l));
+  const tableEndIdx = lines.findIndex((l) => /^CANT SUBTOTAL/i.test(l));
+  if (tableHeaderIdx !== -1 && tableEndIdx !== -1) {
+    const productLineRegex = /^([A-Z0-9]{2,12})\s+(.+?)\s+(\d{1,5}(?:[.,]\d{1,2})?)\s*(Und\.?|Bulto|Caja|Mt\.?|Kg\.?|kg|Gal\.?|Lb\.?|Mts\.?|Paq\.?|Paquete|Rollo|Glb\.?|m2)\s+([\d.,]+)\s+(\d{1,2}%)\s+([\d.,]+)\s*$/i;
+    for (let i = tableHeaderIdx + 1; i < tableEndIdx; i++) {
+      const line = lines[i].trim();
+      const m = line.match(productLineRegex);
+      if (m) {
+        result.productos.push({
+          codigo: m[1],
+          descripcion: m[2].trim(),
+          cantidad: m[3],
+          unidad: m[4],
+          total: m[7].replace(/\./g, ""),
+        });
+      }
+    }
+  }
+
+  return result;
+}
+
+function parseDocumento(lines) {
+  const tipo = detectTipoDocumento(lines);
+  return tipo === "cotizacion" ? parseCotizacion(lines) : parseFactura(lines);
+}
+
+function fileToDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result);
+    r.onerror = reject;
+    r.readAsDataURL(file);
+  });
+}
+
+export default function DespachoPedidos() {
+  const [libsReady, setLibsReady] = useState(false);
+  const [libsError, setLibsError] = useState(false);
+  const [pedidos, setPedidos] = useState([]);
+  const [historial, setHistorial] = useState([]);
+  const [view, setView] = useState("despacho");
+  const [loading, setLoading] = useState(true);
+  const [uploadState, setUploadState] = useState("idle");
+  const [pendingExtract, setPendingExtract] = useState(null);
+  const [editing, setEditing] = useState(null);
+  const [viewingPdf, setViewingPdf] = useState(null);
+  const [guiaPedido, setGuiaPedido] = useState(null);
+  const [dragId, setDragId] = useState(null);
+  const [dragOverCol, setDragOverCol] = useState(null);
+  const [toast, setToast] = useState(null);
+  const [historyFilter, setHistoryFilter] = useState("");
+  const [selectedDate, setSelectedDate] = useState(todayISO());
+
+  // --- Estado del módulo de Cotizaciones (independiente de despacho) ---
+  const [cotizaciones, setCotizaciones] = useState([]);
+  const [pendingExtractCotizacion, setPendingExtractCotizacion] = useState(null);
+  const [cotizacionFilter, setCotizacionFilter] = useState("");
+  const [editingCotizacion, setEditingCotizacion] = useState(null);
+  const [viewingPdfCotizacion, setViewingPdfCotizacion] = useState(null);
+  const [rechazandoCotizacion, setRechazandoCotizacion] = useState(null);
+  const cotizacionFileInputRef = useRef(null);
+
+  const hoyIso = todayISO();
+  const fechaDe = (p) => p.fechaDespacho || hoyIso;
+  const fileInputRef = useRef(null);
+
+  function showToast(msg) {
+    setToast(msg);
+    setTimeout(() => setToast(null), 2800);
+  }
+
+  useEffect(() => {
+    if (window.pdfjsLib) {
+      setLibsReady(true);
+      return;
+    }
+    const script = document.createElement("script");
+    script.src = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js";
+    script.onload = () => {
+      try {
+        window.pdfjsLib.GlobalWorkerOptions.workerSrc =
+          "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+        setLibsReady(true);
+      } catch (e) {
+        setLibsError(true);
+      }
+    };
+    script.onerror = () => setLibsError(true);
+    document.head.appendChild(script);
+  }, []);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const activos = await cargarPedidosActivos();
+        setPedidos(activos);
+      } catch (e) {
+        showToast("No se pudo conectar con la base de datos");
+      }
+      try {
+        const entregados = await cargarHistorial();
+        setHistorial(entregados);
+      } catch (e) {}
+      try {
+        const cots = await cargarCotizaciones();
+        setCotizaciones(cots);
+      } catch (e) {}
+      setLoading(false);
+    })();
+  }, []);
+
+  // Guarda en Supabase solo el/los pedidos que cambiaron, y a la vez
+  // actualiza el estado en pantalla de inmediato (para que la app se
+  // sienta rápida, sin esperar la respuesta del servidor para reaccionar).
+  const persistPedidos = useCallback(async (next, pedidosQueCambiaron) => {
+    setPedidos(next);
+    try {
+      for (const p of pedidosQueCambiaron || next) {
+        await guardarPedido(p, "activo");
+      }
+    } catch (e) {
+      showToast("No se pudo guardar en la base de datos");
+    }
+  }, []);
+
+  const persistHistorial = useCallback(async (next, pedidoMovido) => {
+    setHistorial(next);
+    try {
+      if (pedidoMovido) await guardarPedido(pedidoMovido, "entregado");
+    } catch (e) {
+      showToast("No se pudo guardar en la base de datos");
+    }
+  }, []);
+
+  async function handleFileSelected(e) {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    if (file.type !== "application/pdf") {
+      showToast("Por favor sube un archivo PDF");
+      e.target.value = "";
+      return;
+    }
+    setUploadState("reading");
+    try {
+      const [lines, dataUrl] = await Promise.all([extractPdfLines(file), fileToDataUrl(file)]);
+      const parsed = parseDocumento(lines);
+      setPendingExtract({
+        ...parsed,
+        pdfDataUrl: dataUrl,
+        fileName: file.name,
+        vehiculo: "",
+        estadoPago: "pendiente",
+      });
+    } catch (err) {
+      showToast("No se pudo leer el PDF. Puede ser una imagen escaneada o estar dañado.");
+    }
+    setUploadState("idle");
+    e.target.value = "";
+  }
+
+  function confirmPendingExtract(data) {
+    if (!data.sinFechaDefinida && !data.vehiculo) {
+      showToast("Selecciona un vehículo antes de guardar");
+      return;
+    }
+    if (!data.cliente || !data.cliente.trim()) {
+      showToast("Escribe el nombre del cliente antes de guardar");
+      return;
+    }
+    const maxOrden = data.sinFechaDefinida
+      ? 0
+      : pedidos
+          .filter((p) => p.vehiculo === data.vehiculo && fechaDe(p) === hoyIso)
+          .reduce((max, p) => Math.max(max, p.orden || 0), 0);
+
+    const nuevo = {
+      id: uid(),
+      tipoDocumento: data.tipo || "factura",
+      numeroFactura: data.numeroFactura || "",
+      cliente: data.cliente.trim(),
+      telefono: data.telefono || "",
+      telefonoContacto: data.telefonoContacto || "",
+      direccion: data.direccion || "",
+      vendedor: data.vendedor || "",
+      total: data.total || null,
+      productos: data.productos || [],
+      vehiculo: data.sinFechaDefinida ? null : data.vehiculo,
+      pdfDataUrl: data.pdfDataUrl,
+      fileName: data.fileName,
+      fecha: todayStr(),
+      fechaDespacho: data.sinFechaDefinida ? "pendiente" : todayISO(),
+      estadoPago: data.estadoPago || "pendiente",
+      hora: nowTimeStr(),
+      timestamp: Date.now(),
+      orden: maxOrden + 1,
+    };
+    persistPedidos([...pedidos, nuevo], [nuevo]);
+    setPendingExtract(null);
+    showToast(
+      data.sinFechaDefinida
+        ? "Pedido agregado a Pendientes"
+        : "Pedido agregado a " + ((VEHICULOS.find((v) => v.id === data.vehiculo) || {}).label || "")
+    );
+  }
+
+  function deletePedido(id) {
+    setPedidos(pedidos.filter((p) => p.id !== id));
+    eliminarPedido(id).catch(() => showToast("No se pudo eliminar de la base de datos"));
+  }
+
+  function marcarEntregado(id) {
+    const pedido = pedidos.find((p) => p.id === id);
+    if (!pedido) return;
+    const entregado = { ...pedido, entregadoEn: new Date().toISOString(), fechaEntrega: todayStr() };
+    persistPedidos(pedidos.filter((p) => p.id !== id), []);
+    persistHistorial([entregado, ...historial], entregado);
+    showToast("Marcado como entregado");
+  }
+
+  function updatePedido(id, patch) {
+    const actualizado = { ...pedidos.find((p) => p.id === id), ...patch };
+    persistPedidos(pedidos.map((p) => (p.id === id ? actualizado : p)), [actualizado]);
+  }
+
+  // --- Funciones del módulo de Cotizaciones (independiente de despacho) ---
+
+  const persistCotizaciones = useCallback(async (next, cambiada) => {
+    setCotizaciones(next);
+    try {
+      if (cambiada) await guardarCotizacion(cambiada);
+    } catch (e) {
+      showToast("No se pudo guardar la cotización en la base de datos");
+    }
+  }, []);
+
+  async function handleCotizacionFileSelected(e) {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    if (file.type !== "application/pdf") {
+      showToast("Por favor sube un archivo PDF");
+      e.target.value = "";
+      return;
+    }
+    setUploadState("reading");
+    try {
+      const [lines, dataUrl] = await Promise.all([extractPdfLines(file), fileToDataUrl(file)]);
+      const parsed = parseDocumento(lines);
+      setPendingExtractCotizacion({
+        ...parsed,
+        pdfDataUrl: dataUrl,
+        fileName: file.name,
+        estado: "pendiente",
+        fechaSeguimiento: "",
+      });
+    } catch (err) {
+      showToast("No se pudo leer el PDF. Puede ser una imagen escaneada o estar dañado.");
+    }
+    setUploadState("idle");
+    e.target.value = "";
+  }
+
+  function confirmPendingExtractCotizacion(data) {
+    if (!data.cliente || !data.cliente.trim()) {
+      showToast("Escribe el nombre del cliente antes de guardar");
+      return;
+    }
+    const nueva = {
+      id: uid(),
+      numeroFactura: data.numeroFactura || "",
+      cliente: data.cliente.trim(),
+      telefono: data.telefono || "",
+      telefonoContacto: data.telefonoContacto || "",
+      direccion: data.direccion || "",
+      vendedor: data.vendedor || "",
+      total: data.total || null,
+      productos: data.productos || [],
+      pdfDataUrl: data.pdfDataUrl,
+      fileName: data.fileName,
+      fecha: todayStr(),
+      estado: "pendiente",
+      fechaSeguimiento: data.fechaSeguimiento || null,
+      fechaVencimiento: data.fechaVencimiento || null,
+      notas: data.notas || "",
+    };
+    persistCotizaciones([nueva, ...cotizaciones], nueva);
+    setPendingExtractCotizacion(null);
+    showToast("Cotización agregada");
+  }
+
+  function deleteCotizacion(id) {
+    setCotizaciones(cotizaciones.filter((c) => c.id !== id));
+    eliminarCotizacion(id).catch(() => showToast("No se pudo eliminar de la base de datos"));
+  }
+
+  function updateCotizacion(id, patch) {
+    const actualizada = { ...cotizaciones.find((c) => c.id === id), ...patch };
+    persistCotizaciones(cotizaciones.map((c) => (c.id === id ? actualizada : c)), actualizada);
+  }
+
+  const ESTADOS_COTIZACION = [
+    { id: "pendiente", label: "Pendiente", icon: "ti-clock", bg: "#FAEEDA", border: "#BA7517", text: "#633806" },
+    { id: "aceptada", label: "Aceptada", icon: "ti-check", bg: "#EAF3DE", border: "#639922", text: "#27500A" },
+    { id: "rechazada", label: "Rechazada", icon: "ti-x", bg: "#FBE6E6", border: "#CC3333", text: "#7A1F1F" },
+  ];
+
+  const cotizacionesFiltradas = cotizaciones.filter((c) => {
+    if (!cotizacionFilter.trim()) return true;
+    const q = cotizacionFilter.toLowerCase();
+    return (
+      (c.cliente || "").toLowerCase().includes(q) ||
+      (c.numeroFactura || "").toLowerCase().includes(q) ||
+      (c.fecha || "").toLowerCase().includes(q)
+    );
+  });
+
+  const cotizacionesAgrupadas = ESTADOS_COTIZACION.map((est) => ({
+    ...est,
+    items: cotizacionesFiltradas
+      .filter((c) => (c.estado || "pendiente") === est.id)
+      .sort((a, b) => (b.id > a.id ? 1 : -1)),
+  }));
+
+  // Avisos de seguimiento: cotizaciones pendientes cuya fecha de
+  // seguimiento es hoy o mañana, para recordar llamar al cliente.
+  const mananaIso = addDaysISO(hoyIso, 1);
+  const cotizacionesConSeguimientoProximo = cotizaciones.filter(
+    (c) =>
+      (c.estado || "pendiente") === "pendiente" &&
+      c.fechaSeguimiento &&
+      (c.fechaSeguimiento === hoyIso || c.fechaSeguimiento === mananaIso)
+  );
+
+  function handleDragStart(id) {
+    setDragId(id);
+  }
+  function handleDropOnColumn(vehiculoId, overId) {
+    if (!dragId) return;
+    const dragged = pedidos.find((p) => p.id === dragId);
+    if (!dragged) return;
+
+    const dragFecha = fechaDe(dragged);
+
+    // Solo reordenamos dentro de los pedidos de la misma fecha de despacho
+    // que el pedido arrastrado; los de otras fechas quedan intactos.
+    const others = pedidos.filter(
+      (p) => p.id !== dragId && !(fechaDe(p) === dragFecha && p.vehiculo === vehiculoId)
+    );
+    const colItems = pedidos
+      .filter((p) => p.id !== dragId && fechaDe(p) === dragFecha && p.vehiculo === vehiculoId)
+      .sort((a, b) => a.orden - b.orden);
+
+    const moved = { ...dragged, vehiculo: vehiculoId };
+    let insertAt = colItems.length;
+    if (overId) {
+      const idx = colItems.findIndex((p) => p.id === overId);
+      if (idx !== -1) insertAt = idx;
+    }
+    colItems.splice(insertAt, 0, moved);
+    colItems.forEach((p, i) => (p.orden = i + 1));
+
+    persistPedidos([...others, ...colItems], colItems);
+    setDragId(null);
+    setDragOverCol(null);
+  }
+
+  const pedidosPendientes = pedidos.filter((p) => fechaDe(p) === "pendiente");
+  const pedidosDelDia = pedidos.filter((p) => fechaDe(p) === selectedDate);
+
+  const grouped = VEHICULOS.map((v) => ({
+    ...v,
+    items: pedidosDelDia.filter((p) => p.vehiculo === v.id).sort((a, b) => a.orden - b.orden),
+  }));
+
+  // Pestañas de fecha: siempre Hoy y Mañana, más cualquier fecha futura que
+  // ya tenga pedidos programados (para no perder de vista lo agendado).
+  // "pendiente" se excluye de este cálculo: tiene su propia pestaña fija aparte.
+  const fechasConPedidos = Array.from(new Set(pedidos.map(fechaDe))).filter(
+    (f) => f !== "pendiente" && f >= hoyIso
+  );
+  const fechasTabs = Array.from(new Set([hoyIso, addDaysISO(hoyIso, 1), ...fechasConPedidos])).sort();
+  const conteoPorFecha = fechasTabs.reduce((acc, f) => {
+    acc[f] = pedidos.filter((p) => fechaDe(p) === f).length;
+    return acc;
+  }, {});
+
+  const filteredHistorial = historial.filter((h) => {
+    if (!historyFilter.trim()) return true;
+    const q = historyFilter.toLowerCase();
+    return (
+      (h.cliente || "").toLowerCase().includes(q) ||
+      (h.numeroFactura || "").toLowerCase().includes(q) ||
+      (h.fecha || "").toLowerCase().includes(q)
+    );
+  });
+
+  if (loading) {
+    return (
+      <div style={{ padding: "3rem 0", textAlign: "center", color: "var(--color-text-secondary)", fontSize: 14 }}>
+        Cargando pedidos...
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ fontFamily: "var(--font-sans)" }}>
+      <h2 className="sr-only" style={{ position: "absolute", width: 1, height: 1, overflow: "hidden" }}>
+        Sistema de despacho de pedidos: lista por vehículo con subida de facturas y cotizaciones en PDF
+      </h2>
+
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 10,
+          marginBottom: "1.25rem",
+          paddingBottom: "0.75rem",
+          borderBottom: "0.5px solid var(--color-border-tertiary)",
+        }}
+      >
+        <div
+          style={{
+            width: 42,
+            height: 42,
+            borderRadius: "var(--border-radius-md)",
+            background: MARCA.azulOscuro,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            flexShrink: 0,
+          }}
+        >
+          <i className="ti ti-building-warehouse" style={{ fontSize: 22, color: "white" }} aria-hidden="true"></i>
+        </div>
+        <div>
+          <div style={{ fontSize: 17, fontWeight: 500, lineHeight: 1.2, color: MARCA.azulMuyOscuro }}>Ferromateriales San Blas</div>
+          <div style={{ fontSize: 12, color: MARCA.azulMedio, fontWeight: 500, lineHeight: 1.3 }}>Despacho de pedidos</div>
+        </div>
+      </div>
+
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "1.25rem", gap: 12, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button
+            onClick={() => setView("despacho")}
+            style={{
+              border: view === "despacho" ? "none" : "0.5px solid var(--color-border-tertiary)",
+              background: view === "despacho" ? MARCA.azulOscuro : "transparent",
+              color: view === "despacho" ? "white" : "var(--color-text-primary)",
+              fontWeight: view === "despacho" ? 500 : 400,
+              padding: "6px 14px",
+              borderRadius: "var(--border-radius-md)",
+              fontSize: 14,
+            }}
+          >
+            <i className="ti ti-truck-delivery" style={{ fontSize: 16, verticalAlign: "-2px", marginRight: 6 }} aria-hidden="true"></i>
+            Despacho
+          </button>
+          <button
+            onClick={() => setView("historial")}
+            style={{
+              border: view === "historial" ? "none" : "0.5px solid var(--color-border-tertiary)",
+              background: view === "historial" ? MARCA.azulOscuro : "transparent",
+              color: view === "historial" ? "white" : "var(--color-text-primary)",
+              fontWeight: view === "historial" ? 500 : 400,
+              padding: "6px 14px",
+              borderRadius: "var(--border-radius-md)",
+              fontSize: 14,
+            }}
+          >
+            <i className="ti ti-history" style={{ fontSize: 16, verticalAlign: "-2px", marginRight: 6 }} aria-hidden="true"></i>
+            Historial
+          </button>
+          <button
+            onClick={() => setView("cotizaciones")}
+            style={{
+              border: view === "cotizaciones" ? "none" : "0.5px solid var(--color-border-tertiary)",
+              background: view === "cotizaciones" ? MARCA.azulOscuro : "transparent",
+              color: view === "cotizaciones" ? "white" : "var(--color-text-primary)",
+              fontWeight: view === "cotizaciones" ? 500 : 400,
+              padding: "6px 14px",
+              borderRadius: "var(--border-radius-md)",
+              fontSize: 14,
+            }}
+          >
+            <i className="ti ti-file-text" style={{ fontSize: 16, verticalAlign: "-2px", marginRight: 6 }} aria-hidden="true"></i>
+            Cotizaciones
+          </button>
+        </div>
+
+        {view === "despacho" && (
+          <div>
+            <input ref={fileInputRef} type="file" accept="application/pdf" onChange={handleFileSelected} style={{ display: "none" }} />
+            <button
+              onClick={() => fileInputRef.current && fileInputRef.current.click()}
+              disabled={!libsReady || uploadState === "reading"}
+              style={{
+                border: "none",
+                background: MARCA.azulMedio,
+                color: "white",
+                fontWeight: 500,
+                padding: "8px 16px",
+                borderRadius: "var(--border-radius-md)",
+                fontSize: 14,
+              }}
+            >
+              <i className="ti ti-file-upload" style={{ fontSize: 16, verticalAlign: "-2px", marginRight: 6 }} aria-hidden="true"></i>
+              {uploadState === "reading" ? "Leyendo PDF..." : libsReady ? "Subir factura o cotización" : "Cargando..."}
+            </button>
+          </div>
+        )}
+
+        {view === "cotizaciones" && (
+          <div>
+            <input
+              ref={cotizacionFileInputRef}
+              type="file"
+              accept="application/pdf"
+              onChange={handleCotizacionFileSelected}
+              style={{ display: "none" }}
+            />
+            <button
+              onClick={() => cotizacionFileInputRef.current && cotizacionFileInputRef.current.click()}
+              disabled={!libsReady || uploadState === "reading"}
+              style={{
+                border: "none",
+                background: MARCA.azulMedio,
+                color: "white",
+                fontWeight: 500,
+                padding: "8px 16px",
+                borderRadius: "var(--border-radius-md)",
+                fontSize: 14,
+              }}
+            >
+              <i className="ti ti-file-upload" style={{ fontSize: 16, verticalAlign: "-2px", marginRight: 6 }} aria-hidden="true"></i>
+              {uploadState === "reading" ? "Leyendo PDF..." : libsReady ? "Subir cotización" : "Cargando..."}
+            </button>
+          </div>
+        )}
+      </div>
+
+      {libsError && (
+        <div style={{ fontSize: 13, color: "var(--color-text-danger)", marginBottom: 12 }}>
+          No se pudo cargar el lector de PDF. Revisa tu conexión y recarga.
+        </div>
+      )}
+
+      {toast && (
+        <div
+          style={{
+            background: "var(--color-background-success)",
+            color: "var(--color-text-success)",
+            fontSize: 13,
+            padding: "8px 14px",
+            borderRadius: "var(--border-radius-md)",
+            marginBottom: 12,
+          }}
+        >
+          {toast}
+        </div>
+      )}
+
+      {pendingExtract && (
+        <ExtractReviewCard
+          data={pendingExtract}
+          onChange={setPendingExtract}
+          onConfirm={() => confirmPendingExtract(pendingExtract)}
+          onCancel={() => setPendingExtract(null)}
+        />
+      )}
+
+      {pendingExtractCotizacion && (
+        <ExtractReviewCardCotizacion
+          data={pendingExtractCotizacion}
+          onChange={setPendingExtractCotizacion}
+          onConfirm={() => confirmPendingExtractCotizacion(pendingExtractCotizacion)}
+          onCancel={() => setPendingExtractCotizacion(null)}
+        />
+      )}
+
+      {view === "despacho" ? (
+        <>
+          <div
+            style={{
+              display: "flex",
+              gap: 6,
+              marginBottom: 14,
+              overflowX: "auto",
+              paddingBottom: 2,
+            }}
+          >
+            {fechasTabs.map((f) => {
+              const activo = f === selectedDate;
+              const count = conteoPorFecha[f] || 0;
+              return (
+                <button
+                  key={f}
+                  onClick={() => setSelectedDate(f)}
+                  style={{
+                    flexShrink: 0,
+                    border: activo ? "2px solid var(--color-border-info)" : "0.5px solid var(--color-border-tertiary)",
+                    background: activo ? "var(--color-background-info)" : "var(--color-background-primary)",
+                    color: activo ? "var(--color-text-info)" : "var(--color-text-primary)",
+                    fontWeight: activo ? 600 : 400,
+                    padding: "8px 16px",
+                    borderRadius: "var(--border-radius-md)",
+                    fontSize: 14,
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {etiquetaFecha(f, hoyIso)}
+                  {count > 0 && (
+                    <span
+                      style={{
+                        marginLeft: 6,
+                        fontSize: 12,
+                        color: activo ? "var(--color-text-info)" : "var(--color-text-tertiary)",
+                      }}
+                    >
+                      ({count})
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+            <button
+              onClick={() => setSelectedDate("pendiente")}
+              style={{
+                flexShrink: 0,
+                border: selectedDate === "pendiente" ? "2px solid var(--color-border-warning)" : "0.5px solid var(--color-border-tertiary)",
+                background: selectedDate === "pendiente" ? "var(--color-background-warning)" : "var(--color-background-primary)",
+                color: selectedDate === "pendiente" ? "var(--color-text-warning)" : "var(--color-text-primary)",
+                fontWeight: selectedDate === "pendiente" ? 600 : 400,
+                padding: "8px 16px",
+                borderRadius: "var(--border-radius-md)",
+                fontSize: 14,
+                whiteSpace: "nowrap",
+              }}
+            >
+              <i className="ti ti-help-circle" style={{ fontSize: 14, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
+              Pendientes
+              {pedidosPendientes.length > 0 && (
+                <span
+                  style={{
+                    marginLeft: 6,
+                    fontSize: 12,
+                    color: selectedDate === "pendiente" ? "var(--color-text-warning)" : "var(--color-text-tertiary)",
+                  }}
+                >
+                  ({pedidosPendientes.length})
+                </span>
+              )}
+            </button>
+          </div>
+
+          {selectedDate === "pendiente" ? (
+            <div
+              style={{
+                background: "var(--color-background-secondary)",
+                borderRadius: "var(--border-radius-lg)",
+                padding: "12px",
+              }}
+            >
+              <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 10 }}>
+                Pedidos sin fecha ni vehículo asignado todavía. Edítalos cuando el cliente avise cuándo se entregan.
+              </div>
+              {pedidosPendientes.length === 0 && (
+                <div style={{ fontSize: 13, color: "var(--color-text-tertiary)", padding: "8px 4px" }}>
+                  No hay pedidos pendientes de fecha
+                </div>
+              )}
+              {pedidosPendientes.map((p) => (
+                <PedidoCard
+                  key={p.id}
+                  pedido={p}
+                  posicion={null}
+                  isDragging={false}
+                  onDragStart={() => {}}
+                  onDragOverItem={() => {}}
+                  onDropItem={() => {}}
+                  onDelete={() => deletePedido(p.id)}
+                  onEntregado={() => marcarEntregado(p.id)}
+                  onEdit={() => setEditing(p)}
+                  onVerPdf={() => setViewingPdf(p)}
+                  onGuiaCarga={() => setGuiaPedido(p)}
+                />
+              ))}
+            </div>
+          ) : (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12 }}>
+            {grouped.map((col) => (
+              <div
+                key={col.id}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  setDragOverCol(col.id);
+                }}
+              onDragLeave={() => setDragOverCol((c) => (c === col.id ? null : c))}
+              onDrop={(e) => {
+                e.preventDefault();
+                handleDropOnColumn(col.id, null);
+              }}
+              style={{
+                background: dragOverCol === col.id ? "var(--color-background-info)" : col.bg,
+                borderTop: `3px solid ${col.border}`,
+                borderRadius: "var(--border-radius-lg)",
+                padding: "12px",
+                minHeight: 160,
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+                <i className={`ti ${col.icon}`} style={{ fontSize: 18, color: col.text }} aria-hidden="true"></i>
+                <span style={{ fontWeight: 500, fontSize: 14, color: col.text }}>{col.label}</span>
+                <span
+                  style={{
+                    fontSize: 12,
+                    color: col.text,
+                    marginLeft: "auto",
+                    background: "var(--color-background-primary)",
+                    borderRadius: "var(--border-radius-sm)",
+                    padding: "1px 7px",
+                  }}
+                >
+                  {col.items.length}
+                </span>
+              </div>
+
+              {col.items.length === 0 && (
+                <div style={{ fontSize: 13, color: "var(--color-text-tertiary)", padding: "8px 4px" }}>Sin pedidos</div>
+              )}
+
+              {col.items.map((p, idx) => (
+                <PedidoCard
+                  key={p.id}
+                  pedido={p}
+                  posicion={idx + 1}
+                  isDragging={dragId === p.id}
+                  onDragStart={() => handleDragStart(p.id)}
+                  onDragOverItem={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setDragOverCol(col.id);
+                  }}
+                  onDropItem={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    handleDropOnColumn(col.id, p.id);
+                  }}
+                  onDelete={() => deletePedido(p.id)}
+                  onEntregado={() => marcarEntregado(p.id)}
+                  onEdit={() => setEditing(p)}
+                  onVerPdf={() => setViewingPdf(p)}
+                  onGuiaCarga={() => setGuiaPedido(p)}
+                />
+              ))}
+            </div>
+            ))}
+          </div>
+          )}
+        </>
+      ) : view === "historial" ? (
+        <div>
+          <input
+            type="text"
+            placeholder="Buscar por cliente, factura o fecha..."
+            value={historyFilter}
+            onChange={(e) => setHistoryFilter(e.target.value)}
+            style={{ width: "100%", marginBottom: 12 }}
+          />
+          {filteredHistorial.length === 0 ? (
+            <div style={{ fontSize: 14, color: "var(--color-text-tertiary)", padding: "1.5rem 0", textAlign: "center" }}>
+              No hay pedidos entregados todavía
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {filteredHistorial.map((h) => (
+                <HistorialRow key={h.id} pedido={h} onVerPdf={() => setViewingPdf(h)} />
+              ))}
+            </div>
+          )}
+        </div>
+      ) : (
+        <div>
+          {cotizacionesConSeguimientoProximo.length > 0 && (
+            <div
+              style={{
+                background: "var(--color-background-warning)",
+                border: "0.5px solid var(--color-border-warning)",
+                borderRadius: "var(--border-radius-md)",
+                padding: "10px 14px",
+                marginBottom: 12,
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6, color: "var(--color-text-warning)" }}>
+                <i className="ti ti-bell-ringing" style={{ fontSize: 16 }} aria-hidden="true"></i>
+                <span style={{ fontWeight: 500, fontSize: 13 }}>
+                  Seguimiento próximo ({cotizacionesConSeguimientoProximo.length})
+                </span>
+              </div>
+              {cotizacionesConSeguimientoProximo.map((c) => (
+                <div key={c.id} style={{ fontSize: 12, color: "var(--color-text-warning)", padding: "2px 0" }}>
+                  {c.fechaSeguimiento === hoyIso ? "Hoy" : "Mañana"} — llamar a {c.cliente}
+                  {c.numeroFactura ? ` (Cotización ${c.numeroFactura})` : ""}
+                </div>
+              ))}
+            </div>
+          )}
+          <input
+            type="text"
+            placeholder="Buscar por cliente o número de cotización..."
+            value={cotizacionFilter}
+            onChange={(e) => setCotizacionFilter(e.target.value)}
+            style={{ width: "100%", marginBottom: 12 }}
+          />
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12 }}>
+            {cotizacionesAgrupadas.map((col) => (
+              <div
+                key={col.id}
+                style={{
+                  background: col.bg,
+                  borderTop: `3px solid ${col.border}`,
+                  borderRadius: "var(--border-radius-lg)",
+                  padding: "12px",
+                  minHeight: 160,
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+                  <i className={`ti ${col.icon}`} style={{ fontSize: 18, color: col.text }} aria-hidden="true"></i>
+                  <span style={{ fontWeight: 500, fontSize: 14, color: col.text }}>{col.label}</span>
+                  <span
+                    style={{
+                      fontSize: 12,
+                      color: col.text,
+                      marginLeft: "auto",
+                      background: "var(--color-background-primary)",
+                      borderRadius: "var(--border-radius-sm)",
+                      padding: "1px 7px",
+                    }}
+                  >
+                    {col.items.length}
+                  </span>
+                </div>
+
+                {col.items.length === 0 && (
+                  <div style={{ fontSize: 13, color: "var(--color-text-tertiary)", padding: "8px 4px" }}>Sin cotizaciones</div>
+                )}
+
+                {col.items.map((c) => (
+                  <CotizacionCard
+                    key={c.id}
+                    cotizacion={c}
+                    onDelete={() => deleteCotizacion(c.id)}
+                    onEdit={() => setEditingCotizacion(c)}
+                    onVerPdf={() => setViewingPdfCotizacion(c)}
+                    onCambiarEstado={(estado) => {
+                      if (estado === "rechazada") {
+                        setRechazandoCotizacion(c);
+                      } else {
+                        updateCotizacion(c.id, { estado, motivoRechazo: null });
+                      }
+                    }}
+                  />
+                ))}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {editing && (
+        <EditModal
+          pedido={editing}
+          onClose={() => setEditing(null)}
+          onSave={(patch) => {
+            updatePedido(editing.id, patch);
+            setEditing(null);
+            const fechaAnterior = fechaDe(editing);
+            if (patch.fechaDespacho && patch.fechaDespacho !== fechaAnterior) {
+              showToast(`Pedido movido a ${etiquetaFecha(patch.fechaDespacho, hoyIso)}`);
+            } else {
+              showToast("Pedido actualizado");
+            }
+          }}
+        />
+      )}
+
+      {viewingPdf && <PdfModal pedido={viewingPdf} onClose={() => setViewingPdf(null)} />}
+      {guiaPedido && <GuiaCargaModal pedido={guiaPedido} onClose={() => setGuiaPedido(null)} />}
+
+      {editingCotizacion && (
+        <EditCotizacionModal
+          cotizacion={editingCotizacion}
+          onClose={() => setEditingCotizacion(null)}
+          onSave={(patch) => {
+            updateCotizacion(editingCotizacion.id, patch);
+            setEditingCotizacion(null);
+            showToast("Cotización actualizada");
+          }}
+        />
+      )}
+
+      {viewingPdfCotizacion && (
+        <PdfModal pedido={viewingPdfCotizacion} onClose={() => setViewingPdfCotizacion(null)} />
+      )}
+
+      {rechazandoCotizacion && (
+        <MotivoRechazoModal
+          cotizacion={rechazandoCotizacion}
+          onClose={() => setRechazandoCotizacion(null)}
+          onConfirm={(motivo) => {
+            updateCotizacion(rechazandoCotizacion.id, { estado: "rechazada", motivoRechazo: motivo });
+            setRechazandoCotizacion(null);
+            showToast("Cotización marcada como rechazada");
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function ExtractReviewCard({ data, onChange, onConfirm, onCancel }) {
+  const missing = [];
+  if (!data.cliente) missing.push("cliente");
+  if (!data.numeroFactura) missing.push("número");
+  if (!data.total) missing.push("total");
+  if (!data.vendedor) missing.push("vendedor");
+
+  return (
+    <div
+      style={{
+        background: "var(--color-background-primary)",
+        border: "0.5px solid var(--color-border-secondary)",
+        borderRadius: "var(--border-radius-lg)",
+        padding: "1rem 1.25rem",
+        marginBottom: 16,
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+        <i className="ti ti-file-text" style={{ fontSize: 18 }} aria-hidden="true"></i>
+        <span style={{ fontWeight: 500, fontSize: 15 }}>Revisa los datos extraídos</span>
+        <span
+          style={{
+            fontSize: 11,
+            padding: "2px 8px",
+            borderRadius: "var(--border-radius-sm)",
+            background: "var(--color-background-secondary)",
+            color: "var(--color-text-secondary)",
+            marginLeft: "auto",
+          }}
+        >
+          {data.tipo === "cotizacion" ? "Cotización" : "Factura"}
+        </span>
+      </div>
+
+      {missing.length > 0 && (
+        <div style={{ fontSize: 12, color: "var(--color-text-warning)", marginBottom: 10 }}>
+          <i className="ti ti-alert-triangle" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
+          No se detectó: {missing.join(", ")}. Complétalo a mano.
+        </div>
+      )}
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 12 }}>
+        <Field label="N° documento" value={data.numeroFactura || ""} onChange={(v) => onChange({ ...data, numeroFactura: v })} />
+        <Field label="Cliente" value={data.cliente || ""} onChange={(v) => onChange({ ...data, cliente: v })} />
+        <Field
+          label="Teléfono"
+          value={data.telefono || data.telefonoContacto || ""}
+          onChange={(v) => onChange({ ...data, telefono: v })}
+        />
+        <Field label="Vendedor" value={data.vendedor || ""} onChange={(v) => onChange({ ...data, vendedor: v })} />
+      </div>
+
+      {data.telefonoContacto && data.telefono === "111111111" && (
+        <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 12 }}>
+          <i className="ti ti-phone" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
+          Cliente sin teléfono registrado, pero hay un celular de contacto anotado: {data.telefonoContacto}
+        </div>
+      )}
+
+      {data.productos && data.productos.length > 0 ? (
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 6 }}>
+            Productos detectados ({data.productos.length}) — precio con IVA incluido
+          </div>
+          <div style={{ border: "0.5px solid var(--color-border-tertiary)", borderRadius: "var(--border-radius-md)", overflow: "hidden", maxHeight: 220, overflowY: "auto" }}>
+            {data.productos.map((p, i) => (
+              <div
+                key={i}
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  gap: 8,
+                  fontSize: 13,
+                  padding: "6px 10px",
+                  borderTop: i > 0 ? "0.5px solid var(--color-border-tertiary)" : "none",
+                }}
+              >
+                <span>{p.cantidad} {p.unidad} — {p.descripcion}</span>
+                <span style={{ color: "var(--color-text-secondary)", flexShrink: 0 }}>${formatCOP(parseInt(p.total))}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : (
+        <div style={{ fontSize: 12, color: "var(--color-text-warning)", marginBottom: 12 }}>
+          No se detectaron productos en la tabla. Puedes seguir igual; el PDF queda adjunto como respaldo.
+        </div>
+      )}
+
+      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 14 }}>
+        <span style={{ fontSize: 13, color: "var(--color-text-secondary)" }}>Total (incluye IVA)</span>
+        <span style={{ fontSize: 18, fontWeight: 500 }}>{data.total ? `$${formatCOP(data.total)}` : "No detectado"}</span>
+      </div>
+
+      <div style={{ marginBottom: 12 }}>
+        <span style={{ fontSize: 12, color: "var(--color-text-secondary)", display: "block", marginBottom: 6 }}>
+          ¿Cuándo se entrega?
+        </span>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button
+            onClick={() => onChange({ ...data, sinFechaDefinida: false })}
+            style={{
+              flex: 1,
+              border: !data.sinFechaDefinida ? "2px solid var(--color-border-info)" : "0.5px solid var(--color-border-tertiary)",
+              background: !data.sinFechaDefinida ? "var(--color-background-info)" : "var(--color-background-primary)",
+              color: !data.sinFechaDefinida ? "var(--color-text-info)" : "var(--color-text-primary)",
+              padding: "8px 0",
+              borderRadius: "var(--border-radius-md)",
+              fontSize: 13,
+            }}
+          >
+            Hoy, ya tengo fecha
+          </button>
+          <button
+            onClick={() => onChange({ ...data, sinFechaDefinida: true, vehiculo: null })}
+            style={{
+              flex: 1,
+              border: data.sinFechaDefinida ? "2px solid var(--color-border-info)" : "0.5px solid var(--color-border-tertiary)",
+              background: data.sinFechaDefinida ? "var(--color-background-info)" : "var(--color-background-primary)",
+              color: data.sinFechaDefinida ? "var(--color-text-info)" : "var(--color-text-primary)",
+              padding: "8px 0",
+              borderRadius: "var(--border-radius-md)",
+              fontSize: 13,
+            }}
+          >
+            Aún sin definir
+          </button>
+        </div>
+        {data.sinFechaDefinida && (
+          <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", marginTop: 6 }}>
+            El pedido va a la pestaña "Pendientes" hasta que sepas cuándo y en qué vehículo se entrega.
+          </div>
+        )}
+      </div>
+
+      <div style={{ marginBottom: 12 }}>
+        <span style={{ fontSize: 12, color: "var(--color-text-secondary)", display: "block", marginBottom: 6 }}>
+          Estado de pago
+        </span>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button
+            onClick={() => onChange({ ...data, estadoPago: "pagado" })}
+            style={{
+              flex: 1,
+              border: data.estadoPago === "pagado" ? "2px solid var(--color-border-success)" : "0.5px solid var(--color-border-tertiary)",
+              background: data.estadoPago === "pagado" ? "var(--color-background-success)" : "var(--color-background-primary)",
+              color: data.estadoPago === "pagado" ? "var(--color-text-success)" : "var(--color-text-primary)",
+              padding: "8px 0",
+              borderRadius: "var(--border-radius-md)",
+              fontSize: 13,
+            }}
+          >
+            Ya pagado
+          </button>
+          <button
+            onClick={() => onChange({ ...data, estadoPago: "pendiente" })}
+            style={{
+              flex: 1,
+              border: data.estadoPago === "pendiente" ? "2px solid var(--color-border-warning)" : "0.5px solid var(--color-border-tertiary)",
+              background: data.estadoPago === "pendiente" ? "var(--color-background-warning)" : "var(--color-background-primary)",
+              color: data.estadoPago === "pendiente" ? "var(--color-text-warning)" : "var(--color-text-primary)",
+              padding: "8px 0",
+              borderRadius: "var(--border-radius-md)",
+              fontSize: 13,
+            }}
+          >
+            Paga al recibir
+          </button>
+        </div>
+      </div>
+
+      {!data.sinFechaDefinida && (
+        <div style={{ marginBottom: 12 }}>
+          <span style={{ fontSize: 12, color: "var(--color-text-secondary)", display: "block", marginBottom: 6 }}>Vehículo</span>
+          <div style={{ display: "flex", gap: 8 }}>
+            {VEHICULOS.map((v) => (
+              <button
+                key={v.id}
+                onClick={() => onChange({ ...data, vehiculo: v.id })}
+                style={{
+                  flex: 1,
+                  border: data.vehiculo === v.id ? "2px solid var(--color-border-info)" : "0.5px solid var(--color-border-tertiary)",
+                  background: data.vehiculo === v.id ? "var(--color-background-info)" : "var(--color-background-primary)",
+                  color: data.vehiculo === v.id ? "var(--color-text-info)" : "var(--color-text-primary)",
+                  padding: "8px 0",
+                  borderRadius: "var(--border-radius-md)",
+                  fontSize: 13,
+                  fontWeight: data.vehiculo === v.id ? 500 : 400,
+                }}
+              >
+                <i className={`ti ${v.icon}`} style={{ fontSize: 16, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
+                {v.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+        <button onClick={onCancel} style={{ fontSize: 13 }}>Cancelar</button>
+        <button
+          onClick={onConfirm}
+          style={{
+            fontSize: 13,
+            fontWeight: 500,
+            background: "var(--color-background-info)",
+            color: "var(--color-text-info)",
+            border: "0.5px solid var(--color-border-info)",
+          }}
+        >
+          <i className="ti ti-check" style={{ fontSize: 14, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
+          Agregar a la lista
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function Field({ label, value, onChange }) {
+  return (
+    <label style={{ display: "block" }}>
+      <span style={{ fontSize: 12, color: "var(--color-text-secondary)", display: "block", marginBottom: 4 }}>{label}</span>
+      <input type="text" value={value} onChange={(e) => onChange(e.target.value)} style={{ width: "100%" }} />
+    </label>
+  );
+}
+
+function PedidoCard({ pedido, posicion, isDragging, onDragStart, onDragOverItem, onDropItem, onDelete, onEntregado, onEdit, onVerPdf, onGuiaCarga }) {
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const pagado = pedido.estadoPago === "pagado";
+
+  return (
+    <div
+      draggable
+      onDragStart={onDragStart}
+      onDragOver={onDragOverItem}
+      onDrop={onDropItem}
+      style={{
+        background: "var(--color-background-primary)",
+        border: "0.5px solid var(--color-border-tertiary)",
+        borderRadius: "var(--border-radius-md)",
+        padding: "10px 12px",
+        marginBottom: 8,
+        cursor: "grab",
+        opacity: isDragging ? 0.4 : 1,
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 7 }}>
+        <span
+          style={{
+            width: 28,
+            height: 28,
+            borderRadius: "50%",
+            background: MARCA.azulClaro,
+            color: MARCA.azulOscuro,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            fontSize: 12,
+            fontWeight: 500,
+            flexShrink: 0,
+          }}
+        >
+          {posicion !== null ? posicion : <i className="ti ti-help-circle" style={{ fontSize: 13 }} aria-hidden="true"></i>}
+        </span>
+        <span style={{ fontWeight: 500, fontSize: 14, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {pedido.cliente}
+        </span>
+        {pedido.total ? (
+          <span style={{ fontSize: 14, fontWeight: 500, color: MARCA.azulOscuro, flexShrink: 0 }}>${formatCOP(pedido.total)}</span>
+        ) : null}
+        <i className="ti ti-grip-vertical" style={{ fontSize: 14, color: "var(--color-text-tertiary)", flexShrink: 0 }} aria-hidden="true"></i>
+      </div>
+
+      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 7, paddingLeft: 36, flexWrap: "wrap" }}>
+        {pedido.numeroFactura && (
+          <span style={{ fontSize: 10.5, background: "var(--color-background-secondary)", color: "var(--color-text-secondary)", borderRadius: "var(--border-radius-sm)", padding: "2px 7px" }}>
+            {pedido.tipoDocumento === "cotizacion" ? "Cotización" : "Factura"} {pedido.numeroFactura}
+          </span>
+        )}
+        {pedido.hora && <span style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}>{pedido.hora}</span>}
+        <span
+          style={{
+            width: 6,
+            height: 6,
+            borderRadius: "50%",
+            background: pagado ? "var(--color-text-success)" : "var(--color-text-warning)",
+            marginLeft: "auto",
+          }}
+        ></span>
+        <span style={{ fontSize: 11, color: pagado ? "var(--color-text-success)" : "var(--color-text-warning)" }}>
+          {pagado ? "Pagado" : "Paga al recibir"}
+        </span>
+      </div>
+
+      {pedido.productos && pedido.productos.length > 0 && (
+        <div style={{ fontSize: 12.5, color: "var(--color-text-secondary)", marginBottom: 9, paddingLeft: 36 }}>
+          {pedido.productos.length === 1
+            ? pedido.productos[0].descripcion
+            : `${pedido.productos[0].descripcion} +${pedido.productos.length - 1} más`}
+        </div>
+      )}
+
+      <div style={{ display: "flex", alignItems: "center", gap: 6, paddingLeft: 36, flexWrap: "wrap" }}>
+        {pedido.pdfDataUrl && (
+          <button onClick={onVerPdf} style={{ fontSize: 11, padding: "5px 9px" }}>
+            <i className="ti ti-file-text" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
+            Ver documento
+          </button>
+        )}
+        {pedido.productos && pedido.productos.length > 0 && (
+          <button onClick={onGuiaCarga} style={{ fontSize: 11, padding: "5px 9px" }}>
+            <i className="ti ti-clipboard-list" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
+            Guía de carga
+          </button>
+        )}
+        <button
+          onClick={onEdit}
+          style={{
+            fontSize: 11,
+            padding: "5px 9px",
+            background: MARCA.azulClaro,
+            color: MARCA.azulOscuro,
+            border: `0.5px solid ${MARCA.azulMedio}`,
+          }}
+        >
+          <i className="ti ti-edit" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
+          Editar
+        </button>
+        {confirmDelete ? (
+          <button
+            onClick={onDelete}
+            style={{
+              fontSize: 11,
+              padding: "5px 9px",
+              background: "var(--color-background-danger)",
+              color: "var(--color-text-danger)",
+              border: "0.5px solid var(--color-border-danger)",
+              fontWeight: 500,
+            }}
+          >
+            <i className="ti ti-alert-triangle" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
+            Confirmar eliminación
+          </button>
+        ) : (
+          <button
+            onClick={() => setConfirmDelete(true)}
+            style={{
+              fontSize: 11,
+              padding: "5px 9px",
+              background: "var(--color-background-danger)",
+              color: "var(--color-text-danger)",
+              border: "0.5px solid var(--color-border-danger)",
+            }}
+          >
+            <i className="ti ti-trash" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
+            Eliminar
+          </button>
+        )}
+        <button
+          onClick={onEntregado}
+          style={{
+            marginLeft: "auto",
+            border: "none",
+            background: "#639922",
+            color: "white",
+            fontWeight: 500,
+            fontSize: 12,
+            borderRadius: "var(--border-radius-md)",
+            padding: "6px 12px",
+          }}
+        >
+          <i className="ti ti-check" style={{ fontSize: 14, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
+          Entregado
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// Renderiza el PDF como imagen usando PDF.js + canvas, en vez de un iframe.
+// Esto evita los bloqueos de visor nativo que impedían ver el PDF dentro
+// del artifact.
+function PdfCanvasViewer({ dataUrl }) {
+  const canvasRef = useRef(null);
+  const [status, setStatus] = useState("loading");
+
+  useEffect(() => {
+    let cancelled = false;
+    async function render() {
+      if (!window.pdfjsLib) {
+        setStatus("error");
+        return;
+      }
+      try {
+        const base64 = dataUrl.split(",")[1];
+        const binary = atob(base64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+
+        const pdf = await window.pdfjsLib.getDocument({ data: bytes }).promise;
+        const page = await pdf.getPage(1);
+        const viewport = page.getViewport({ scale: 1.4 });
+
+        if (cancelled) return;
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+        canvas.width = viewport.width;
+        canvas.height = viewport.height;
+        const ctx = canvas.getContext("2d");
+        await page.render({ canvasContext: ctx, viewport }).promise;
+        if (!cancelled) setStatus("ready");
+      } catch (e) {
+        if (!cancelled) setStatus("error");
+      }
+    }
+    render();
+    return () => {
+      cancelled = true;
+    };
+  }, [dataUrl]);
+
+  return (
+    <div style={{ width: "100%", maxHeight: 420, overflow: "auto", background: "var(--color-background-secondary)", borderRadius: "var(--border-radius-md)" }}>
+      {status === "loading" && (
+        <div style={{ padding: "3rem 0", textAlign: "center", fontSize: 13, color: "var(--color-text-secondary)" }}>Cargando documento...</div>
+      )}
+      {status === "error" && (
+        <div style={{ padding: "2rem 1rem", textAlign: "center", fontSize: 13, color: "var(--color-text-warning)" }}>
+          No se pudo previsualizar el documento aquí. Usa el botón de descarga abajo.
+        </div>
+      )}
+      <canvas ref={canvasRef} style={{ width: "100%", display: status === "ready" ? "block" : "none" }} />
+    </div>
+  );
+}
+
+// Overlay de modal verdadero: position:fixed cubre toda la ventana visible
+// (sin esto, el "fondo oscuro" solo ocupaba el alto del contenido y el click
+// afuera o el modal mismo podían quedar fuera de la vista, dando la sensación
+// de que "no cierra"). Cierra con click fuera, botón X, o tecla Esc.
+function ModalOverlay({ onClose, children, maxWidth = 480 }) {
+  useEffect(() => {
+    function handleKey(e) {
+      if (e.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, [onClose]);
+
+  return (
+    <div
+      style={{
+        position: "fixed",
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        background: "rgba(0,0,0,0.45)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 16,
+        zIndex: 1000,
+      }}
+      onClick={onClose}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          background: "var(--color-background-primary)",
+          borderRadius: "var(--border-radius-lg)",
+          padding: 12,
+          width: "100%",
+          maxWidth,
+          maxHeight: "90vh",
+          overflowY: "auto",
+        }}
+      >
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function PdfModal({ pedido, onClose }) {
+  return (
+    <ModalOverlay onClose={onClose} maxWidth={480}>
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
+        <span style={{ fontSize: 13, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {pedido.fileName || "Documento"}
+        </span>
+        <button onClick={onClose} aria-label="Cerrar" style={{ padding: "2px 8px", flexShrink: 0, marginLeft: 8 }}>
+          <i className="ti ti-x" style={{ fontSize: 14 }} aria-hidden="true"></i>
+        </button>
+      </div>
+      {pedido.pdfDataUrl ? <PdfCanvasViewer dataUrl={pedido.pdfDataUrl} /> : (
+        <div style={{ fontSize: 13, color: "var(--color-text-secondary)", padding: "2rem 0", textAlign: "center" }}>
+          No hay documento adjunto para este pedido
+        </div>
+      )}
+      {pedido.pdfDataUrl && (
+        <div style={{ marginTop: 8, textAlign: "right" }}>
+          <a href={pedido.pdfDataUrl} download={pedido.fileName || "documento.pdf"} style={{ fontSize: 12 }}>
+            <i className="ti ti-download" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
+            Descargar
+          </a>
+        </div>
+      )}
+    </ModalOverlay>
+  );
+}
+
+function HistorialRow({ pedido, onVerPdf }) {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <div style={{ background: "var(--color-background-primary)", border: "0.5px solid var(--color-border-tertiary)", borderRadius: "var(--border-radius-md)", padding: "10px 14px" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }} onClick={() => setExpanded(!expanded)}>
+        <i className={`ti ${(VEHICULOS.find((v) => v.id === pedido.vehiculo) || {}).icon || "ti-package"}`} style={{ fontSize: 16, color: "var(--color-text-secondary)" }} aria-hidden="true"></i>
+        <span style={{ fontWeight: 500, fontSize: 13, flex: 1 }}>{pedido.cliente}</span>
+        <span style={{ fontSize: 12, color: "var(--color-text-tertiary)" }}>{pedido.fechaEntrega || pedido.fecha}</span>
+        <i className={`ti ti-chevron-${expanded ? "up" : "down"}`} style={{ fontSize: 14, color: "var(--color-text-tertiary)" }} aria-hidden="true"></i>
+      </div>
+      {expanded && (
+        <div style={{ marginTop: 10, paddingTop: 10, borderTop: "0.5px solid var(--color-border-tertiary)", fontSize: 12, color: "var(--color-text-secondary)" }}>
+          <div>Documento: {pedido.numeroFactura || "-"} ({pedido.tipoDocumento === "cotizacion" ? "cotización" : "factura"})</div>
+          <div>Vendedor: {pedido.vendedor || "-"}</div>
+          <div>Vehículo: {(VEHICULOS.find((v) => v.id === pedido.vehiculo) || {}).label || "-"}</div>
+          <div>Total: {pedido.total ? `$${formatCOP(pedido.total)}` : "-"}</div>
+          {pedido.productos && pedido.productos.length > 0 && (
+            <div style={{ marginTop: 6 }}>
+              {pedido.productos.map((p, i) => (
+                <div key={i}>· {p.cantidad} {p.unidad} {p.descripcion}</div>
+              ))}
+            </div>
+          )}
+          {pedido.pdfDataUrl && (
+            <button onClick={onVerPdf} style={{ fontSize: 11, padding: "4px 8px", marginTop: 8 }}>
+              <i className="ti ti-file-text" style={{ fontSize: 12, verticalAlign: "-1px", marginRight: 3 }} aria-hidden="true"></i>
+              Ver documento
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Guía de carga interna: NO es factura ni la reemplaza (no lleva CUFE, QR ni
+// resolución DIAN), solo ayuda al despachador a saber qué subir al vehículo.
+// Solo para ver en pantalla — no se imprime desde aquí (el sandbox del
+// artifact no permite window.print() de forma confiable).
+function GuiaCargaModal({ pedido, onClose }) {
+  const vehiculoLabel = (VEHICULOS.find((v) => v.id === pedido.vehiculo) || {}).label || "Sin asignar";
+
+  return (
+    <>
+      <style>{`
+        @media print {
+          body * { visibility: hidden; }
+          #guia-carga-imprimible, #guia-carga-imprimible * { visibility: visible; }
+          #guia-carga-imprimible {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            padding: 24px;
+          }
+          .guia-carga-no-imprimir { display: none !important; }
+        }
+      `}</style>
+      <ModalOverlay onClose={onClose} maxWidth={420}>
+        <div className="guia-carga-no-imprimir" style={{ display: "flex", justifyContent: "space-between", marginBottom: 12 }}>
+          <span style={{ fontWeight: 500, fontSize: 15 }}>Guía de carga</span>
+          <button onClick={onClose} aria-label="Cerrar" style={{ padding: "2px 8px" }}>
+            <i className="ti ti-x" style={{ fontSize: 14 }} aria-hidden="true"></i>
+          </button>
+        </div>
+
+        <div id="guia-carga-imprimible">
+          <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", marginBottom: 14 }}>
+            Documento interno de bodega — no es factura ni tiene validez tributaria.
+          </div>
+
+          <div style={{ fontSize: 13, marginBottom: 4 }}><b>Cliente:</b> {pedido.cliente}</div>
+          {pedido.direccion && <div style={{ fontSize: 13, marginBottom: 4 }}><b>Dirección:</b> {pedido.direccion}</div>}
+          {pedido.numeroFactura && (
+            <div style={{ fontSize: 13, marginBottom: 4 }}>
+              <b>{pedido.tipoDocumento === "cotizacion" ? "Cotización" : "Factura"}:</b> {pedido.numeroFactura}
+            </div>
+          )}
+          <div style={{ fontSize: 13, marginBottom: 12 }}><b>Vehículo:</b> {vehiculoLabel}</div>
+
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+            <thead>
+              <tr>
+                <th style={{ textAlign: "left", borderBottom: "1px solid var(--color-border-tertiary)", padding: "4px", fontSize: 11, textTransform: "uppercase", color: "var(--color-text-secondary)" }}>Código</th>
+                <th style={{ textAlign: "left", borderBottom: "1px solid var(--color-border-tertiary)", padding: "4px", fontSize: 11, textTransform: "uppercase", color: "var(--color-text-secondary)" }}>Producto</th>
+                <th style={{ textAlign: "right", borderBottom: "1px solid var(--color-border-tertiary)", padding: "4px", fontSize: 11, textTransform: "uppercase", color: "var(--color-text-secondary)" }}>Cant.</th>
+                <th style={{ textAlign: "left", borderBottom: "1px solid var(--color-border-tertiary)", padding: "4px", fontSize: 11, textTransform: "uppercase", color: "var(--color-text-secondary)" }}>Unidad</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(pedido.productos || []).map((p, i) => (
+                <tr key={i}>
+                  <td style={{ borderBottom: "1px solid var(--color-border-tertiary)", padding: "4px" }}>{p.codigo}</td>
+                  <td style={{ borderBottom: "1px solid var(--color-border-tertiary)", padding: "4px" }}>{p.descripcion}</td>
+                  <td style={{ borderBottom: "1px solid var(--color-border-tertiary)", padding: "4px", textAlign: "right" }}>{p.cantidad}</td>
+                  <td style={{ borderBottom: "1px solid var(--color-border-tertiary)", padding: "4px" }}>{p.unidad}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="guia-carga-no-imprimir" style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 14 }}>
+          <button onClick={onClose} style={{ fontSize: 13 }}>Cerrar</button>
+          <button
+            onClick={() => window.print()}
+            style={{ fontSize: 13, fontWeight: 500, background: "var(--color-background-info)", color: "var(--color-text-info)", border: "0.5px solid var(--color-border-info)" }}
+          >
+            <i className="ti ti-printer" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
+            Imprimir
+          </button>
+        </div>
+      </ModalOverlay>
+    </>
+  );
+}
+
+function EditModal({ pedido, onClose, onSave }) {
+  const [form, setForm] = useState({ ...pedido, estadoPago: pedido.estadoPago || "pendiente" });
+  const sinFecha = form.fechaDespacho === "pendiente";
+
+  return (
+    <ModalOverlay onClose={onClose} maxWidth={420}>
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12 }}>
+        <span style={{ fontWeight: 500, fontSize: 15 }}>Editar pedido</span>
+        <button onClick={onClose} aria-label="Cerrar" style={{ padding: "2px 8px" }}>
+          <i className="ti ti-x" style={{ fontSize: 14 }} aria-hidden="true"></i>
+        </button>
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 14 }}>
+        <Field label="Cliente" value={form.cliente || ""} onChange={(v) => setForm({ ...form, cliente: v })} />
+        <Field label="Teléfono" value={form.telefono || ""} onChange={(v) => setForm({ ...form, telefono: v })} />
+
+        <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--color-text-secondary)" }}>
+          <input
+            type="checkbox"
+            checked={sinFecha}
+            onChange={(e) =>
+              setForm({
+                ...form,
+                fechaDespacho: e.target.checked ? "pendiente" : todayISO(),
+                vehiculo: e.target.checked ? null : form.vehiculo,
+              })
+            }
+          />
+          Aún no sé cuándo se entrega (sin fecha ni vehículo)
+        </label>
+
+        {!sinFecha && (
+          <label style={{ display: "block" }}>
+            <span style={{ fontSize: 12, color: "var(--color-text-secondary)", display: "block", marginBottom: 4 }}>
+              Fecha de despacho
+            </span>
+            <input
+              type="date"
+              value={form.fechaDespacho || todayISO()}
+              onChange={(e) => setForm({ ...form, fechaDespacho: e.target.value })}
+              style={{ width: "100%" }}
+            />
+            <span style={{ fontSize: 11, color: "var(--color-text-tertiary)", display: "block", marginTop: 4 }}>
+              Si elige una fecha futura, el pedido se mueve a esa pestaña de día.
+            </span>
+          </label>
+        )}
+
+        <div>
+          <span style={{ fontSize: 12, color: "var(--color-text-secondary)", display: "block", marginBottom: 4 }}>
+            Estado de pago
+          </span>
+          <div style={{ display: "flex", gap: 6 }}>
+            <button
+              onClick={() => setForm({ ...form, estadoPago: "pagado" })}
+              style={{
+                flex: 1,
+                fontSize: 12,
+                padding: "6px 0",
+                border: form.estadoPago === "pagado" ? "2px solid var(--color-border-success)" : "0.5px solid var(--color-border-tertiary)",
+                background: form.estadoPago === "pagado" ? "var(--color-background-success)" : "transparent",
+                color: form.estadoPago === "pagado" ? "var(--color-text-success)" : "var(--color-text-primary)",
+              }}
+            >
+              Ya pagado
+            </button>
+            <button
+              onClick={() => setForm({ ...form, estadoPago: "pendiente" })}
+              style={{
+                flex: 1,
+                fontSize: 12,
+                padding: "6px 0",
+                border: form.estadoPago === "pendiente" ? "2px solid var(--color-border-warning)" : "0.5px solid var(--color-border-tertiary)",
+                background: form.estadoPago === "pendiente" ? "var(--color-background-warning)" : "transparent",
+                color: form.estadoPago === "pendiente" ? "var(--color-text-warning)" : "var(--color-text-primary)",
+              }}
+            >
+              Paga al recibir
+            </button>
+          </div>
+        </div>
+
+        {!sinFecha && (
+          <div>
+            <span style={{ fontSize: 12, color: "var(--color-text-secondary)", display: "block", marginBottom: 4 }}>Vehículo</span>
+            <div style={{ display: "flex", gap: 6 }}>
+              {VEHICULOS.map((v) => (
+                <button
+                  key={v.id}
+                  onClick={() => setForm({ ...form, vehiculo: v.id })}
+                  style={{
+                    flex: 1,
+                    fontSize: 12,
+                    padding: "6px 0",
+                    border: form.vehiculo === v.id ? "2px solid var(--color-border-info)" : "0.5px solid var(--color-border-tertiary)",
+                    background: form.vehiculo === v.id ? "var(--color-background-info)" : "transparent",
+                  }}
+                >
+                  {v.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+        <button onClick={onClose} style={{ fontSize: 13 }}>Cancelar</button>
+        <button
+          onClick={() => {
+            if (!sinFecha && !form.vehiculo) {
+              return;
+            }
+            onSave(form);
+          }}
+          style={{ fontSize: 13, fontWeight: 500, background: "var(--color-background-info)", color: "var(--color-text-info)", border: "0.5px solid var(--color-border-info)" }}
+        >
+          Guardar
+        </button>
+      </div>
+    </ModalOverlay>
+  );
+}
+
+// ---------------------------------------------------------------------
+// Componentes del módulo de Cotizaciones (independiente de despacho).
+// ---------------------------------------------------------------------
+
+const ESTADOS_COTIZACION_BADGE = {
+  pendiente: { label: "Pendiente", bg: "var(--color-background-warning)", text: "var(--color-text-warning)" },
+  aceptada: { label: "Aceptada", bg: "var(--color-background-success)", text: "var(--color-text-success)" },
+  rechazada: { label: "Rechazada", bg: "var(--color-background-danger)", text: "var(--color-text-danger)" },
+};
+
+const ESTADOS_COTIZACION_BADGE_KEYS = ["pendiente", "aceptada", "rechazada"];
+
+function CotizacionCard({ cotizacion, onDelete, onEdit, onVerPdf, onCambiarEstado }) {
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const badge = ESTADOS_COTIZACION_BADGE[cotizacion.estado || "pendiente"];
+  const iniciales = (cotizacion.cliente || "?")
+    .trim()
+    .split(/\s+/)
+    .slice(0, 2)
+    .map((p) => p[0])
+    .join("")
+    .toUpperCase();
+
+  return (
+    <div
+      style={{
+        background: "var(--color-background-primary)",
+        border: "0.5px solid var(--color-border-tertiary)",
+        borderRadius: "var(--border-radius-md)",
+        padding: "10px 12px",
+        marginBottom: 8,
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 7 }}>
+        <span
+          style={{
+            width: 28,
+            height: 28,
+            borderRadius: "50%",
+            background: badge.bg,
+            color: badge.text,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            fontSize: 12,
+            fontWeight: 500,
+            flexShrink: 0,
+          }}
+        >
+          {iniciales}
+        </span>
+        <span style={{ fontWeight: 500, fontSize: 14, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {cotizacion.cliente}
+        </span>
+        {cotizacion.total ? (
+          <span style={{ fontSize: 14, fontWeight: 500, color: MARCA.azulOscuro, flexShrink: 0 }}>${formatCOP(cotizacion.total)}</span>
+        ) : null}
+      </div>
+
+      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 7, paddingLeft: 36, flexWrap: "wrap" }}>
+        {cotizacion.numeroFactura && (
+          <span style={{ fontSize: 10.5, background: "var(--color-background-secondary)", color: "var(--color-text-secondary)", borderRadius: "var(--border-radius-sm)", padding: "2px 7px" }}>
+            Cotización {cotizacion.numeroFactura}
+          </span>
+        )}
+        {cotizacion.fecha && <span style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}>{cotizacion.fecha}</span>}
+        <span
+          style={{
+            fontSize: 11,
+            padding: "2px 8px",
+            borderRadius: "var(--border-radius-sm)",
+            background: badge.bg,
+            color: badge.text,
+            marginLeft: "auto",
+          }}
+        >
+          {badge.label}
+        </span>
+      </div>
+
+      {cotizacion.productos && cotizacion.productos.length > 0 && (
+        <div style={{ fontSize: 12.5, color: "var(--color-text-secondary)", marginBottom: 7, paddingLeft: 36 }}>
+          {cotizacion.productos.length === 1
+            ? cotizacion.productos[0].descripcion
+            : `${cotizacion.productos[0].descripcion} +${cotizacion.productos.length - 1} más`}
+        </div>
+      )}
+
+      {cotizacion.fechaSeguimiento && (
+        <div style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11.5, color: "var(--color-text-secondary)", marginBottom: 7, paddingLeft: 36 }}>
+          <i className="ti ti-bell" style={{ fontSize: 13, color: MARCA.azulMedio }} aria-hidden="true"></i>
+          Seguimiento: {cotizacion.fechaSeguimiento}
+        </div>
+      )}
+
+      {cotizacion.estado === "rechazada" && cotizacion.motivoRechazo && (
+        <div
+          style={{
+            fontSize: 11,
+            color: "var(--color-text-danger)",
+            marginBottom: 8,
+            marginLeft: 36,
+            padding: "6px 8px",
+            background: "var(--color-background-danger)",
+            borderRadius: "var(--border-radius-sm)",
+          }}
+        >
+          <i className="ti ti-info-circle" style={{ fontSize: 12, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
+          Motivo: {cotizacion.motivoRechazo}
+        </div>
+      )}
+
+      {cotizacion.notas && cotizacion.notas.trim() && (
+        <div
+          style={{
+            fontSize: 11,
+            color: "var(--color-text-secondary)",
+            marginBottom: 8,
+            marginLeft: 36,
+            padding: "6px 8px",
+            background: "var(--color-background-secondary)",
+            borderRadius: "var(--border-radius-sm)",
+          }}
+        >
+          <i className="ti ti-note" style={{ fontSize: 12, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
+          {cotizacion.notas}
+        </div>
+      )}
+
+      <div style={{ display: "flex", alignItems: "center", gap: 6, paddingLeft: 36, flexWrap: "wrap" }}>
+        {cotizacion.pdfDataUrl && (
+          <button onClick={onVerPdf} style={{ fontSize: 11, padding: "5px 9px" }}>
+            <i className="ti ti-file-text" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
+            Ver documento
+          </button>
+        )}
+        <button
+          onClick={onEdit}
+          style={{
+            fontSize: 11,
+            padding: "5px 9px",
+            background: MARCA.azulClaro,
+            color: MARCA.azulOscuro,
+            border: `0.5px solid ${MARCA.azulMedio}`,
+          }}
+        >
+          <i className="ti ti-edit" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
+          Editar
+        </button>
+
+        {cotizacion.estado === "pendiente" && (
+          <>
+            <button
+              onClick={() => onCambiarEstado("aceptada")}
+              style={{
+                flex: 1,
+                minWidth: 90,
+                height: 30,
+                border: "none",
+                background: "#639922",
+                color: "white",
+                fontWeight: 500,
+                fontSize: 12,
+                borderRadius: "var(--border-radius-md)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 4,
+              }}
+            >
+              <i className="ti ti-check" style={{ fontSize: 14 }} aria-hidden="true"></i>
+              Aceptar
+            </button>
+            <button
+              onClick={() => onCambiarEstado("rechazada")}
+              style={{
+                flex: 1,
+                minWidth: 90,
+                height: 30,
+                border: "none",
+                background: "#A32D2D",
+                color: "white",
+                fontWeight: 500,
+                fontSize: 12,
+                borderRadius: "var(--border-radius-md)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 4,
+              }}
+            >
+              <i className="ti ti-x" style={{ fontSize: 14 }} aria-hidden="true"></i>
+              Rechazar
+            </button>
+          </>
+        )}
+
+        {cotizacion.estado !== "pendiente" && (
+          <button onClick={() => onCambiarEstado("pendiente")} style={{ fontSize: 11, padding: "5px 9px" }}>
+            <i className="ti ti-clock" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
+            Volver a pendiente
+          </button>
+        )}
+
+        {confirmDelete ? (
+          <button
+            onClick={onDelete}
+            style={{
+              fontSize: 11,
+              padding: "5px 9px",
+              background: "var(--color-background-danger)",
+              color: "var(--color-text-danger)",
+              border: "0.5px solid var(--color-border-danger)",
+              fontWeight: 500,
+            }}
+          >
+            <i className="ti ti-alert-triangle" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
+            ¿Seguro?
+          </button>
+        ) : (
+          <button
+            onClick={() => setConfirmDelete(true)}
+            style={{
+              fontSize: 11,
+              padding: "5px 9px",
+              background: "var(--color-background-danger)",
+              color: "var(--color-text-danger)",
+              border: "0.5px solid var(--color-border-danger)",
+            }}
+          >
+            <i className="ti ti-trash" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
+            Eliminar
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ExtractReviewCardCotizacion({ data, onChange, onConfirm, onCancel }) {
+  const missing = [];
+  if (!data.cliente) missing.push("cliente");
+  if (!data.numeroFactura) missing.push("número");
+  if (!data.total) missing.push("total");
+
+  return (
+    <div
+      style={{
+        background: "var(--color-background-primary)",
+        border: "0.5px solid var(--color-border-secondary)",
+        borderRadius: "var(--border-radius-lg)",
+        padding: "1rem 1.25rem",
+        marginBottom: 16,
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+        <i className="ti ti-file-text" style={{ fontSize: 18 }} aria-hidden="true"></i>
+        <span style={{ fontWeight: 500, fontSize: 15 }}>Revisa los datos de la cotización</span>
+      </div>
+
+      {missing.length > 0 && (
+        <div style={{ fontSize: 12, color: "var(--color-text-warning)", marginBottom: 10 }}>
+          <i className="ti ti-alert-triangle" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
+          No se detectó: {missing.join(", ")}. Complétalo a mano.
+        </div>
+      )}
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 12 }}>
+        <Field label="N° cotización" value={data.numeroFactura || ""} onChange={(v) => onChange({ ...data, numeroFactura: v })} />
+        <Field label="Cliente" value={data.cliente || ""} onChange={(v) => onChange({ ...data, cliente: v })} />
+        <Field
+          label="Teléfono"
+          value={data.telefono || data.telefonoContacto || ""}
+          onChange={(v) => onChange({ ...data, telefono: v })}
+        />
+        <Field label="Vendedor" value={data.vendedor || ""} onChange={(v) => onChange({ ...data, vendedor: v })} />
+      </div>
+
+      {data.productos && data.productos.length > 0 ? (
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 6 }}>
+            Productos detectados ({data.productos.length}) — precio con IVA incluido
+          </div>
+          <div style={{ border: "0.5px solid var(--color-border-tertiary)", borderRadius: "var(--border-radius-md)", overflow: "hidden", maxHeight: 220, overflowY: "auto" }}>
+            {data.productos.map((p, i) => (
+              <div
+                key={i}
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  gap: 8,
+                  fontSize: 13,
+                  padding: "6px 10px",
+                  borderTop: i > 0 ? "0.5px solid var(--color-border-tertiary)" : "none",
+                }}
+              >
+                <span>{p.cantidad} {p.unidad} — {p.descripcion}</span>
+                <span style={{ color: "var(--color-text-secondary)", flexShrink: 0 }}>${formatCOP(parseInt(p.total))}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : (
+        <div style={{ fontSize: 12, color: "var(--color-text-warning)", marginBottom: 12 }}>
+          No se detectaron productos en la tabla. Puedes seguir igual; el PDF queda adjunto como respaldo.
+        </div>
+      )}
+
+      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 14 }}>
+        <span style={{ fontSize: 13, color: "var(--color-text-secondary)" }}>Total (incluye IVA)</span>
+        <span style={{ fontSize: 18, fontWeight: 500 }}>{data.total ? `$${formatCOP(data.total)}` : "No detectado"}</span>
+      </div>
+
+      <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 12 }}>
+        <i className="ti ti-clock" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
+        Esta cotización empieza en estado <b>Pendiente</b>. Después podrás marcarla como Aceptada o Rechazada.
+      </div>
+
+      <div style={{ marginBottom: 12 }}>
+        <span style={{ fontSize: 12, color: "var(--color-text-secondary)", display: "block", marginBottom: 6 }}>
+          Fecha de seguimiento (opcional)
+        </span>
+        <input
+          type="date"
+          value={data.fechaSeguimiento || ""}
+          onChange={(e) => onChange({ ...data, fechaSeguimiento: e.target.value })}
+          style={{ width: "100%" }}
+        />
+        <span style={{ fontSize: 11, color: "var(--color-text-tertiary)", display: "block", marginTop: 4 }}>
+          Para recordarte cuándo llamar al cliente y dar seguimiento.
+        </span>
+      </div>
+
+      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+        <button onClick={onCancel} style={{ fontSize: 13 }}>Cancelar</button>
+        <button
+          onClick={onConfirm}
+          style={{
+            fontSize: 13,
+            fontWeight: 500,
+            background: "var(--color-background-info)",
+            color: "var(--color-text-info)",
+            border: "0.5px solid var(--color-border-info)",
+          }}
+        >
+          <i className="ti ti-check" style={{ fontSize: 14, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
+          Agregar a la lista
+        </button>
+      </div>
+    </div>
+  );
+}
+
+const MOTIVOS_RECHAZO = [
+  "Precio muy alto",
+  "Compró con la competencia",
+  "No respondió / se enfrió",
+  "Cambio de planes del cliente",
+];
+
+function MotivoRechazoModal({ cotizacion, onClose, onConfirm }) {
+  const [seleccionado, setSeleccionado] = useState(null);
+  const [otroTexto, setOtroTexto] = useState("");
+
+  const puedeConfirmar = seleccionado && (seleccionado !== "Otro" || otroTexto.trim());
+
+  return (
+    <ModalOverlay onClose={onClose} maxWidth={400}>
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12 }}>
+        <span style={{ fontWeight: 500, fontSize: 15 }}>¿Por qué se rechazó?</span>
+        <button onClick={onClose} aria-label="Cerrar" style={{ padding: "2px 8px" }}>
+          <i className="ti ti-x" style={{ fontSize: 14 }} aria-hidden="true"></i>
+        </button>
+      </div>
+
+      <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 12 }}>
+        Cotización de {cotizacion.cliente}
+      </div>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 12 }}>
+        {MOTIVOS_RECHAZO.map((m) => (
+          <button
+            key={m}
+            onClick={() => setSeleccionado(m)}
+            style={{
+              textAlign: "left",
+              fontSize: 13,
+              padding: "8px 10px",
+              border: seleccionado === m ? "2px solid var(--color-border-danger)" : "0.5px solid var(--color-border-tertiary)",
+              background: seleccionado === m ? "var(--color-background-danger)" : "var(--color-background-primary)",
+              color: seleccionado === m ? "var(--color-text-danger)" : "var(--color-text-primary)",
+              borderRadius: "var(--border-radius-md)",
+            }}
+          >
+            {m}
+          </button>
+        ))}
+        <button
+          onClick={() => setSeleccionado("Otro")}
+          style={{
+            textAlign: "left",
+            fontSize: 13,
+            padding: "8px 10px",
+            border: seleccionado === "Otro" ? "2px solid var(--color-border-danger)" : "0.5px solid var(--color-border-tertiary)",
+            background: seleccionado === "Otro" ? "var(--color-background-danger)" : "var(--color-background-primary)",
+            color: seleccionado === "Otro" ? "var(--color-text-danger)" : "var(--color-text-primary)",
+            borderRadius: "var(--border-radius-md)",
+          }}
+        >
+          Otro
+        </button>
+        {seleccionado === "Otro" && (
+          <input
+            type="text"
+            placeholder="Escribe el motivo..."
+            value={otroTexto}
+            onChange={(e) => setOtroTexto(e.target.value)}
+            style={{ width: "100%" }}
+            autoFocus
+          />
+        )}
+      </div>
+
+      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+        <button onClick={onClose} style={{ fontSize: 13 }}>Cancelar</button>
+        <button
+          disabled={!puedeConfirmar}
+          onClick={() => onConfirm(seleccionado === "Otro" ? otroTexto.trim() : seleccionado)}
+          style={{
+            fontSize: 13,
+            fontWeight: 500,
+            background: "var(--color-background-danger)",
+            color: "var(--color-text-danger)",
+            border: "0.5px solid var(--color-border-danger)",
+            opacity: puedeConfirmar ? 1 : 0.5,
+          }}
+        >
+          <i className="ti ti-x" style={{ fontSize: 14, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
+          Rechazar cotización
+        </button>
+      </div>
+    </ModalOverlay>
+  );
+}
+
+function EditCotizacionModal({ cotizacion, onClose, onSave }) {
+  const [form, setForm] = useState({ ...cotizacion, estado: cotizacion.estado || "pendiente" });
+
+  return (
+    <ModalOverlay onClose={onClose} maxWidth={420}>
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12 }}>
+        <span style={{ fontWeight: 500, fontSize: 15 }}>Editar cotización</span>
+        <button onClick={onClose} aria-label="Cerrar" style={{ padding: "2px 8px" }}>
+          <i className="ti ti-x" style={{ fontSize: 14 }} aria-hidden="true"></i>
+        </button>
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 14 }}>
+        <Field label="Cliente" value={form.cliente || ""} onChange={(v) => setForm({ ...form, cliente: v })} />
+        <Field label="Teléfono" value={form.telefono || ""} onChange={(v) => setForm({ ...form, telefono: v })} />
+
+        <div>
+          <span style={{ fontSize: 12, color: "var(--color-text-secondary)", display: "block", marginBottom: 4 }}>Estado</span>
+          <div style={{ display: "flex", gap: 6 }}>
+            {ESTADOS_COTIZACION_BADGE_KEYS.map((key) => (
+              <button
+                key={key}
+                onClick={() => setForm({ ...form, estado: key })}
+                style={{
+                  flex: 1,
+                  fontSize: 12,
+                  padding: "6px 0",
+                  border: form.estado === key ? "2px solid var(--color-border-info)" : "0.5px solid var(--color-border-tertiary)",
+                  background: form.estado === key ? "var(--color-background-info)" : "transparent",
+                }}
+              >
+                {ESTADOS_COTIZACION_BADGE[key].label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <label style={{ display: "block" }}>
+          <span style={{ fontSize: 12, color: "var(--color-text-secondary)", display: "block", marginBottom: 4 }}>
+            Fecha de seguimiento
+          </span>
+          <input
+            type="date"
+            value={form.fechaSeguimiento || ""}
+            onChange={(e) => setForm({ ...form, fechaSeguimiento: e.target.value })}
+            style={{ width: "100%" }}
+          />
+        </label>
+
+        <label style={{ display: "block" }}>
+          <span style={{ fontSize: 12, color: "var(--color-text-secondary)", display: "block", marginBottom: 4 }}>
+            Notas
+          </span>
+          <textarea
+            value={form.notas || ""}
+            onChange={(e) => setForm({ ...form, notas: e.target.value })}
+            style={{ width: "100%", minHeight: 60, fontSize: 13 }}
+          />
+        </label>
+      </div>
+      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+        <button onClick={onClose} style={{ fontSize: 13 }}>Cancelar</button>
+        <button
+          onClick={() => onSave(form)}
+          style={{ fontSize: 13, fontWeight: 500, background: "var(--color-background-info)", color: "var(--color-text-info)", border: "0.5px solid var(--color-border-info)" }}
+        >
+          Guardar
+        </button>
+      </div>
+    </ModalOverlay>
+  );
+}
