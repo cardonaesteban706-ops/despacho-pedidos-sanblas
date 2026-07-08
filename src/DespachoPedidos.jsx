@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
-import { cargarPedidosActivos, cargarHistorial, guardarPedido, eliminarPedido } from "./supabaseClient";
+import { cargarPedidosActivos, cargarHistorial, guardarPedido, actualizarPedido, eliminarPedido } from "./supabaseClient";
 import { cargarCotizaciones, guardarCotizacion, eliminarCotizacion } from "./supabaseClient";
 
 const VEHICULOS = [
@@ -25,6 +25,17 @@ function uid() {
 function formatCOP(n) {
   if (n === null || n === undefined || isNaN(n)) return "-";
   return new Intl.NumberFormat("es-CO", { maximumFractionDigits: 0 }).format(n);
+}
+
+// Convierte una cantidad en formato colombiano a número. "1.500" y
+// "1.500,25" usan punto de miles y coma decimal (grupos de 3 dígitos);
+// "2.5" o "2,5" usan el separador como decimal.
+function parseCantidad(s) {
+  const str = String(s).trim();
+  if (/^\d{1,3}(?:\.\d{3})+(?:,\d{1,2})?$/.test(str)) {
+    return parseFloat(str.replace(/\./g, "").replace(",", ".")) || 0;
+  }
+  return parseFloat(str.replace(",", ".")) || 0;
 }
 
 function todayStr() {
@@ -80,29 +91,48 @@ function nowTimeStr() {
 
 // Reconstruye filas reales del PDF agrupando fragmentos de texto por su
 // posición vertical (Y), no por orden de aparición en el stream del PDF.
+// Lee TODAS las páginas: las facturas con muchos ítems continúan la tabla de
+// productos (y traen el total) en la página 2 o siguientes.
 async function extractPdfLines(file) {
   const arrayBuffer = await file.arrayBuffer();
   const pdf = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-  const page = await pdf.getPage(1);
-  const content = await page.getTextContent();
 
-  const items = content.items
-    .filter((it) => it.str && it.str.trim().length > 0)
-    .map((it) => ({ text: it.str, x: it.transform[4], y: Math.round(it.transform[5]) }));
+  const allLines = [];
+  for (let num = 1; num <= pdf.numPages; num++) {
+    const page = await pdf.getPage(num);
+    const content = await page.getTextContent();
 
-  const rows = [];
-  items.forEach((it) => {
-    let row = rows.find((r) => Math.abs(r.y - it.y) <= 2);
-    if (!row) {
-      row = { y: it.y, items: [] };
-      rows.push(row);
-    }
-    row.items.push(it);
-  });
-  rows.sort((a, b) => b.y - a.y);
-  rows.forEach((r) => r.items.sort((a, b) => a.x - b.x));
+    const items = content.items
+      .filter((it) => it.str && it.str.trim().length > 0)
+      .map((it) => ({ text: it.str, x: it.transform[4], y: Math.round(it.transform[5]) }));
 
-  return rows.map((r) => r.items.map((it) => it.text).join(" ").replace(/\s+/g, " ").trim()).filter(Boolean);
+    // La agrupación por Y es por página: la coordenada Y se reinicia en cada
+    // página, así que mezclar páginas fusionaría filas que no van juntas.
+    //
+    // Se ordena por Y primero y se agrupa encadenando contra el ÚLTIMO
+    // fragmento agregado (no contra un ancla fija): fragmentos de una misma
+    // fila visual con Y = 100, 102, 104 quedan juntos aunque el primero y el
+    // último disten más que la tolerancia. Antes, el resultado dependía del
+    // orden de aparición en el stream del PDF y podía partir la fila de un
+    // producto en dos líneas (que el regex descartaba en silencio).
+    const sorted = [...items].sort((a, b) => b.y - a.y);
+    const rows = [];
+    let current = null;
+    sorted.forEach((it) => {
+      if (!current || Math.abs(current.lastY - it.y) > 2) {
+        current = { lastY: it.y, items: [] };
+        rows.push(current);
+      }
+      current.lastY = it.y;
+      current.items.push(it);
+    });
+    rows.forEach((r) => r.items.sort((a, b) => a.x - b.x));
+
+    allLines.push(
+      ...rows.map((r) => r.items.map((it) => it.text).join(" ").replace(/\s+/g, " ").trim()).filter(Boolean)
+    );
+  }
+  return allLines;
 }
 
 function detectTipoDocumento(lines) {
@@ -156,7 +186,11 @@ function parseFactura(lines) {
   const vendHeaderIdx = lines.findIndex((l) => /VENDEDOR/i.test(l) && /FORMA DE PAGO/i.test(l));
   if (vendHeaderIdx !== -1) {
     for (let j = vendHeaderIdx; j < Math.min(vendHeaderIdx + 2, lines.length); j++) {
-      const m = lines[j].match(/(?:\d{2}\/\d{2}\/\d{4}\s+\d{2}\/\d{2}\/\d{4}\s+)?([A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑ\s]+?)\s+(Contado|Cr[ée]dito)\b/i);
+      // En la línea del encabezado se quita el texto de las columnas: si la
+      // agrupación por Y fusionó encabezado y datos en una sola línea, el
+      // regex capturaba "VENDEDOR FORMA DE PAGO JUAN PEREZ" como nombre.
+      const linea = j === vendHeaderIdx ? lines[j].replace(/^.*FORMA DE PAGO\s*/i, "") : lines[j];
+      const m = linea.match(/(?:\d{2}\/\d{2}\/\d{4}\s+\d{2}\/\d{2}\/\d{4}\s+)?([A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑ\s]+?)\s+(Contado|Cr[ée]dito)\b/i);
       if (m && m[1].trim().length >= 4) {
         result.vendedor = m[1].trim();
         break;
@@ -182,7 +216,10 @@ function parseFactura(lines) {
   const tableHeaderIdx = lines.findIndex((l) => /^C[óo]digo Descripci[óo]n/i.test(l));
   const tableEndIdx = lines.findIndex((l) => /TOTAL IT[ÉE]M/i.test(l));
   if (tableHeaderIdx !== -1 && tableEndIdx !== -1) {
-    const productLineRegex = /^(\d{1,2})\s+([A-Z0-9]{2,12})\s+(.+?)\s+(\d{1,4}(?:[.,]\d{1,2})?)\s+(Und\.?|Bulto|Caja|Mt\.?|Kg\.?|kg|Gal\.?|Lb\.?|Mts\.?|Paq\.?|Paquete|Rollo|Glb\.?|m2)\s+([\d.,]+)\s+(\d{1,2}%)\s+([\d.,]+)\s+([\d.,]+)\s*$/i;
+    // La cantidad acepta separador de miles ("1.500", "1.500,00"): un pedido
+    // de 1.500 ladrillos es normal en ferretería, y sin esa alternativa el
+    // regex no matcheaba y la línea del producto se descartaba en silencio.
+    const productLineRegex = /^(\d{1,2})\s+([A-Z0-9]{2,12})\s+(.+?)\s+(\d{1,3}(?:\.\d{3})+(?:,\d{1,2})?|\d{1,4}(?:[.,]\d{1,2})?)\s+(Und\.?|Bulto|Caja|Mt\.?|Kg\.?|kg|Gal\.?|Lb\.?|Mts\.?|Paq\.?|Paquete|Rollo|Glb\.?|m2)\s+([\d.,]+)\s+(\d{1,2}%)\s+([\d.,]+)\s+([\d.,]+)\s*$/i;
     let pending = null;
     for (let i = tableHeaderIdx + 1; i < tableEndIdx; i++) {
       const line = lines[i].trim();
@@ -191,7 +228,7 @@ function parseFactura(lines) {
         // En la factura (FECV), "Valor IVA" viene por unidad, no por línea.
         // El "Total" de la columna NO incluye IVA (es cantidad x valor unitario).
         // Para mostrar el precio con IVA incluido: total_linea_sin_iva + (valor_iva_unitario x cantidad).
-        const cantidadNum = parseFloat(m[4].replace(",", "."));
+        const cantidadNum = parseCantidad(m[4]);
         const valorIvaUnitario = parseInt(m[8].replace(/\./g, ""), 10) || 0;
         const totalSinIva = parseInt(m[9].replace(/\./g, ""), 10) || 0;
         const ivaLinea = Math.round(valorIvaUnitario * cantidadNum);
@@ -205,7 +242,16 @@ function parseFactura(lines) {
           total: String(totalConIva),
         });
         pending = result.productos[result.productos.length - 1];
-      } else if (pending && line.length > 0 && line.length < 30 && !/^\d/.test(line)) {
+      } else if (
+        pending &&
+        line.length > 0 &&
+        line.length < 30 &&
+        !/^\d/.test(line) &&
+        // Con PDFs de varias páginas, entre el final de una página y el inicio
+        // de la otra aparecen pies/encabezados repetidos ("Página 1 de 2",
+        // "Código Descripción...", NIT, etc.) que no son continuación de nada.
+        !/p[áa]gina|c[óo]digo|descripci[óo]n|nit\b|fecv|cliente|tel[ée]fono/i.test(line)
+      ) {
         // Continuación de una descripción larga partida en 2 líneas (ej: "3H", "ATLANTIS")
         pending.descripcion = pending.descripcion + " " + line;
       }
@@ -235,7 +281,10 @@ function parseCotizacion(lines) {
   const numMatch = text.match(/COTIZACION No\.?\s*(\d+)/i);
   if (numMatch) result.numeroFactura = numMatch[1];
 
-  const clienteLine = lines.find((l) => /CLIENTE\b/i.test(l));
+  // Anclado al inicio de línea, igual que el replace de abajo: sin ancla,
+  // una línea anterior con "CLIENTE" en el medio (p. ej. un encabezado
+  // fusionado) se elegía y quedaba entera como nombre del cliente.
+  const clienteLine = lines.find((l) => /^,?\s*CLIENTE\b/i.test(l));
   if (clienteLine) {
     let rest = clienteLine.replace(/^,?\s*CLIENTE\s*/i, "");
     const cut = rest.search(/\bP[áa]gina\b/i);
@@ -298,7 +347,8 @@ function parseCotizacion(lines) {
   const tableHeaderIdx = lines.findIndex((l) => /^CODIGO DESCRIPCION/i.test(l));
   const tableEndIdx = lines.findIndex((l) => /^CANT SUBTOTAL/i.test(l));
   if (tableHeaderIdx !== -1 && tableEndIdx !== -1) {
-    const productLineRegex = /^([A-Z0-9]{2,12})\s+(.+?)\s+(\d{1,5}(?:[.,]\d{1,2})?)\s*(Und\.?|Bulto|Caja|Mt\.?|Kg\.?|kg|Gal\.?|Lb\.?|Mts\.?|Paq\.?|Paquete|Rollo|Glb\.?|m2)\s+([\d.,]+)\s+(\d{1,2}%)\s+([\d.,]+)\s*$/i;
+    // Igual que en la factura: la cantidad acepta separador de miles.
+    const productLineRegex = /^([A-Z0-9]{2,12})\s+(.+?)\s+(\d{1,3}(?:\.\d{3})+(?:,\d{1,2})?|\d{1,5}(?:[.,]\d{1,2})?)\s*(Und\.?|Bulto|Caja|Mt\.?|Kg\.?|kg|Gal\.?|Lb\.?|Mts\.?|Paq\.?|Paquete|Rollo|Glb\.?|m2)\s+([\d.,]+)\s+(\d{1,2}%)\s+([\d.,]+)\s*$/i;
     for (let i = tableHeaderIdx + 1; i < tableEndIdx; i++) {
       const line = lines[i].trim();
       const m = line.match(productLineRegex);
@@ -342,7 +392,7 @@ export default function DespachoPedidos() {
   const [pendingExtract, setPendingExtract] = useState(null);
   const [editing, setEditing] = useState(null);
   const [viewingPdf, setViewingPdf] = useState(null);
-  const [guiaPedido, setGuiaPedido] = useState(null);
+  const [notaPendienteDe, setNotaPendienteDe] = useState(null);
   const [dragId, setDragId] = useState(null);
   const [dragOverCol, setDragOverCol] = useState(null);
   const [toast, setToast] = useState(null);
@@ -362,9 +412,13 @@ export default function DespachoPedidos() {
   const fechaDe = (p) => p.fechaDespacho || hoyIso;
   const fileInputRef = useRef(null);
 
-  function showToast(msg) {
+  const toastTimerRef = useRef(null);
+  function showToast(msg, duracionMs = 2800) {
     setToast(msg);
-    setTimeout(() => setToast(null), 2800);
+    // Sin esto, el timeout de un toast anterior borraba antes de tiempo el
+    // toast nuevo (los errores de guardado duran más y deben poder leerse).
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = setTimeout(() => setToast(null), duracionMs);
   }
 
   useEffect(() => {
@@ -372,9 +426,18 @@ export default function DespachoPedidos() {
       setLibsReady(true);
       return;
     }
-    const script = document.createElement("script");
-    script.src = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js";
-    script.onload = () => {
+    const src = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js";
+    // Si ya hay un <script> con este src (StrictMode monta el efecto dos
+    // veces en desarrollo), no se inyecta otro: solo nos colgamos de sus
+    // eventos. Y el cleanup quita los listeners para no llamar setState
+    // sobre un componente desmontado.
+    let script = document.querySelector(`script[src="${src}"]`);
+    const esNuevo = !script;
+    if (esNuevo) {
+      script = document.createElement("script");
+      script.src = src;
+    }
+    const onLoad = () => {
       try {
         window.pdfjsLib.GlobalWorkerOptions.workerSrc =
           "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
@@ -383,8 +446,14 @@ export default function DespachoPedidos() {
         setLibsError(true);
       }
     };
-    script.onerror = () => setLibsError(true);
-    document.head.appendChild(script);
+    const onError = () => setLibsError(true);
+    script.addEventListener("load", onLoad);
+    script.addEventListener("error", onError);
+    if (esNuevo) document.head.appendChild(script);
+    return () => {
+      script.removeEventListener("load", onLoad);
+      script.removeEventListener("error", onError);
+    };
   }, []);
 
   useEffect(() => {
@@ -398,11 +467,17 @@ export default function DespachoPedidos() {
       try {
         const entregados = await cargarHistorial();
         setHistorial(entregados);
-      } catch (e) {}
+      } catch (e) {
+        // Sin este aviso, un fallo de carga se veía igual que "no hay nada"
+        // y el usuario podía duplicar registros o sacar conclusiones falsas.
+        showToast("No se pudo cargar el historial. Recarga la página.", 5000);
+      }
       try {
         const cots = await cargarCotizaciones();
         setCotizaciones(cots);
-      } catch (e) {}
+      } catch (e) {
+        showToast("No se pudieron cargar las cotizaciones. Recarga la página.", 5000);
+      }
       setLoading(false);
     })();
   }, []);
@@ -410,23 +485,42 @@ export default function DespachoPedidos() {
   // Guarda en Supabase solo el/los pedidos que cambiaron, y a la vez
   // actualiza el estado en pantalla de inmediato (para que la app se
   // sienta rápida, sin esperar la respuesta del servidor para reaccionar).
-  const persistPedidos = useCallback(async (next, pedidosQueCambiaron) => {
-    setPedidos(next);
-    try {
+  //
+  // - Los lotes de escritura se encolan uno detrás de otro (saveQueueRef):
+  //   dos reordenamientos rápidos seguidos ya no intercalan sus upserts con
+  //   red lenta (los rezagados del primero pisaban al segundo y la BD
+  //   quedaba con un orden mezclado distinto al de la pantalla).
+  // - "crear: true" usa upsert (pedido nuevo); sin él usa update, que no
+  //   resucita filas borradas/entregadas desde otro dispositivo.
+  // - Si el guardado falla, la pantalla no puede quedarse mostrando algo que
+  //   la base de datos no tiene: re-sincronizamos desde la BD —que es la
+  //   verdad tras un fallo a mitad de lote— y si ni eso se puede (sin
+  //   conexión), revertimos al estado anterior.
+  const saveQueueRef = useRef(Promise.resolve());
+  const persistPedidos = useCallback(async (next, pedidosQueCambiaron, { crear = false } = {}) => {
+    let prev;
+    setPedidos((actual) => {
+      prev = actual;
+      return next;
+    });
+    const lote = saveQueueRef.current.then(async () => {
       for (const p of pedidosQueCambiaron || next) {
-        await guardarPedido(p, "activo");
+        if (crear) await guardarPedido(p, "activo");
+        else await actualizarPedido(p);
       }
-    } catch (e) {
-      showToast("No se pudo guardar en la base de datos");
-    }
-  }, []);
-
-  const persistHistorial = useCallback(async (next, pedidoMovido) => {
-    setHistorial(next);
+    });
+    // La cola no debe quedar "rota" para el siguiente lote, falle o no este.
+    saveQueueRef.current = lote.catch(() => {});
     try {
-      if (pedidoMovido) await guardarPedido(pedidoMovido, "entregado");
+      await lote;
     } catch (e) {
-      showToast("No se pudo guardar en la base de datos");
+      try {
+        const activos = await cargarPedidosActivos();
+        setPedidos(activos);
+      } catch (e2) {
+        setPedidos(prev);
+      }
+      showToast("No se pudo guardar en la base de datos. Se restauró la lista guardada.", 5000);
     }
   }, []);
 
@@ -444,6 +538,15 @@ export default function DespachoPedidos() {
       const parsed = parseDocumento(lines);
       setPendingExtract({
         ...parsed,
+        // Si el cliente no tiene teléfono registrado (o es el placeholder
+        // "111111111") pero el asesor anotó un celular de contacto, ese
+        // celular pasa al campo real. Antes el input lo MOSTRABA como
+        // fallback pero guardaba telefono vacío: lo visible y lo guardado
+        // no coincidían.
+        telefono:
+          parsed.telefono && parsed.telefono !== "111111111"
+            ? parsed.telefono
+            : parsed.telefonoContacto || parsed.telefono || "",
         pdfDataUrl: dataUrl,
         fileName: file.name,
         vehiculo: "",
@@ -492,7 +595,7 @@ export default function DespachoPedidos() {
       timestamp: Date.now(),
       orden: maxOrden + 1,
     };
-    persistPedidos([...pedidos, nuevo], [nuevo]);
+    persistPedidos([...pedidos, nuevo], [nuevo], { crear: true });
     setPendingExtract(null);
     showToast(
       data.sinFechaDefinida
@@ -502,32 +605,82 @@ export default function DespachoPedidos() {
   }
 
   function deletePedido(id) {
+    const prev = pedidos;
     setPedidos(pedidos.filter((p) => p.id !== id));
-    eliminarPedido(id).catch(() => showToast("No se pudo eliminar de la base de datos"));
+    eliminarPedido(id).catch(() => {
+      setPedidos(prev);
+      showToast("No se pudo eliminar de la base de datos. El pedido se restauró.", 5000);
+    });
   }
 
-  function marcarEntregado(id) {
+  async function marcarEntregado(id) {
     const pedido = pedidos.find((p) => p.id === id);
     if (!pedido) return;
-    const entregado = { ...pedido, entregadoEn: new Date().toISOString(), fechaEntrega: todayStr() };
-    persistPedidos(pedidos.filter((p) => p.id !== id), []);
-    persistHistorial([entregado, ...historial], entregado);
+    const entregado = {
+      ...pedido,
+      entregaPendiente: false,
+      notaPendiente: "",
+      entregadoEn: new Date().toISOString(),
+      fechaEntrega: todayStr(),
+    };
+    // Una sola escritura (el upsert con estado "entregado" mueve el pedido de
+    // despacho a historial); si falla, revertimos las dos listas para que el
+    // pedido no desaparezca de despacho sin haber quedado entregado en la BD.
+    const prevPedidos = pedidos;
+    const prevHistorial = historial;
+    setPedidos(pedidos.filter((p) => p.id !== id));
+    setHistorial([entregado, ...historial]);
     showToast("Marcado como entregado");
+    try {
+      await guardarPedido(entregado, "entregado");
+    } catch (e) {
+      setPedidos(prevPedidos);
+      setHistorial(prevHistorial);
+      showToast("No se pudo guardar la entrega. El pedido volvió a despacho.", 5000);
+    }
   }
 
   function updatePedido(id, patch) {
-    const actualizado = { ...pedidos.find((p) => p.id === id), ...patch };
+    const anterior = pedidos.find((p) => p.id === id);
+    if (!anterior) return;
+    const actualizado = { ...anterior, ...patch };
+    // Si cambió de vehículo o de fecha, va al final de la cola de su columna
+    // destino. Conservar el orden viejo chocaba con el de otro pedido de esa
+    // columna y la posición quedaba ambigua (cambiaba entre recargas).
+    const cambioColumna =
+      actualizado.vehiculo !== anterior.vehiculo || actualizado.fechaDespacho !== anterior.fechaDespacho;
+    if (cambioColumna && actualizado.fechaDespacho !== "pendiente") {
+      const fechaDestino = actualizado.fechaDespacho || hoyIso;
+      const maxOrden = pedidos
+        .filter((p) => p.id !== id && p.vehiculo === actualizado.vehiculo && fechaDe(p) === fechaDestino)
+        .reduce((max, p) => Math.max(max, p.orden || 0), 0);
+      actualizado.orden = maxOrden + 1;
+    }
     persistPedidos(pedidos.map((p) => (p.id === id ? actualizado : p)), [actualizado]);
+  }
+
+  // Pone al día un pedido atrasado: fecha de despacho = hoy. updatePedido se
+  // encarga de recalcular "orden" al final de la cola de su vehículo.
+  function moverAHoy(id) {
+    if (!pedidos.some((p) => p.id === id)) return;
+    updatePedido(id, { fechaDespacho: hoyIso });
+    showToast("Pedido movido a hoy");
   }
 
   // --- Funciones del módulo de Cotizaciones (independiente de despacho) ---
 
   const persistCotizaciones = useCallback(async (next, cambiada) => {
-    setCotizaciones(next);
+    let prev;
+    setCotizaciones((actual) => {
+      prev = actual;
+      return next;
+    });
     try {
       if (cambiada) await guardarCotizacion(cambiada);
     } catch (e) {
-      showToast("No se pudo guardar la cotización en la base de datos");
+      // Una sola escritura: con revertir al estado anterior basta.
+      setCotizaciones(prev);
+      showToast("No se pudo guardar la cotización. El cambio se revirtió.", 5000);
     }
   }, []);
 
@@ -545,6 +698,12 @@ export default function DespachoPedidos() {
       const parsed = parseDocumento(lines);
       setPendingExtractCotizacion({
         ...parsed,
+        // Mismo criterio que en facturas: el celular de contacto anotado
+        // pasa al campo real de teléfono si no hay uno registrado.
+        telefono:
+          parsed.telefono && parsed.telefono !== "111111111"
+            ? parsed.telefono
+            : parsed.telefonoContacto || parsed.telefono || "",
         pdfDataUrl: dataUrl,
         fileName: file.name,
         estado: "pendiente",
@@ -586,8 +745,12 @@ export default function DespachoPedidos() {
   }
 
   function deleteCotizacion(id) {
+    const prev = cotizaciones;
     setCotizaciones(cotizaciones.filter((c) => c.id !== id));
-    eliminarCotizacion(id).catch(() => showToast("No se pudo eliminar de la base de datos"));
+    eliminarCotizacion(id).catch(() => {
+      setCotizaciones(prev);
+      showToast("No se pudo eliminar de la base de datos. La cotización se restauró.", 5000);
+    });
   }
 
   function updateCotizacion(id, patch) {
@@ -628,8 +791,22 @@ export default function DespachoPedidos() {
       (c.fechaSeguimiento === hoyIso || c.fechaSeguimiento === mananaIso)
   );
 
+  // Cotizaciones pendientes cuya fecha de seguimiento ya pasó sin que nadie
+  // las atendiera: merecen una alerta más urgente que las de "próximo".
+  const cotizacionesConSeguimientoVencido = cotizaciones.filter(
+    (c) => (c.estado || "pendiente") === "pendiente" && c.fechaSeguimiento && c.fechaSeguimiento < hoyIso
+  );
+
   function handleDragStart(id) {
     setDragId(id);
+  }
+  // Se dispara al TERMINAR cualquier arrastre, caiga donde caiga. Sin esto,
+  // soltar la tarjeta fuera del tablero (o cancelar con Esc) dejaba dragId
+  // "pegado", y el siguiente drop sobre una columna —incluso arrastrando
+  // texto o un archivo externo— movía ese pedido viejo de vehículo.
+  function handleDragEnd() {
+    setDragId(null);
+    setDragOverCol(null);
   }
   function handleDropOnColumn(vehiculoId, overId) {
     if (!dragId) return;
@@ -647,39 +824,100 @@ export default function DespachoPedidos() {
       .filter((p) => p.id !== dragId && fechaDe(p) === dragFecha && p.vehiculo === vehiculoId)
       .sort((a, b) => a.orden - b.orden);
 
+    // Si lo arrastran a la columna que ya era su vehículo secundario, el
+    // secundario deja de tener sentido (sería el mismo que el principal).
     const moved = { ...dragged, vehiculo: vehiculoId };
+    if (moved.vehiculoSecundario === vehiculoId) moved.vehiculoSecundario = null;
     let insertAt = colItems.length;
     if (overId) {
       const idx = colItems.findIndex((p) => p.id === overId);
       if (idx !== -1) insertAt = idx;
     }
     colItems.splice(insertAt, 0, moved);
-    colItems.forEach((p, i) => (p.orden = i + 1));
 
-    persistPedidos([...others, ...colItems], colItems);
+    // Copias con el orden nuevo (mutar los objetos del estado anterior en
+    // sitio corrompía el snapshot previo de React), y a la base de datos
+    // solo van las filas que de verdad cambiaron, no toda la columna.
+    const reordenados = colItems.map((p, i) => ({ ...p, orden: i + 1 }));
+    const cambiados = reordenados.filter((p) => {
+      const antes = pedidos.find((x) => x.id === p.id);
+      return (
+        !antes ||
+        antes.orden !== p.orden ||
+        antes.vehiculo !== p.vehiculo ||
+        antes.vehiculoSecundario !== p.vehiculoSecundario
+      );
+    });
+
+    persistPedidos([...others, ...reordenados], cambiados);
     setDragId(null);
     setDragOverCol(null);
   }
 
-  const pedidosPendientes = pedidos.filter((p) => fechaDe(p) === "pendiente");
-  const pedidosDelDia = pedidos.filter((p) => fechaDe(p) === selectedDate);
+  // Pedidos que quedaron debiendo material, sin importar de qué día sean.
+  // Es lo primero que la persona del mostrador necesita ver al abrir la app.
+  const pedidosConEntregaPendiente = pedidos.filter((p) => p.entregaPendiente);
 
+  const pedidosPendientes = pedidos.filter((p) => fechaDe(p) === "pendiente");
+
+  // Un pedido cuya fecha de despacho ya pasó y sigue activo está ATRASADO:
+  // se muestra automáticamente en la pestaña "Hoy" (con etiqueta roja), en
+  // vez de quedar escondido en una pestaña de fecha vieja. No le reescribimos
+  // la fecha en la base de datos: así no se pierde el rastro de cuándo debió
+  // salir. El botón "Mover a hoy" de la tarjeta sí lo pone al día formalmente.
+  const esAtrasado = (p) => {
+    const f = fechaDe(p);
+    return f !== "pendiente" && f < hoyIso;
+  };
+  const pedidosDelDia =
+    selectedDate === hoyIso
+      ? pedidos.filter((p) => fechaDe(p) === hoyIso || esAtrasado(p))
+      : pedidos.filter((p) => fechaDe(p) === selectedDate);
+
+  // Un pedido aparece en la columna de su vehículo principal y, si tiene un
+  // vehículo secundario asignado, también en la columna de ese segundo
+  // vehículo. No se duplica el registro: es la misma tarjeta mostrada dos
+  // veces. En la columna secundaria se muestra en modo "solo lectura".
   const grouped = VEHICULOS.map((v) => ({
     ...v,
-    items: pedidosDelDia.filter((p) => p.vehiculo === v.id).sort((a, b) => a.orden - b.orden),
+    items: pedidosDelDia
+      .filter((p) => p.vehiculo === v.id || p.vehiculoSecundario === v.id)
+      .sort((a, b) => {
+        // Los atrasados van primero (los más viejos arriba); dentro de la
+        // misma fecha se respeta el orden que armó el despachador.
+        const fa = fechaDe(a);
+        const fb = fechaDe(b);
+        if (fa !== fb) return fa < fb ? -1 : 1;
+        return a.orden - b.orden;
+      }),
   }));
 
   // Pestañas de fecha: siempre Hoy y Mañana, más cualquier fecha futura que
-  // ya tenga pedidos programados (para no perder de vista lo agendado).
+  // ya tenga pedidos programados. Las fechas pasadas no generan pestaña:
+  // sus pedidos (atrasados) se muestran dentro de "Hoy" con etiqueta roja.
   // "pendiente" se excluye de este cálculo: tiene su propia pestaña fija aparte.
   const fechasConPedidos = Array.from(new Set(pedidos.map(fechaDe))).filter(
     (f) => f !== "pendiente" && f >= hoyIso
   );
   const fechasTabs = Array.from(new Set([hoyIso, addDaysISO(hoyIso, 1), ...fechasConPedidos])).sort();
   const conteoPorFecha = fechasTabs.reduce((acc, f) => {
-    acc[f] = pedidos.filter((p) => fechaDe(p) === f).length;
+    // "Hoy" cuenta también los atrasados, porque se muestran ahí.
+    acc[f] =
+      f === hoyIso
+        ? pedidos.filter((p) => fechaDe(p) === hoyIso || esAtrasado(p)).length
+        : pedidos.filter((p) => fechaDe(p) === f).length;
     return acc;
   }, {});
+
+  // Si la pestaña seleccionada deja de existir (se entregó el último pedido
+  // de una fecha atrasada, o la app quedó abierta de un día para otro y
+  // "hoy" ya es otra fecha), volvemos a la pestaña de hoy en vez de dejar
+  // el tablero apuntando a una fecha sin pestaña.
+  useEffect(() => {
+    if (selectedDate !== "pendiente" && !fechasTabs.includes(selectedDate)) {
+      setSelectedDate(hoyIso);
+    }
+  }, [selectedDate, fechasTabs.join(","), hoyIso]);
 
   const filteredHistorial = historial.filter((h) => {
     if (!historyFilter.trim()) return true;
@@ -876,6 +1114,30 @@ export default function DespachoPedidos() {
 
       {view === "despacho" ? (
         <>
+          {pedidosConEntregaPendiente.length > 0 && (
+            <div
+              style={{
+                background: "var(--color-background-danger)",
+                border: "0.5px solid var(--color-border-danger)",
+                borderRadius: "var(--border-radius-md)",
+                padding: "10px 14px",
+                marginBottom: 14,
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6, color: "var(--color-text-danger)" }}>
+                <i className="ti ti-alert-triangle" style={{ fontSize: 16 }} aria-hidden="true"></i>
+                <span style={{ fontWeight: 500, fontSize: 13 }}>
+                  Quedó material por entregar ({pedidosConEntregaPendiente.length})
+                </span>
+              </div>
+              {pedidosConEntregaPendiente.map((p) => (
+                <div key={p.id} style={{ fontSize: 12, color: "var(--color-text-danger)", padding: "2px 0" }}>
+                  {p.cliente}
+                  {p.notaPendiente && p.notaPendiente.trim() ? ` — ${p.notaPendiente}` : ""}
+                </div>
+              ))}
+            </div>
+          )}
           <div
             style={{
               display: "flex",
@@ -978,7 +1240,6 @@ export default function DespachoPedidos() {
                   onEntregado={() => marcarEntregado(p.id)}
                   onEdit={() => setEditing(p)}
                   onVerPdf={() => setViewingPdf(p)}
-                  onGuiaCarga={() => setGuiaPedido(p)}
                 />
               ))}
             </div>
@@ -1030,8 +1291,10 @@ export default function DespachoPedidos() {
                   key={p.id}
                   pedido={p}
                   posicion={idx + 1}
+                  esSecundario={p.vehiculo !== col.id}
                   isDragging={dragId === p.id}
                   onDragStart={() => handleDragStart(p.id)}
+                  onDragEnd={handleDragEnd}
                   onDragOverItem={(e) => {
                     e.preventDefault();
                     e.stopPropagation();
@@ -1046,7 +1309,9 @@ export default function DespachoPedidos() {
                   onEntregado={() => marcarEntregado(p.id)}
                   onEdit={() => setEditing(p)}
                   onVerPdf={() => setViewingPdf(p)}
-                  onGuiaCarga={() => setGuiaPedido(p)}
+                  onNotaPendiente={() => setNotaPendienteDe(p)}
+                  atrasadoDesde={esAtrasado(p) ? fechaDe(p) : null}
+                  onMoverAHoy={() => moverAHoy(p.id)}
                 />
               ))}
             </div>
@@ -1077,6 +1342,30 @@ export default function DespachoPedidos() {
         </div>
       ) : (
         <div>
+          {cotizacionesConSeguimientoVencido.length > 0 && (
+            <div
+              style={{
+                background: "var(--color-background-danger)",
+                border: "0.5px solid var(--color-border-danger)",
+                borderRadius: "var(--border-radius-md)",
+                padding: "10px 14px",
+                marginBottom: 12,
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6, color: "var(--color-text-danger)" }}>
+                <i className="ti ti-alert-triangle" style={{ fontSize: 16 }} aria-hidden="true"></i>
+                <span style={{ fontWeight: 500, fontSize: 13 }}>
+                  Seguimiento vencido sin atender ({cotizacionesConSeguimientoVencido.length})
+                </span>
+              </div>
+              {cotizacionesConSeguimientoVencido.map((c) => (
+                <div key={c.id} style={{ fontSize: 12, color: "var(--color-text-danger)", padding: "2px 0" }}>
+                  Era para {c.fechaSeguimiento} — llamar a {c.cliente}
+                  {c.numeroFactura ? ` (Cotización ${c.numeroFactura})` : ""}
+                </div>
+              ))}
+            </div>
+          )}
           {cotizacionesConSeguimientoProximo.length > 0 && (
             <div
               style={{
@@ -1145,6 +1434,7 @@ export default function DespachoPedidos() {
                   <CotizacionCard
                     key={c.id}
                     cotizacion={c}
+                    hoyIso={hoyIso}
                     onDelete={() => deleteCotizacion(c.id)}
                     onEdit={() => setEditingCotizacion(c)}
                     onVerPdf={() => setViewingPdfCotizacion(c)}
@@ -1171,7 +1461,11 @@ export default function DespachoPedidos() {
             updatePedido(editing.id, patch);
             setEditing(null);
             const fechaAnterior = fechaDe(editing);
-            if (patch.fechaDespacho && patch.fechaDespacho !== fechaAnterior) {
+            if (patch.fechaDespacho === "pendiente" && fechaAnterior !== "pendiente") {
+              // "pendiente" no es una fecha ISO: etiquetaFecha la partía con
+              // split("-") y el toast decía "movido a undefined undefined".
+              showToast("Pedido movido a Pendientes");
+            } else if (patch.fechaDespacho && patch.fechaDespacho !== fechaAnterior) {
               showToast(`Pedido movido a ${etiquetaFecha(patch.fechaDespacho, hoyIso)}`);
             } else {
               showToast("Pedido actualizado");
@@ -1181,7 +1475,23 @@ export default function DespachoPedidos() {
       )}
 
       {viewingPdf && <PdfModal pedido={viewingPdf} onClose={() => setViewingPdf(null)} />}
-      {guiaPedido && <GuiaCargaModal pedido={guiaPedido} onClose={() => setGuiaPedido(null)} />}
+
+      {notaPendienteDe && (
+        <NotaPendienteModal
+          pedido={notaPendienteDe}
+          onClose={() => setNotaPendienteDe(null)}
+          onGuardar={(nota) => {
+            updatePedido(notaPendienteDe.id, { entregaPendiente: true, notaPendiente: nota });
+            setNotaPendienteDe(null);
+            showToast("Pedido marcado como pendiente");
+          }}
+          onQuitar={() => {
+            updatePedido(notaPendienteDe.id, { entregaPendiente: false, notaPendiente: "" });
+            setNotaPendienteDe(null);
+            showToast("Pendiente resuelto");
+          }}
+        />
+      )}
 
       {editingCotizacion && (
         <EditCotizacionModal
@@ -1260,7 +1570,7 @@ function ExtractReviewCard({ data, onChange, onConfirm, onCancel }) {
         <Field label="Cliente" value={data.cliente || ""} onChange={(v) => onChange({ ...data, cliente: v })} />
         <Field
           label="Teléfono"
-          value={data.telefono || data.telefonoContacto || ""}
+          value={data.telefono || ""}
           onChange={(v) => onChange({ ...data, telefono: v })}
         />
         <Field label="Vendedor" value={data.vendedor || ""} onChange={(v) => onChange({ ...data, vendedor: v })} />
@@ -1441,23 +1751,29 @@ function Field({ label, value, onChange }) {
   );
 }
 
-function PedidoCard({ pedido, posicion, isDragging, onDragStart, onDragOverItem, onDropItem, onDelete, onEntregado, onEdit, onVerPdf, onGuiaCarga }) {
+function PedidoCard({ pedido, posicion, esSecundario, isDragging, onDragStart, onDragEnd, onDragOverItem, onDropItem, onDelete, onEntregado, onEdit, onVerPdf, onNotaPendiente, atrasadoDesde, onMoverAHoy }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [verProductos, setVerProductos] = useState(false);
+  const productos = pedido.productos || [];
   const pagado = pedido.estadoPago === "pagado";
+  const pendiente = !!pedido.entregaPendiente;
+  const vehiculoPrincipal = VEHICULOS.find((v) => v.id === pedido.vehiculo);
 
   return (
     <div
-      draggable
-      onDragStart={onDragStart}
-      onDragOver={onDragOverItem}
-      onDrop={onDropItem}
+      draggable={!esSecundario}
+      onDragStart={esSecundario ? undefined : onDragStart}
+      onDragEnd={esSecundario ? undefined : onDragEnd}
+      onDragOver={esSecundario ? undefined : onDragOverItem}
+      onDrop={esSecundario ? undefined : onDropItem}
       style={{
         background: "var(--color-background-primary)",
-        border: "0.5px solid var(--color-border-tertiary)",
+        border: pendiente ? "0.5px solid var(--color-border-danger)" : "0.5px solid var(--color-border-tertiary)",
+        borderLeft: pendiente ? "3px solid var(--color-border-danger)" : undefined,
         borderRadius: "var(--border-radius-md)",
         padding: "10px 12px",
         marginBottom: 8,
-        cursor: "grab",
+        cursor: esSecundario ? "default" : "grab",
         opacity: isDragging ? 0.4 : 1,
       }}
     >
@@ -1485,10 +1801,44 @@ function PedidoCard({ pedido, posicion, isDragging, onDragStart, onDragOverItem,
         {pedido.total ? (
           <span style={{ fontSize: 14, fontWeight: 500, color: MARCA.azulOscuro, flexShrink: 0 }}>${formatCOP(pedido.total)}</span>
         ) : null}
-        <i className="ti ti-grip-vertical" style={{ fontSize: 14, color: "var(--color-text-tertiary)", flexShrink: 0 }} aria-hidden="true"></i>
+        {!esSecundario && (
+          <i className="ti ti-grip-vertical" style={{ fontSize: 14, color: "var(--color-text-tertiary)", flexShrink: 0 }} aria-hidden="true"></i>
+        )}
       </div>
 
+      {esSecundario && (
+        <div style={{ marginBottom: 7, paddingLeft: 36 }}>
+          <span
+            style={{
+              fontSize: 10.5,
+              background: "var(--color-background-secondary)",
+              color: "var(--color-text-secondary)",
+              borderRadius: "var(--border-radius-sm)",
+              padding: "2px 7px",
+            }}
+          >
+            <i className="ti ti-arrows-split" style={{ fontSize: 11, verticalAlign: "-1px", marginRight: 3 }} aria-hidden="true"></i>
+            Parte de este pedido va aquí — el principal está en {vehiculoPrincipal ? vehiculoPrincipal.label : "otro vehículo"}
+          </span>
+        </div>
+      )}
+
       <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 7, paddingLeft: 36, flexWrap: "wrap" }}>
+        {atrasadoDesde && (
+          <span
+            style={{
+              fontSize: 10.5,
+              fontWeight: 500,
+              background: "var(--color-background-danger)",
+              color: "var(--color-text-danger)",
+              borderRadius: "var(--border-radius-sm)",
+              padding: "2px 7px",
+            }}
+          >
+            <i className="ti ti-alert-triangle" style={{ fontSize: 11, verticalAlign: "-1px", marginRight: 3 }} aria-hidden="true"></i>
+            Atrasado — era para {formatFechaCorta(atrasadoDesde)}
+          </span>
+        )}
         {pedido.numeroFactura && (
           <span style={{ fontSize: 10.5, background: "var(--color-background-secondary)", color: "var(--color-text-secondary)", borderRadius: "var(--border-radius-sm)", padding: "2px 7px" }}>
             {pedido.tipoDocumento === "cotizacion" ? "Cotización" : "Factura"} {pedido.numeroFactura}
@@ -1509,25 +1859,100 @@ function PedidoCard({ pedido, posicion, isDragging, onDragStart, onDragOverItem,
         </span>
       </div>
 
-      {pedido.productos && pedido.productos.length > 0 && (
-        <div style={{ fontSize: 12.5, color: "var(--color-text-secondary)", marginBottom: 9, paddingLeft: 36 }}>
-          {pedido.productos.length === 1
-            ? pedido.productos[0].descripcion
-            : `${pedido.productos[0].descripcion} +${pedido.productos.length - 1} más`}
+      {productos.length > 0 && (
+        <div style={{ marginBottom: 9, paddingLeft: 36 }}>
+          {productos.length === 1 ? (
+            <div style={{ fontSize: 12.5, color: "var(--color-text-secondary)" }}>
+              <b style={{ color: "var(--color-text-primary)", fontWeight: 500 }}>
+                {productos[0].cantidad} {productos[0].unidad}
+              </b>{" "}
+              — {productos[0].descripcion}
+            </div>
+          ) : (
+            <>
+              <button
+                onClick={() => setVerProductos(!verProductos)}
+                style={{
+                  fontSize: 12.5,
+                  padding: 0,
+                  border: "none",
+                  background: "transparent",
+                  color: "var(--color-text-secondary)",
+                  textAlign: "left",
+                  cursor: "pointer",
+                }}
+              >
+                {verProductos ? "Ocultar productos" : `${productos[0].descripcion} +${productos.length - 1} más`}
+                <i
+                  className={verProductos ? "ti ti-chevron-up" : "ti ti-chevron-down"}
+                  style={{ fontSize: 13, verticalAlign: "-2px", marginLeft: 4, color: MARCA.azulMedio }}
+                  aria-hidden="true"
+                ></i>
+              </button>
+
+              {verProductos && (
+                <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 7 }}>
+                  {productos.map((p, i) => (
+                    <div key={i} style={{ display: "flex", gap: 8, fontSize: 12.5 }}>
+                      <span
+                        style={{
+                          fontWeight: 500,
+                          color: "var(--color-text-primary)",
+                          flexShrink: 0,
+                          minWidth: 58,
+                        }}
+                      >
+                        {p.cantidad} {p.unidad}
+                      </span>
+                      <span style={{ color: "var(--color-text-secondary)" }}>{p.descripcion}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
+
+      {pendiente && (
+        <div
+          style={{
+            fontSize: 11.5,
+            color: "var(--color-text-danger)",
+            background: "var(--color-background-danger)",
+            borderRadius: "var(--border-radius-sm)",
+            padding: "6px 8px",
+            marginBottom: 9,
+            marginLeft: 36,
+            fontWeight: 500,
+          }}
+        >
+          <i className="ti ti-alert-triangle" style={{ fontSize: 12, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
+          Quedó pendiente{pedido.notaPendiente && pedido.notaPendiente.trim() ? `: ${pedido.notaPendiente}` : ""}
         </div>
       )}
 
       <div style={{ display: "flex", alignItems: "center", gap: 6, paddingLeft: 36, flexWrap: "wrap" }}>
+        {atrasadoDesde && !esSecundario && onMoverAHoy && (
+          <button
+            onClick={onMoverAHoy}
+            style={{
+              fontSize: 11,
+              padding: "5px 9px",
+              fontWeight: 500,
+              background: "var(--color-background-warning)",
+              color: "var(--color-text-warning)",
+              border: "0.5px solid var(--color-border-warning)",
+            }}
+          >
+            <i className="ti ti-calendar-up" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
+            Mover a hoy
+          </button>
+        )}
         {pedido.pdfDataUrl && (
           <button onClick={onVerPdf} style={{ fontSize: 11, padding: "5px 9px" }}>
             <i className="ti ti-file-text" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
             Ver documento
-          </button>
-        )}
-        {pedido.productos && pedido.productos.length > 0 && (
-          <button onClick={onGuiaCarga} style={{ fontSize: 11, padding: "5px 9px" }}>
-            <i className="ti ti-clipboard-list" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
-            Guía de carga
           </button>
         )}
         <button
@@ -1543,36 +1968,53 @@ function PedidoCard({ pedido, posicion, isDragging, onDragStart, onDragOverItem,
           <i className="ti ti-edit" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
           Editar
         </button>
-        {confirmDelete ? (
+        {!esSecundario && onNotaPendiente && (
           <button
-            onClick={onDelete}
+            onClick={onNotaPendiente}
             style={{
               fontSize: 11,
               padding: "5px 9px",
-              background: "var(--color-background-danger)",
-              color: "var(--color-text-danger)",
-              border: "0.5px solid var(--color-border-danger)",
-              fontWeight: 500,
+              background: pendiente ? "var(--color-background-danger)" : "transparent",
+              color: pendiente ? "var(--color-text-danger)" : "var(--color-text-primary)",
+              border: pendiente ? "0.5px solid var(--color-border-danger)" : "0.5px solid var(--color-border-tertiary)",
             }}
           >
             <i className="ti ti-alert-triangle" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
-            Confirmar eliminación
-          </button>
-        ) : (
-          <button
-            onClick={() => setConfirmDelete(true)}
-            style={{
-              fontSize: 11,
-              padding: "5px 9px",
-              background: "var(--color-background-danger)",
-              color: "var(--color-text-danger)",
-              border: "0.5px solid var(--color-border-danger)",
-            }}
-          >
-            <i className="ti ti-trash" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
-            Eliminar
+            {pendiente ? "Editar pendiente" : "Quedó pendiente"}
           </button>
         )}
+        {!esSecundario &&
+          (confirmDelete ? (
+            <button
+              onClick={onDelete}
+              style={{
+                fontSize: 11,
+                padding: "5px 9px",
+                background: "var(--color-background-danger)",
+                color: "var(--color-text-danger)",
+                border: "0.5px solid var(--color-border-danger)",
+                fontWeight: 500,
+              }}
+            >
+              <i className="ti ti-alert-triangle" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
+              Confirmar eliminación
+            </button>
+          ) : (
+            <button
+              onClick={() => setConfirmDelete(true)}
+              style={{
+                fontSize: 11,
+                padding: "5px 9px",
+                background: "var(--color-background-danger)",
+                color: "var(--color-text-danger)",
+                border: "0.5px solid var(--color-border-danger)",
+              }}
+            >
+              <i className="ti ti-trash" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
+              Eliminar
+            </button>
+          ))}
+        {!esSecundario && (
         <button
           onClick={onEntregado}
           style={{
@@ -1589,6 +2031,7 @@ function PedidoCard({ pedido, posicion, isDragging, onDragStart, onDragOverItem,
           <i className="ti ti-check" style={{ fontSize: 14, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
           Entregado
         </button>
+        )}
       </div>
     </div>
   );
@@ -1603,6 +2046,7 @@ function PdfCanvasViewer({ dataUrl }) {
 
   useEffect(() => {
     let cancelled = false;
+    let loadingTask = null;
     async function render() {
       if (!window.pdfjsLib) {
         setStatus("error");
@@ -1614,7 +2058,8 @@ function PdfCanvasViewer({ dataUrl }) {
         const bytes = new Uint8Array(binary.length);
         for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
 
-        const pdf = await window.pdfjsLib.getDocument({ data: bytes }).promise;
+        loadingTask = window.pdfjsLib.getDocument({ data: bytes });
+        const pdf = await loadingTask.promise;
         const page = await pdf.getPage(1);
         const viewport = page.getViewport({ scale: 1.4 });
 
@@ -1633,6 +2078,10 @@ function PdfCanvasViewer({ dataUrl }) {
     render();
     return () => {
       cancelled = true;
+      // Libera el documento y su memoria en el worker de pdf.js. Sin esto,
+      // cada apertura del modal dejaba un documento vivo y la pestaña
+      // acumulaba memoria durante toda la jornada.
+      if (loadingTask) loadingTask.destroy().catch(() => {});
     };
   }, [dataUrl]);
 
@@ -1766,86 +2215,64 @@ function HistorialRow({ pedido, onVerPdf }) {
 // resolución DIAN), solo ayuda al despachador a saber qué subir al vehículo.
 // Solo para ver en pantalla — no se imprime desde aquí (el sandbox del
 // artifact no permite window.print() de forma confiable).
-function GuiaCargaModal({ pedido, onClose }) {
-  const vehiculoLabel = (VEHICULOS.find((v) => v.id === pedido.vehiculo) || {}).label || "Sin asignar";
+// Modal mínimo para marcar que un pedido quedó debiendo material.
+// No pide cantidades ni productos: una frase escrita a mano basta.
+function NotaPendienteModal({ pedido, onClose, onGuardar, onQuitar }) {
+  const [nota, setNota] = useState(pedido.notaPendiente || "");
+  const yaEstabaPendiente = !!pedido.entregaPendiente;
 
   return (
-    <>
-      <style>{`
-        @media print {
-          body * { visibility: hidden; }
-          #guia-carga-imprimible, #guia-carga-imprimible * { visibility: visible; }
-          #guia-carga-imprimible {
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            padding: 24px;
-          }
-          .guia-carga-no-imprimir { display: none !important; }
-        }
-      `}</style>
-      <ModalOverlay onClose={onClose} maxWidth={420}>
-        <div className="guia-carga-no-imprimir" style={{ display: "flex", justifyContent: "space-between", marginBottom: 12 }}>
-          <span style={{ fontWeight: 500, fontSize: 15 }}>Guía de carga</span>
-          <button onClick={onClose} aria-label="Cerrar" style={{ padding: "2px 8px" }}>
-            <i className="ti ti-x" style={{ fontSize: 14 }} aria-hidden="true"></i>
+    <ModalOverlay onClose={onClose} maxWidth={420}>
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+        <span style={{ fontWeight: 500, fontSize: 15 }}>¿Qué quedó pendiente?</span>
+        <button onClick={onClose} aria-label="Cerrar" style={{ padding: "2px 8px" }}>
+          <i className="ti ti-x" style={{ fontSize: 14 }} aria-hidden="true"></i>
+        </button>
+      </div>
+      <div style={{ fontSize: 11.5, color: "var(--color-text-tertiary)", marginBottom: 12 }}>
+        {pedido.cliente}
+        {pedido.numeroFactura ? ` — ${pedido.tipoDocumento === "cotizacion" ? "Cotización" : "Factura"} ${pedido.numeroFactura}` : ""}
+      </div>
+
+      <textarea
+        value={nota}
+        onChange={(e) => setNota(e.target.value)}
+        placeholder="Ej: faltó la arena y 2 tejas"
+        autoFocus
+        style={{ width: "100%", minHeight: 70, fontSize: 13, marginBottom: 6 }}
+      />
+      <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", marginBottom: 14 }}>
+        Escríbelo como lo dirías de viva voz. El pedido se queda en su columna marcado en rojo hasta que se complete.
+      </div>
+
+      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", flexWrap: "wrap" }}>
+        {yaEstabaPendiente && (
+          <button onClick={onQuitar} style={{ fontSize: 13, marginRight: "auto" }}>
+            <i className="ti ti-check" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
+            Ya se completó
           </button>
-        </div>
-
-        <div id="guia-carga-imprimible">
-          <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", marginBottom: 14 }}>
-            Documento interno de bodega — no es factura ni tiene validez tributaria.
-          </div>
-
-          <div style={{ fontSize: 13, marginBottom: 4 }}><b>Cliente:</b> {pedido.cliente}</div>
-          {pedido.direccion && <div style={{ fontSize: 13, marginBottom: 4 }}><b>Dirección:</b> {pedido.direccion}</div>}
-          {pedido.numeroFactura && (
-            <div style={{ fontSize: 13, marginBottom: 4 }}>
-              <b>{pedido.tipoDocumento === "cotizacion" ? "Cotización" : "Factura"}:</b> {pedido.numeroFactura}
-            </div>
-          )}
-          <div style={{ fontSize: 13, marginBottom: 12 }}><b>Vehículo:</b> {vehiculoLabel}</div>
-
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
-            <thead>
-              <tr>
-                <th style={{ textAlign: "left", borderBottom: "1px solid var(--color-border-tertiary)", padding: "4px", fontSize: 11, textTransform: "uppercase", color: "var(--color-text-secondary)" }}>Código</th>
-                <th style={{ textAlign: "left", borderBottom: "1px solid var(--color-border-tertiary)", padding: "4px", fontSize: 11, textTransform: "uppercase", color: "var(--color-text-secondary)" }}>Producto</th>
-                <th style={{ textAlign: "right", borderBottom: "1px solid var(--color-border-tertiary)", padding: "4px", fontSize: 11, textTransform: "uppercase", color: "var(--color-text-secondary)" }}>Cant.</th>
-                <th style={{ textAlign: "left", borderBottom: "1px solid var(--color-border-tertiary)", padding: "4px", fontSize: 11, textTransform: "uppercase", color: "var(--color-text-secondary)" }}>Unidad</th>
-              </tr>
-            </thead>
-            <tbody>
-              {(pedido.productos || []).map((p, i) => (
-                <tr key={i}>
-                  <td style={{ borderBottom: "1px solid var(--color-border-tertiary)", padding: "4px" }}>{p.codigo}</td>
-                  <td style={{ borderBottom: "1px solid var(--color-border-tertiary)", padding: "4px" }}>{p.descripcion}</td>
-                  <td style={{ borderBottom: "1px solid var(--color-border-tertiary)", padding: "4px", textAlign: "right" }}>{p.cantidad}</td>
-                  <td style={{ borderBottom: "1px solid var(--color-border-tertiary)", padding: "4px" }}>{p.unidad}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-
-        <div className="guia-carga-no-imprimir" style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 14 }}>
-          <button onClick={onClose} style={{ fontSize: 13 }}>Cerrar</button>
-          <button
-            onClick={() => window.print()}
-            style={{ fontSize: 13, fontWeight: 500, background: "var(--color-background-info)", color: "var(--color-text-info)", border: "0.5px solid var(--color-border-info)" }}
-          >
-            <i className="ti ti-printer" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
-            Imprimir
-          </button>
-        </div>
-      </ModalOverlay>
-    </>
+        )}
+        <button onClick={onClose} style={{ fontSize: 13 }}>Cancelar</button>
+        <button
+          onClick={() => onGuardar(nota.trim())}
+          style={{
+            fontSize: 13,
+            fontWeight: 500,
+            background: "var(--color-background-danger)",
+            color: "var(--color-text-danger)",
+            border: "0.5px solid var(--color-border-danger)",
+          }}
+        >
+          Marcar pendiente
+        </button>
+      </div>
+    </ModalOverlay>
   );
 }
 
 function EditModal({ pedido, onClose, onSave }) {
   const [form, setForm] = useState({ ...pedido, estadoPago: pedido.estadoPago || "pendiente" });
+  const [aviso, setAviso] = useState("");
   const sinFecha = form.fechaDespacho === "pendiente";
 
   return (
@@ -1869,6 +2296,7 @@ function EditModal({ pedido, onClose, onSave }) {
                 ...form,
                 fechaDespacho: e.target.checked ? "pendiente" : todayISO(),
                 vehiculo: e.target.checked ? null : form.vehiculo,
+                vehiculoSecundario: e.target.checked ? null : form.vehiculoSecundario,
               })
             }
           />
@@ -1883,6 +2311,7 @@ function EditModal({ pedido, onClose, onSave }) {
             <input
               type="date"
               value={form.fechaDespacho || todayISO()}
+              min={todayISO()}
               onChange={(e) => setForm({ ...form, fechaDespacho: e.target.value })}
               style={{ width: "100%" }}
             />
@@ -1933,7 +2362,14 @@ function EditModal({ pedido, onClose, onSave }) {
               {VEHICULOS.map((v) => (
                 <button
                   key={v.id}
-                  onClick={() => setForm({ ...form, vehiculo: v.id })}
+                  onClick={() => {
+                    setAviso("");
+                    setForm({
+                      ...form,
+                      vehiculo: v.id,
+                      vehiculoSecundario: form.vehiculoSecundario === v.id ? null : form.vehiculoSecundario,
+                    });
+                  }}
                   style={{
                     flex: 1,
                     fontSize: 12,
@@ -1948,12 +2384,54 @@ function EditModal({ pedido, onClose, onSave }) {
             </div>
           </div>
         )}
+
+        {!sinFecha && form.vehiculo && (
+          <div>
+            <span style={{ fontSize: 12, color: "var(--color-text-secondary)", display: "block", marginBottom: 4 }}>
+              ¿Parte del pedido va en otro vehículo? <span style={{ color: "var(--color-text-tertiary)" }}>(opcional)</span>
+            </span>
+            <div style={{ display: "flex", gap: 6 }}>
+              {VEHICULOS.filter((v) => v.id !== form.vehiculo).map((v) => {
+                const activo = form.vehiculoSecundario === v.id;
+                return (
+                  <button
+                    key={v.id}
+                    onClick={() => setForm({ ...form, vehiculoSecundario: activo ? null : v.id })}
+                    style={{
+                      flex: 1,
+                      fontSize: 12,
+                      padding: "6px 0",
+                      border: activo ? `2px solid ${v.border}` : "0.5px solid var(--color-border-tertiary)",
+                      background: activo ? v.bg : "transparent",
+                      color: activo ? v.text : "var(--color-text-primary)",
+                      fontWeight: activo ? 500 : 400,
+                    }}
+                  >
+                    {activo ? "✓ " : ""}
+                    {v.label}
+                  </button>
+                );
+              })}
+            </div>
+            <span style={{ fontSize: 11, color: "var(--color-text-tertiary)", display: "block", marginTop: 4 }}>
+              El pedido aparecerá también en esa columna. Toca de nuevo para quitarlo.
+            </span>
+          </div>
+        )}
       </div>
+      {aviso && (
+        <div style={{ fontSize: 12, color: "var(--color-text-danger)", marginBottom: 8, textAlign: "right" }}>
+          <i className="ti ti-alert-triangle" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
+          {aviso}
+        </div>
+      )}
       <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
         <button onClick={onClose} style={{ fontSize: 13 }}>Cancelar</button>
         <button
           onClick={() => {
+            // Antes este caso retornaba sin decir nada y el botón parecía roto.
             if (!sinFecha && !form.vehiculo) {
+              setAviso("Selecciona un vehículo antes de guardar");
               return;
             }
             onSave(form);
@@ -1979,7 +2457,7 @@ const ESTADOS_COTIZACION_BADGE = {
 
 const ESTADOS_COTIZACION_BADGE_KEYS = ["pendiente", "aceptada", "rechazada"];
 
-function CotizacionCard({ cotizacion, onDelete, onEdit, onVerPdf, onCambiarEstado }) {
+function CotizacionCard({ cotizacion, hoyIso, onDelete, onEdit, onVerPdf, onCambiarEstado }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const badge = ESTADOS_COTIZACION_BADGE[cotizacion.estado || "pendiente"];
   const iniciales = (cotizacion.cliente || "?")
@@ -2055,12 +2533,32 @@ function CotizacionCard({ cotizacion, onDelete, onEdit, onVerPdf, onCambiarEstad
         </div>
       )}
 
-      {cotizacion.fechaSeguimiento && (
-        <div style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11.5, color: "var(--color-text-secondary)", marginBottom: 7, paddingLeft: 36 }}>
-          <i className="ti ti-bell" style={{ fontSize: 13, color: MARCA.azulMedio }} aria-hidden="true"></i>
-          Seguimiento: {cotizacion.fechaSeguimiento}
-        </div>
-      )}
+      {cotizacion.fechaSeguimiento &&
+        (() => {
+          const vencido = (cotizacion.estado || "pendiente") === "pendiente" && cotizacion.fechaSeguimiento < hoyIso;
+          return (
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 5,
+                fontSize: 11.5,
+                color: vencido ? "var(--color-text-danger)" : "var(--color-text-secondary)",
+                fontWeight: vencido ? 500 : 400,
+                marginBottom: 7,
+                paddingLeft: 36,
+              }}
+            >
+              <i
+                className={vencido ? "ti ti-alert-triangle" : "ti ti-bell"}
+                style={{ fontSize: 13, color: vencido ? "var(--color-text-danger)" : MARCA.azulMedio }}
+                aria-hidden="true"
+              ></i>
+              {vencido ? "Seguimiento vencido: " : "Seguimiento: "}
+              {cotizacion.fechaSeguimiento}
+            </div>
+          );
+        })()}
 
       {cotizacion.estado === "rechazada" && cotizacion.motivoRechazo && (
         <div
@@ -2239,7 +2737,7 @@ function ExtractReviewCardCotizacion({ data, onChange, onConfirm, onCancel }) {
         <Field label="Cliente" value={data.cliente || ""} onChange={(v) => onChange({ ...data, cliente: v })} />
         <Field
           label="Teléfono"
-          value={data.telefono || data.telefonoContacto || ""}
+          value={data.telefono || ""}
           onChange={(v) => onChange({ ...data, telefono: v })}
         />
         <Field label="Vendedor" value={data.vendedor || ""} onChange={(v) => onChange({ ...data, vendedor: v })} />

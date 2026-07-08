@@ -28,6 +28,9 @@ function filaAPedido(fila) {
     total: fila.total,
     productos: fila.productos || [],
     vehiculo: fila.vehiculo,
+    vehiculoSecundario: fila.vehiculo_secundario,
+    entregaPendiente: fila.entrega_pendiente,
+    notaPendiente: fila.nota_pendiente,
     pdfDataUrl: fila.pdf_data_url,
     fileName: fila.file_name,
     fecha: fila.fecha,
@@ -55,6 +58,9 @@ function pedidoAFila(p, estado) {
     total: p.total,
     productos: p.productos || [],
     vehiculo: p.vehiculo,
+    vehiculo_secundario: p.vehiculoSecundario || null,
+    entrega_pendiente: p.entregaPendiente || false,
+    nota_pendiente: p.notaPendiente || null,
     pdf_data_url: p.pdfDataUrl,
     file_name: p.fileName,
     fecha: p.fecha,
@@ -86,6 +92,20 @@ export async function cargarHistorial() {
 // no nos importa si ya existía o no: si existe lo actualiza, si no, lo crea.
 export async function guardarPedido(pedido, estado = "activo") {
   const { error } = await supabase.from("pedidos").upsert(pedidoAFila(pedido, estado));
+  if (error) throw error;
+}
+
+// Actualiza un pedido EXISTENTE (editar, reordenar, mover de vehículo) sin
+// tocar su columna "estado" y sin recrear filas. La diferencia con el upsert
+// de guardarPedido importa cuando hay varios dispositivos abiertos a la vez:
+// si otro dispositivo ya borró o entregó este pedido, un update sobre una
+// fila inexistente (o ya entregada) no la resucita como "activo" — el upsert
+// sí lo hacía, recreando pedidos borrados con los datos viejos en memoria.
+export async function actualizarPedido(pedido) {
+  const fila = pedidoAFila(pedido, "activo");
+  delete fila.estado;
+  delete fila.id;
+  const { error } = await supabase.from("pedidos").update(fila).eq("id", pedido.id);
   if (error) throw error;
 }
 
