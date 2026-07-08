@@ -568,10 +568,14 @@ export default function DespachoPedidos() {
       showToast("Escribe el nombre del cliente antes de guardar");
       return;
     }
+    // Fecha de despacho elegida en la tarjeta: hoy, un día futuro, o
+    // "pendiente" (sin fecha). El orden se calcula en la columna de ESE día,
+    // no siempre en la de hoy.
+    const fechaDestino = data.sinFechaDefinida ? "pendiente" : data.fechaDespacho || todayISO();
     const maxOrden = data.sinFechaDefinida
       ? 0
       : pedidos
-          .filter((p) => p.vehiculo === data.vehiculo && fechaDe(p) === hoyIso)
+          .filter((p) => p.vehiculo === data.vehiculo && fechaDe(p) === fechaDestino)
           .reduce((max, p) => Math.max(max, p.orden || 0), 0);
 
     const nuevo = {
@@ -589,7 +593,7 @@ export default function DespachoPedidos() {
       pdfDataUrl: data.pdfDataUrl,
       fileName: data.fileName,
       fecha: todayStr(),
-      fechaDespacho: data.sinFechaDefinida ? "pendiente" : todayISO(),
+      fechaDespacho: fechaDestino,
       estadoPago: data.estadoPago || "pendiente",
       hora: nowTimeStr(),
       timestamp: Date.now(),
@@ -597,10 +601,15 @@ export default function DespachoPedidos() {
     };
     persistPedidos([...pedidos, nuevo], [nuevo], { crear: true });
     setPendingExtract(null);
+    // Llevamos la vista a donde cayó el pedido, para que se vea de inmediato.
+    if (!data.sinFechaDefinida) setSelectedDate(fechaDestino);
+    const vehiculoLabel = (VEHICULOS.find((v) => v.id === data.vehiculo) || {}).label || "";
     showToast(
       data.sinFechaDefinida
         ? "Pedido agregado a Pendientes"
-        : "Pedido agregado a " + ((VEHICULOS.find((v) => v.id === data.vehiculo) || {}).label || "")
+        : fechaDestino === hoyIso
+        ? "Pedido agregado a " + vehiculoLabel
+        : `Pedido programado para ${etiquetaFecha(fechaDestino, hoyIso)} en ${vehiculoLabel}`
     );
   }
 
@@ -1618,46 +1627,62 @@ function ExtractReviewCard({ data, onChange, onConfirm, onCancel }) {
         <span style={{ fontSize: 18, fontWeight: 500 }}>{data.total ? `$${formatCOP(data.total)}` : "No detectado"}</span>
       </div>
 
-      <div style={{ marginBottom: 12 }}>
-        <span style={{ fontSize: 12, color: "var(--color-text-secondary)", display: "block", marginBottom: 6 }}>
-          ¿Cuándo se entrega?
-        </span>
-        <div style={{ display: "flex", gap: 8 }}>
-          <button
-            onClick={() => onChange({ ...data, sinFechaDefinida: false })}
-            style={{
-              flex: 1,
-              border: !data.sinFechaDefinida ? "2px solid var(--color-border-info)" : "0.5px solid var(--color-border-tertiary)",
-              background: !data.sinFechaDefinida ? "var(--color-background-info)" : "var(--color-background-primary)",
-              color: !data.sinFechaDefinida ? "var(--color-text-info)" : "var(--color-text-primary)",
-              padding: "8px 0",
-              borderRadius: "var(--border-radius-md)",
-              fontSize: 13,
-            }}
-          >
-            Hoy, ya tengo fecha
-          </button>
-          <button
-            onClick={() => onChange({ ...data, sinFechaDefinida: true, vehiculo: null })}
-            style={{
-              flex: 1,
-              border: data.sinFechaDefinida ? "2px solid var(--color-border-info)" : "0.5px solid var(--color-border-tertiary)",
-              background: data.sinFechaDefinida ? "var(--color-background-info)" : "var(--color-background-primary)",
-              color: data.sinFechaDefinida ? "var(--color-text-info)" : "var(--color-text-primary)",
-              padding: "8px 0",
-              borderRadius: "var(--border-radius-md)",
-              fontSize: 13,
-            }}
-          >
-            Aún sin definir
-          </button>
-        </div>
-        {data.sinFechaDefinida && (
-          <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", marginTop: 6 }}>
-            El pedido va a la pestaña "Pendientes" hasta que sepas cuándo y en qué vehículo se entrega.
+      {(() => {
+        const esPendiente = !!data.sinFechaDefinida;
+        const fechaSel = data.fechaDespacho && data.fechaDespacho !== "pendiente" ? data.fechaDespacho : todayISO();
+        const esHoy = !esPendiente && fechaSel === todayISO();
+        const esProgramado = !esPendiente && fechaSel !== todayISO();
+        const opcion = (activo) => ({
+          flex: 1,
+          border: activo ? "2px solid var(--color-border-info)" : "0.5px solid var(--color-border-tertiary)",
+          background: activo ? "var(--color-background-info)" : "var(--color-background-primary)",
+          color: activo ? "var(--color-text-info)" : "var(--color-text-primary)",
+          padding: "8px 0",
+          borderRadius: "var(--border-radius-md)",
+          fontSize: 13,
+          fontWeight: activo ? 500 : 400,
+        });
+        return (
+          <div style={{ marginBottom: 12 }}>
+            <span style={{ fontSize: 12, color: "var(--color-text-secondary)", display: "block", marginBottom: 6 }}>
+              ¿Cuándo se entrega?
+            </span>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button onClick={() => onChange({ ...data, sinFechaDefinida: false, fechaDespacho: todayISO() })} style={opcion(esHoy)}>
+                Hoy
+              </button>
+              <button
+                onClick={() => onChange({ ...data, sinFechaDefinida: false, fechaDespacho: addDaysISO(todayISO(), 1) })}
+                style={opcion(esProgramado)}
+              >
+                Otro día
+              </button>
+              <button onClick={() => onChange({ ...data, sinFechaDefinida: true, vehiculo: null })} style={opcion(esPendiente)}>
+                Sin fecha aún
+              </button>
+            </div>
+            {esProgramado && (
+              <div style={{ marginTop: 8 }}>
+                <input
+                  type="date"
+                  value={fechaSel}
+                  min={todayISO()}
+                  onChange={(e) => onChange({ ...data, fechaDespacho: e.target.value || todayISO() })}
+                  style={{ width: "100%" }}
+                />
+                <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", marginTop: 4 }}>
+                  El pedido queda programado para esa fecha y aparece en su pestaña de día.
+                </div>
+              </div>
+            )}
+            {esPendiente && (
+              <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", marginTop: 6 }}>
+                El pedido va a la pestaña "Pendientes" hasta que sepas cuándo y en qué vehículo se entrega.
+              </div>
+            )}
           </div>
-        )}
-      </div>
+        );
+      })()}
 
       <div style={{ marginBottom: 12 }}>
         <span style={{ fontSize: 12, color: "var(--color-text-secondary)", display: "block", marginBottom: 6 }}>
@@ -2041,13 +2066,20 @@ function PedidoCard({ pedido, posicion, esSecundario, isDragging, onDragStart, o
 // Esto evita los bloqueos de visor nativo que impedían ver el PDF dentro
 // del artifact.
 function PdfCanvasViewer({ dataUrl }) {
-  const canvasRef = useRef(null);
+  const containerRef = useRef(null);
+  const pdfRef = useRef(null);
+  const canvasRefs = useRef([]);
   const [status, setStatus] = useState("loading");
+  const [numPages, setNumPages] = useState(0);
+  const [zoom, setZoom] = useState(1);
 
+  // Fase 1: cargar el documento (una sola vez por PDF) y saber cuántas
+  // páginas tiene. La página real se dibuja en la Fase 2, cuando ya existen
+  // los <canvas> en el DOM.
   useEffect(() => {
     let cancelled = false;
     let loadingTask = null;
-    async function render() {
+    async function load() {
       if (!window.pdfjsLib) {
         setStatus("error");
         return;
@@ -2060,24 +2092,18 @@ function PdfCanvasViewer({ dataUrl }) {
 
         loadingTask = window.pdfjsLib.getDocument({ data: bytes });
         const pdf = await loadingTask.promise;
-        const page = await pdf.getPage(1);
-        const viewport = page.getViewport({ scale: 1.4 });
-
         if (cancelled) return;
-        const canvas = canvasRef.current;
-        if (!canvas) return;
-        canvas.width = viewport.width;
-        canvas.height = viewport.height;
-        const ctx = canvas.getContext("2d");
-        await page.render({ canvasContext: ctx, viewport }).promise;
-        if (!cancelled) setStatus("ready");
+        pdfRef.current = pdf;
+        setNumPages(pdf.numPages);
+        setStatus("ready");
       } catch (e) {
         if (!cancelled) setStatus("error");
       }
     }
-    render();
+    load();
     return () => {
       cancelled = true;
+      pdfRef.current = null;
       // Libera el documento y su memoria en el worker de pdf.js. Sin esto,
       // cada apertura del modal dejaba un documento vivo y la pestaña
       // acumulaba memoria durante toda la jornada.
@@ -2085,17 +2111,108 @@ function PdfCanvasViewer({ dataUrl }) {
     };
   }, [dataUrl]);
 
+  // Fase 2: dibujar cada página ajustada al ancho del modal (no a una escala
+  // fija, que en computador se veía pequeña) y a la densidad real de píxeles
+  // de la pantalla, para que el texto salga nítido y no pixelado. El zoom
+  // multiplica ese ajuste.
+  useEffect(() => {
+    if (status !== "ready" || !pdfRef.current || !numPages) return;
+    let cancelled = false;
+    const tasks = [];
+    (async () => {
+      const pdf = pdfRef.current;
+      const contenedor = containerRef.current;
+      const anchoDisponible = contenedor ? contenedor.clientWidth - 4 : 800;
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      for (let n = 1; n <= numPages; n++) {
+        if (cancelled) return;
+        const page = await pdf.getPage(n);
+        const base = page.getViewport({ scale: 1 });
+        const escalaCss = ((anchoDisponible / base.width) || 1) * zoom;
+        const viewport = page.getViewport({ scale: escalaCss * dpr });
+        const canvas = canvasRefs.current[n - 1];
+        if (!canvas) continue;
+        canvas.width = viewport.width;
+        canvas.height = viewport.height;
+        canvas.style.width = base.width * escalaCss + "px";
+        canvas.style.height = base.height * escalaCss + "px";
+        const task = page.render({ canvasContext: canvas.getContext("2d"), viewport });
+        tasks.push(task);
+        try {
+          await task.promise;
+        } catch (e) {
+          /* render cancelado al re-dibujar: normal */
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+      tasks.forEach((t) => t.cancel && t.cancel());
+    };
+  }, [status, numPages, zoom]);
+
   return (
-    <div style={{ width: "100%", maxHeight: 420, overflow: "auto", background: "var(--color-background-secondary)", borderRadius: "var(--border-radius-md)" }}>
-      {status === "loading" && (
-        <div style={{ padding: "3rem 0", textAlign: "center", fontSize: 13, color: "var(--color-text-secondary)" }}>Cargando documento...</div>
-      )}
-      {status === "error" && (
-        <div style={{ padding: "2rem 1rem", textAlign: "center", fontSize: 13, color: "var(--color-text-warning)" }}>
-          No se pudo previsualizar el documento aquí. Usa el botón de descarga abajo.
+    <div>
+      {status === "ready" && numPages > 0 && (
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8, gap: 8 }}>
+          <span style={{ fontSize: 12, color: "var(--color-text-tertiary)" }}>
+            {numPages === 1 ? "1 página" : `${numPages} páginas`}
+          </span>
+          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+            <button
+              onClick={() => setZoom((z) => Math.max(0.5, Math.round((z - 0.25) * 100) / 100))}
+              aria-label="Alejar"
+              style={{ padding: "3px 9px", fontSize: 14 }}
+            >
+              <i className="ti ti-minus" style={{ fontSize: 13 }} aria-hidden="true"></i>
+            </button>
+            <span style={{ fontSize: 12, color: "var(--color-text-secondary)", minWidth: 42, textAlign: "center" }}>
+              {Math.round(zoom * 100)}%
+            </span>
+            <button
+              onClick={() => setZoom((z) => Math.min(3, Math.round((z + 0.25) * 100) / 100))}
+              aria-label="Acercar"
+              style={{ padding: "3px 9px", fontSize: 14 }}
+            >
+              <i className="ti ti-plus" style={{ fontSize: 13 }} aria-hidden="true"></i>
+            </button>
+          </div>
         </div>
       )}
-      <canvas ref={canvasRef} style={{ width: "100%", display: status === "ready" ? "block" : "none" }} />
+      <div
+        ref={containerRef}
+        style={{
+          width: "100%",
+          maxHeight: "72vh",
+          overflow: "auto",
+          background: "var(--color-background-secondary)",
+          borderRadius: "var(--border-radius-md)",
+          padding: 8,
+          textAlign: "center",
+        }}
+      >
+        {status === "loading" && (
+          <div style={{ padding: "3rem 0", textAlign: "center", fontSize: 13, color: "var(--color-text-secondary)" }}>Cargando documento...</div>
+        )}
+        {status === "error" && (
+          <div style={{ padding: "2rem 1rem", textAlign: "center", fontSize: 13, color: "var(--color-text-warning)" }}>
+            No se pudo previsualizar el documento aquí. Usa el botón de descarga abajo.
+          </div>
+        )}
+        {status === "ready" &&
+          Array.from({ length: numPages }).map((_, i) => (
+            <canvas
+              key={i}
+              ref={(el) => (canvasRefs.current[i] = el)}
+              style={{
+                display: "block",
+                margin: i > 0 ? "10px auto 0" : "0 auto",
+                boxShadow: "0 1px 4px rgba(0,0,0,0.18)",
+                background: "white",
+              }}
+            />
+          ))}
+      </div>
     </div>
   );
 }
@@ -2150,7 +2267,7 @@ function ModalOverlay({ onClose, children, maxWidth = 480 }) {
 
 function PdfModal({ pedido, onClose }) {
   return (
-    <ModalOverlay onClose={onClose} maxWidth={480}>
+    <ModalOverlay onClose={onClose} maxWidth={860}>
       <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
         <span style={{ fontSize: 13, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
           {pedido.fileName || "Documento"}
