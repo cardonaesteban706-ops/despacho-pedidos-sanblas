@@ -462,7 +462,7 @@ export default function DespachoPedidos() {
         const activos = await cargarPedidosActivos();
         setPedidos(activos);
       } catch (e) {
-        showToast("No se pudo conectar con la base de datos");
+        showToast("No se pudieron cargar los pedidos. Revisa tu conexión a internet y recarga la página.", 5000);
       }
       try {
         const entregados = await cargarHistorial();
@@ -528,7 +528,7 @@ export default function DespachoPedidos() {
     const file = e.target.files && e.target.files[0];
     if (!file) return;
     if (file.type !== "application/pdf") {
-      showToast("Por favor sube un archivo PDF");
+      showToast("Ese archivo no es un PDF. Busca el archivo que termina en .pdf e inténtalo de nuevo.");
       e.target.value = "";
       return;
     }
@@ -553,7 +553,7 @@ export default function DespachoPedidos() {
         estadoPago: "pendiente",
       });
     } catch (err) {
-      showToast("No se pudo leer el PDF. Puede ser una imagen escaneada o estar dañado.");
+      showToast("No se pudo leer este PDF. Si es una foto o un escaneo, no funciona: usa el PDF original que genera el programa de facturación.", 5000);
     }
     setUploadState("idle");
     e.target.value = "";
@@ -639,7 +639,7 @@ export default function DespachoPedidos() {
     const prevHistorial = historial;
     setPedidos(pedidos.filter((p) => p.id !== id));
     setHistorial([entregado, ...historial]);
-    showToast("Marcado como entregado");
+    showToast("Pedido entregado");
     try {
       await guardarPedido(entregado, "entregado");
     } catch (e) {
@@ -697,7 +697,7 @@ export default function DespachoPedidos() {
     const file = e.target.files && e.target.files[0];
     if (!file) return;
     if (file.type !== "application/pdf") {
-      showToast("Por favor sube un archivo PDF");
+      showToast("Ese archivo no es un PDF. Busca el archivo que termina en .pdf e inténtalo de nuevo.");
       e.target.value = "";
       return;
     }
@@ -719,7 +719,7 @@ export default function DespachoPedidos() {
         fechaSeguimiento: "",
       });
     } catch (err) {
-      showToast("No se pudo leer el PDF. Puede ser una imagen escaneada o estar dañado.");
+      showToast("No se pudo leer este PDF. Si es una foto o un escaneo, no funciona: usa el PDF original que genera el programa de facturación.", 5000);
     }
     setUploadState("idle");
     e.target.value = "";
@@ -948,6 +948,13 @@ export default function DespachoPedidos() {
 
   return (
     <div style={{ fontFamily: "var(--font-sans)" }}>
+      {/* Foco visible al navegar con teclado o lector de pantalla */}
+      <style>{`
+        button:focus-visible, input:focus-visible, textarea:focus-visible, a:focus-visible {
+          outline: 3px solid #378ADD;
+          outline-offset: 2px;
+        }
+      `}</style>
       <h2 className="sr-only" style={{ position: "absolute", width: 1, height: 1, overflow: "hidden" }}>
         Sistema de despacho de pedidos: lista por vehículo con subida de facturas y cotizaciones en PDF
       </h2>
@@ -986,12 +993,14 @@ export default function DespachoPedidos() {
         <div style={{ display: "flex", gap: 8 }}>
           <button
             onClick={() => setView("despacho")}
+            aria-pressed={view === "despacho"}
             style={{
               border: view === "despacho" ? "none" : "0.5px solid var(--color-border-tertiary)",
               background: view === "despacho" ? MARCA.azulOscuro : "transparent",
               color: view === "despacho" ? "white" : "var(--color-text-primary)",
               fontWeight: view === "despacho" ? 500 : 400,
               padding: "6px 14px",
+              minHeight: 40,
               borderRadius: "var(--border-radius-md)",
               fontSize: 14,
             }}
@@ -1001,12 +1010,14 @@ export default function DespachoPedidos() {
           </button>
           <button
             onClick={() => setView("historial")}
+            aria-pressed={view === "historial"}
             style={{
               border: view === "historial" ? "none" : "0.5px solid var(--color-border-tertiary)",
               background: view === "historial" ? MARCA.azulOscuro : "transparent",
               color: view === "historial" ? "white" : "var(--color-text-primary)",
               fontWeight: view === "historial" ? 500 : 400,
               padding: "6px 14px",
+              minHeight: 40,
               borderRadius: "var(--border-radius-md)",
               fontSize: 14,
             }}
@@ -1016,12 +1027,14 @@ export default function DespachoPedidos() {
           </button>
           <button
             onClick={() => setView("cotizaciones")}
+            aria-pressed={view === "cotizaciones"}
             style={{
               border: view === "cotizaciones" ? "none" : "0.5px solid var(--color-border-tertiary)",
               background: view === "cotizaciones" ? MARCA.azulOscuro : "transparent",
               color: view === "cotizaciones" ? "white" : "var(--color-text-primary)",
               fontWeight: view === "cotizaciones" ? 500 : 400,
               padding: "6px 14px",
+              minHeight: 40,
               borderRadius: "var(--border-radius-md)",
               fontSize: 14,
             }}
@@ -1043,12 +1056,13 @@ export default function DespachoPedidos() {
                 color: "white",
                 fontWeight: 500,
                 padding: "8px 16px",
+                minHeight: 44,
                 borderRadius: "var(--border-radius-md)",
                 fontSize: 14,
               }}
             >
               <i className="ti ti-file-upload" style={{ fontSize: 16, verticalAlign: "-2px", marginRight: 6 }} aria-hidden="true"></i>
-              {uploadState === "reading" ? "Leyendo PDF..." : libsReady ? "Subir factura o cotización" : "Cargando..."}
+              {uploadState === "reading" ? "Leyendo PDF..." : libsReady ? "Subir factura o cotización" : "Preparando lector de PDF..."}
             </button>
           </div>
         )}
@@ -1071,12 +1085,13 @@ export default function DespachoPedidos() {
                 color: "white",
                 fontWeight: 500,
                 padding: "8px 16px",
+                minHeight: 44,
                 borderRadius: "var(--border-radius-md)",
                 fontSize: 14,
               }}
             >
               <i className="ti ti-file-upload" style={{ fontSize: 16, verticalAlign: "-2px", marginRight: 6 }} aria-hidden="true"></i>
-              {uploadState === "reading" ? "Leyendo PDF..." : libsReady ? "Subir cotización" : "Cargando..."}
+              {uploadState === "reading" ? "Leyendo PDF..." : libsReady ? "Subir cotización" : "Preparando lector de PDF..."}
             </button>
           </div>
         )}
@@ -1084,12 +1099,14 @@ export default function DespachoPedidos() {
 
       {libsError && (
         <div style={{ fontSize: 13, color: "var(--color-text-danger)", marginBottom: 12 }}>
-          No se pudo cargar el lector de PDF. Revisa tu conexión y recarga.
+          No se pudo cargar el lector de PDF. Revisa tu conexión a internet y recarga la página.
         </div>
       )}
 
       {toast && (
         <div
+          role="status"
+          aria-live="polite"
           style={{
             background: "var(--color-background-success)",
             color: "var(--color-text-success)",
@@ -1163,6 +1180,7 @@ export default function DespachoPedidos() {
                 <button
                   key={f}
                   onClick={() => setSelectedDate(f)}
+                  aria-pressed={activo}
                   style={{
                     flexShrink: 0,
                     border: activo ? "2px solid var(--color-border-info)" : "0.5px solid var(--color-border-tertiary)",
@@ -1170,6 +1188,7 @@ export default function DespachoPedidos() {
                     color: activo ? "var(--color-text-info)" : "var(--color-text-primary)",
                     fontWeight: activo ? 600 : 400,
                     padding: "8px 16px",
+                    minHeight: 44,
                     borderRadius: "var(--border-radius-md)",
                     fontSize: 14,
                     whiteSpace: "nowrap",
@@ -1192,6 +1211,7 @@ export default function DespachoPedidos() {
             })}
             <button
               onClick={() => setSelectedDate("pendiente")}
+              aria-pressed={selectedDate === "pendiente"}
               style={{
                 flexShrink: 0,
                 border: selectedDate === "pendiente" ? "2px solid var(--color-border-warning)" : "0.5px solid var(--color-border-tertiary)",
@@ -1199,6 +1219,7 @@ export default function DespachoPedidos() {
                 color: selectedDate === "pendiente" ? "var(--color-text-warning)" : "var(--color-text-primary)",
                 fontWeight: selectedDate === "pendiente" ? 600 : 400,
                 padding: "8px 16px",
+                minHeight: 44,
                 borderRadius: "var(--border-radius-md)",
                 fontSize: 14,
                 whiteSpace: "nowrap",
@@ -1233,7 +1254,7 @@ export default function DespachoPedidos() {
               </div>
               {pedidosPendientes.length === 0 && (
                 <div style={{ fontSize: 13, color: "var(--color-text-tertiary)", padding: "8px 4px" }}>
-                  No hay pedidos pendientes de fecha
+                  No hay pedidos sin fecha. Cuando subas una factura y elijas "Sin fecha aún", aparecerá aquí.
                 </div>
               )}
               {pedidosPendientes.map((p) => (
@@ -1292,7 +1313,7 @@ export default function DespachoPedidos() {
               </div>
 
               {col.items.length === 0 && (
-                <div style={{ fontSize: 13, color: "var(--color-text-tertiary)", padding: "8px 4px" }}>Sin pedidos</div>
+                <div style={{ fontSize: 13, color: "var(--color-text-tertiary)", padding: "8px 4px" }}>Sin pedidos aún. Sube una factura con el botón azul de arriba.</div>
               )}
 
               {col.items.map((p, idx) => (
@@ -1339,7 +1360,9 @@ export default function DespachoPedidos() {
           />
           {filteredHistorial.length === 0 ? (
             <div style={{ fontSize: 14, color: "var(--color-text-tertiary)", padding: "1.5rem 0", textAlign: "center" }}>
-              No hay pedidos entregados todavía
+              {historyFilter.trim()
+                ? `No se encontró nada con "${historyFilter.trim()}". Revisa la ortografía o borra la búsqueda.`
+                : 'Aún no hay entregas. Cuando toques "Entregado" en un pedido, quedará guardado aquí.'}
             </div>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
@@ -1436,7 +1459,9 @@ export default function DespachoPedidos() {
                 </div>
 
                 {col.items.length === 0 && (
-                  <div style={{ fontSize: 13, color: "var(--color-text-tertiary)", padding: "8px 4px" }}>Sin cotizaciones</div>
+                  <div style={{ fontSize: 13, color: "var(--color-text-tertiary)", padding: "8px 4px" }}>
+                    {col.id === "pendiente" ? "Sin cotizaciones aún" : col.id === "aceptada" ? "Ninguna aceptada aún" : "Ninguna rechazada"}
+                  </div>
                 )}
 
                 {col.items.map((c) => (
@@ -1525,7 +1550,7 @@ export default function DespachoPedidos() {
           onConfirm={(motivo) => {
             updateCotizacion(rechazandoCotizacion.id, { estado: "rechazada", motivoRechazo: motivo });
             setRechazandoCotizacion(null);
-            showToast("Cotización marcada como rechazada");
+            showToast("Cotización rechazada");
           }}
         />
       )}
@@ -1555,7 +1580,7 @@ function ExtractReviewCard({ data, onChange, onConfirm, onCancel }) {
         <span style={{ fontWeight: 500, fontSize: 15 }}>Revisa los datos extraídos</span>
         <span
           style={{
-            fontSize: 11,
+            fontSize: 12,
             padding: "2px 8px",
             borderRadius: "var(--border-radius-sm)",
             background: "var(--color-background-secondary)",
@@ -1648,16 +1673,17 @@ function ExtractReviewCard({ data, onChange, onConfirm, onCancel }) {
               ¿Cuándo se entrega?
             </span>
             <div style={{ display: "flex", gap: 8 }}>
-              <button onClick={() => onChange({ ...data, sinFechaDefinida: false, fechaDespacho: todayISO() })} style={opcion(esHoy)}>
+              <button onClick={() => onChange({ ...data, sinFechaDefinida: false, fechaDespacho: todayISO() })} aria-pressed={esHoy} style={opcion(esHoy)}>
                 Hoy
               </button>
               <button
                 onClick={() => onChange({ ...data, sinFechaDefinida: false, fechaDespacho: addDaysISO(todayISO(), 1) })}
+                aria-pressed={esProgramado}
                 style={opcion(esProgramado)}
               >
                 Otro día
               </button>
-              <button onClick={() => onChange({ ...data, sinFechaDefinida: true, vehiculo: null })} style={opcion(esPendiente)}>
+              <button onClick={() => onChange({ ...data, sinFechaDefinida: true, vehiculo: null })} aria-pressed={esPendiente} style={opcion(esPendiente)}>
                 Sin fecha aún
               </button>
             </div>
@@ -1670,13 +1696,13 @@ function ExtractReviewCard({ data, onChange, onConfirm, onCancel }) {
                   onChange={(e) => onChange({ ...data, fechaDespacho: e.target.value || todayISO() })}
                   style={{ width: "100%" }}
                 />
-                <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", marginTop: 4 }}>
+                <div style={{ fontSize: 12, color: "var(--color-text-tertiary)", marginTop: 4 }}>
                   El pedido queda programado para esa fecha y aparece en su pestaña de día.
                 </div>
               </div>
             )}
             {esPendiente && (
-              <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", marginTop: 6 }}>
+              <div style={{ fontSize: 12, color: "var(--color-text-tertiary)", marginTop: 6 }}>
                 El pedido va a la pestaña "Pendientes" hasta que sepas cuándo y en qué vehículo se entrega.
               </div>
             )}
@@ -1691,6 +1717,7 @@ function ExtractReviewCard({ data, onChange, onConfirm, onCancel }) {
         <div style={{ display: "flex", gap: 8 }}>
           <button
             onClick={() => onChange({ ...data, estadoPago: "pagado" })}
+            aria-pressed={data.estadoPago === "pagado"}
             style={{
               flex: 1,
               border: data.estadoPago === "pagado" ? "2px solid var(--color-border-success)" : "0.5px solid var(--color-border-tertiary)",
@@ -1705,6 +1732,7 @@ function ExtractReviewCard({ data, onChange, onConfirm, onCancel }) {
           </button>
           <button
             onClick={() => onChange({ ...data, estadoPago: "pendiente" })}
+            aria-pressed={data.estadoPago === "pendiente"}
             style={{
               flex: 1,
               border: data.estadoPago === "pendiente" ? "2px solid var(--color-border-warning)" : "0.5px solid var(--color-border-tertiary)",
@@ -1728,6 +1756,7 @@ function ExtractReviewCard({ data, onChange, onConfirm, onCancel }) {
               <button
                 key={v.id}
                 onClick={() => onChange({ ...data, vehiculo: v.id })}
+                aria-pressed={data.vehiculo === v.id}
                 style={{
                   flex: 1,
                   border: data.vehiculo === v.id ? "2px solid var(--color-border-info)" : "0.5px solid var(--color-border-tertiary)",
@@ -1760,7 +1789,7 @@ function ExtractReviewCard({ data, onChange, onConfirm, onCancel }) {
           }}
         >
           <i className="ti ti-check" style={{ fontSize: 14, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
-          Agregar a la lista
+          Agregar pedido
         </button>
       </div>
     </div>
@@ -1835,7 +1864,7 @@ function PedidoCard({ pedido, posicion, esSecundario, isDragging, onDragStart, o
         <div style={{ marginBottom: 7, paddingLeft: 36 }}>
           <span
             style={{
-              fontSize: 10.5,
+              fontSize: 12,
               background: "var(--color-background-secondary)",
               color: "var(--color-text-secondary)",
               borderRadius: "var(--border-radius-sm)",
@@ -1852,7 +1881,7 @@ function PedidoCard({ pedido, posicion, esSecundario, isDragging, onDragStart, o
         {atrasadoDesde && (
           <span
             style={{
-              fontSize: 10.5,
+              fontSize: 12,
               fontWeight: 500,
               background: "var(--color-background-danger)",
               color: "var(--color-text-danger)",
@@ -1865,11 +1894,11 @@ function PedidoCard({ pedido, posicion, esSecundario, isDragging, onDragStart, o
           </span>
         )}
         {pedido.numeroFactura && (
-          <span style={{ fontSize: 10.5, background: "var(--color-background-secondary)", color: "var(--color-text-secondary)", borderRadius: "var(--border-radius-sm)", padding: "2px 7px" }}>
+          <span style={{ fontSize: 12, background: "var(--color-background-secondary)", color: "var(--color-text-secondary)", borderRadius: "var(--border-radius-sm)", padding: "2px 7px" }}>
             {pedido.tipoDocumento === "cotizacion" ? "Cotización" : "Factura"} {pedido.numeroFactura}
           </span>
         )}
-        {pedido.hora && <span style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}>{pedido.hora}</span>}
+        {pedido.hora && <span style={{ fontSize: 12, color: "var(--color-text-tertiary)" }}>{pedido.hora}</span>}
         <span
           style={{
             width: 6,
@@ -1879,7 +1908,7 @@ function PedidoCard({ pedido, posicion, esSecundario, isDragging, onDragStart, o
             marginLeft: "auto",
           }}
         ></span>
-        <span style={{ fontSize: 11, color: pagado ? "var(--color-text-success)" : "var(--color-text-warning)" }}>
+        <span style={{ fontSize: 12, color: pagado ? "var(--color-text-success)" : "var(--color-text-warning)" }}>
           {pagado ? "Pagado" : "Paga al recibir"}
         </span>
       </div>
@@ -1899,7 +1928,8 @@ function PedidoCard({ pedido, posicion, esSecundario, isDragging, onDragStart, o
                 onClick={() => setVerProductos(!verProductos)}
                 style={{
                   fontSize: 12.5,
-                  padding: 0,
+                  padding: "8px 0",
+                  minHeight: 40,
                   border: "none",
                   background: "transparent",
                   color: "var(--color-text-secondary)",
@@ -1942,7 +1972,7 @@ function PedidoCard({ pedido, posicion, esSecundario, isDragging, onDragStart, o
       {pendiente && (
         <div
           style={{
-            fontSize: 11.5,
+            fontSize: 12.5,
             color: "var(--color-text-danger)",
             background: "var(--color-background-danger)",
             borderRadius: "var(--border-radius-sm)",
@@ -1962,8 +1992,9 @@ function PedidoCard({ pedido, posicion, esSecundario, isDragging, onDragStart, o
           <button
             onClick={onMoverAHoy}
             style={{
-              fontSize: 11,
-              padding: "5px 9px",
+              fontSize: 12.5,
+              padding: "9px 12px",
+              minHeight: 40,
               fontWeight: 500,
               background: "var(--color-background-warning)",
               color: "var(--color-text-warning)",
@@ -1975,7 +2006,7 @@ function PedidoCard({ pedido, posicion, esSecundario, isDragging, onDragStart, o
           </button>
         )}
         {pedido.pdfDataUrl && (
-          <button onClick={onVerPdf} style={{ fontSize: 11, padding: "5px 9px" }}>
+          <button onClick={onVerPdf} style={{ fontSize: 12.5, padding: "9px 12px", minHeight: 40 }}>
             <i className="ti ti-file-text" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
             Ver documento
           </button>
@@ -1983,8 +2014,9 @@ function PedidoCard({ pedido, posicion, esSecundario, isDragging, onDragStart, o
         <button
           onClick={onEdit}
           style={{
-            fontSize: 11,
-            padding: "5px 9px",
+            fontSize: 12.5,
+            padding: "9px 12px",
+            minHeight: 40,
             background: MARCA.azulClaro,
             color: MARCA.azulOscuro,
             border: `0.5px solid ${MARCA.azulMedio}`,
@@ -1997,8 +2029,9 @@ function PedidoCard({ pedido, posicion, esSecundario, isDragging, onDragStart, o
           <button
             onClick={onNotaPendiente}
             style={{
-              fontSize: 11,
-              padding: "5px 9px",
+              fontSize: 12.5,
+              padding: "9px 12px",
+              minHeight: 40,
               background: pendiente ? "var(--color-background-danger)" : "transparent",
               color: pendiente ? "var(--color-text-danger)" : "var(--color-text-primary)",
               border: pendiente ? "0.5px solid var(--color-border-danger)" : "0.5px solid var(--color-border-tertiary)",
@@ -2013,8 +2046,9 @@ function PedidoCard({ pedido, posicion, esSecundario, isDragging, onDragStart, o
             <button
               onClick={onDelete}
               style={{
-                fontSize: 11,
-                padding: "5px 9px",
+                fontSize: 12.5,
+                padding: "9px 12px",
+                minHeight: 40,
                 background: "var(--color-background-danger)",
                 color: "var(--color-text-danger)",
                 border: "0.5px solid var(--color-border-danger)",
@@ -2022,14 +2056,15 @@ function PedidoCard({ pedido, posicion, esSecundario, isDragging, onDragStart, o
               }}
             >
               <i className="ti ti-alert-triangle" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
-              Confirmar eliminación
+              Toca otra vez para eliminar
             </button>
           ) : (
             <button
               onClick={() => setConfirmDelete(true)}
               style={{
-                fontSize: 11,
-                padding: "5px 9px",
+                fontSize: 12.5,
+                padding: "9px 12px",
+                minHeight: 40,
                 background: "var(--color-background-danger)",
                 color: "var(--color-text-danger)",
                 border: "0.5px solid var(--color-border-danger)",
@@ -2048,9 +2083,10 @@ function PedidoCard({ pedido, posicion, esSecundario, isDragging, onDragStart, o
             background: "#639922",
             color: "white",
             fontWeight: 500,
-            fontSize: 12,
+            fontSize: 13,
             borderRadius: "var(--border-radius-md)",
-            padding: "6px 12px",
+            padding: "9px 14px",
+            minHeight: 40,
           }}
         >
           <i className="ti ti-check" style={{ fontSize: 14, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
@@ -2162,7 +2198,7 @@ function PdfCanvasViewer({ dataUrl }) {
             <button
               onClick={() => setZoom((z) => Math.max(0.5, Math.round((z - 0.25) * 100) / 100))}
               aria-label="Alejar"
-              style={{ padding: "3px 9px", fontSize: 14 }}
+              style={{ padding: "8px 12px", minWidth: 40, minHeight: 40, fontSize: 14 }}
             >
               <i className="ti ti-minus" style={{ fontSize: 13 }} aria-hidden="true"></i>
             </button>
@@ -2172,7 +2208,7 @@ function PdfCanvasViewer({ dataUrl }) {
             <button
               onClick={() => setZoom((z) => Math.min(3, Math.round((z + 0.25) * 100) / 100))}
               aria-label="Acercar"
-              style={{ padding: "3px 9px", fontSize: 14 }}
+              style={{ padding: "8px 12px", minWidth: 40, minHeight: 40, fontSize: 14 }}
             >
               <i className="ti ti-plus" style={{ fontSize: 13 }} aria-hidden="true"></i>
             </button>
@@ -2196,7 +2232,7 @@ function PdfCanvasViewer({ dataUrl }) {
         )}
         {status === "error" && (
           <div style={{ padding: "2rem 1rem", textAlign: "center", fontSize: 13, color: "var(--color-text-warning)" }}>
-            No se pudo previsualizar el documento aquí. Usa el botón de descarga abajo.
+            No se pudo mostrar el documento aquí. Usa "Descargar PDF" abajo para abrirlo.
           </div>
         )}
         {status === "ready" &&
@@ -2272,7 +2308,7 @@ function PdfModal({ pedido, onClose }) {
         <span style={{ fontSize: 13, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
           {pedido.fileName || "Documento"}
         </span>
-        <button onClick={onClose} aria-label="Cerrar" style={{ padding: "2px 8px", flexShrink: 0, marginLeft: 8 }}>
+        <button onClick={onClose} aria-label="Cerrar" style={{ padding: 8, minWidth: 40, minHeight: 40, flexShrink: 0, marginLeft: 8 }}>
           <i className="ti ti-x" style={{ fontSize: 14 }} aria-hidden="true"></i>
         </button>
       </div>
@@ -2285,7 +2321,7 @@ function PdfModal({ pedido, onClose }) {
         <div style={{ marginTop: 8, textAlign: "right" }}>
           <a href={pedido.pdfDataUrl} download={pedido.fileName || "documento.pdf"} style={{ fontSize: 12 }}>
             <i className="ti ti-download" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
-            Descargar
+            Descargar PDF
           </a>
         </div>
       )}
@@ -2317,7 +2353,7 @@ function HistorialRow({ pedido, onVerPdf }) {
             </div>
           )}
           {pedido.pdfDataUrl && (
-            <button onClick={onVerPdf} style={{ fontSize: 11, padding: "4px 8px", marginTop: 8 }}>
+            <button onClick={onVerPdf} style={{ fontSize: 12.5, padding: "9px 12px", minHeight: 40, marginTop: 8 }}>
               <i className="ti ti-file-text" style={{ fontSize: 12, verticalAlign: "-1px", marginRight: 3 }} aria-hidden="true"></i>
               Ver documento
             </button>
@@ -2342,11 +2378,11 @@ function NotaPendienteModal({ pedido, onClose, onGuardar, onQuitar }) {
     <ModalOverlay onClose={onClose} maxWidth={420}>
       <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
         <span style={{ fontWeight: 500, fontSize: 15 }}>¿Qué quedó pendiente?</span>
-        <button onClick={onClose} aria-label="Cerrar" style={{ padding: "2px 8px" }}>
+        <button onClick={onClose} aria-label="Cerrar" style={{ padding: 8, minWidth: 40, minHeight: 40 }}>
           <i className="ti ti-x" style={{ fontSize: 14 }} aria-hidden="true"></i>
         </button>
       </div>
-      <div style={{ fontSize: 11.5, color: "var(--color-text-tertiary)", marginBottom: 12 }}>
+      <div style={{ fontSize: 12.5, color: "var(--color-text-tertiary)", marginBottom: 12 }}>
         {pedido.cliente}
         {pedido.numeroFactura ? ` — ${pedido.tipoDocumento === "cotizacion" ? "Cotización" : "Factura"} ${pedido.numeroFactura}` : ""}
       </div>
@@ -2358,7 +2394,7 @@ function NotaPendienteModal({ pedido, onClose, onGuardar, onQuitar }) {
         autoFocus
         style={{ width: "100%", minHeight: 70, fontSize: 13, marginBottom: 6 }}
       />
-      <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", marginBottom: 14 }}>
+      <div style={{ fontSize: 12, color: "var(--color-text-tertiary)", marginBottom: 14 }}>
         Escríbelo como lo dirías de viva voz. El pedido se queda en su columna marcado en rojo hasta que se complete.
       </div>
 
@@ -2380,7 +2416,7 @@ function NotaPendienteModal({ pedido, onClose, onGuardar, onQuitar }) {
             border: "0.5px solid var(--color-border-danger)",
           }}
         >
-          Marcar pendiente
+          Marcar como pendiente
         </button>
       </div>
     </ModalOverlay>
@@ -2396,7 +2432,7 @@ function EditModal({ pedido, onClose, onSave }) {
     <ModalOverlay onClose={onClose} maxWidth={420}>
       <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12 }}>
         <span style={{ fontWeight: 500, fontSize: 15 }}>Editar pedido</span>
-        <button onClick={onClose} aria-label="Cerrar" style={{ padding: "2px 8px" }}>
+        <button onClick={onClose} aria-label="Cerrar" style={{ padding: 8, minWidth: 40, minHeight: 40 }}>
           <i className="ti ti-x" style={{ fontSize: 14 }} aria-hidden="true"></i>
         </button>
       </div>
@@ -2404,9 +2440,10 @@ function EditModal({ pedido, onClose, onSave }) {
         <Field label="Cliente" value={form.cliente || ""} onChange={(v) => setForm({ ...form, cliente: v })} />
         <Field label="Teléfono" value={form.telefono || ""} onChange={(v) => setForm({ ...form, telefono: v })} />
 
-        <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--color-text-secondary)" }}>
+        <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: "var(--color-text-secondary)", padding: "6px 0" }}>
           <input
             type="checkbox"
+            style={{ width: 18, height: 18, flexShrink: 0 }}
             checked={sinFecha}
             onChange={(e) =>
               setForm({
@@ -2432,7 +2469,7 @@ function EditModal({ pedido, onClose, onSave }) {
               onChange={(e) => setForm({ ...form, fechaDespacho: e.target.value })}
               style={{ width: "100%" }}
             />
-            <span style={{ fontSize: 11, color: "var(--color-text-tertiary)", display: "block", marginTop: 4 }}>
+            <span style={{ fontSize: 12, color: "var(--color-text-tertiary)", display: "block", marginTop: 4 }}>
               Si elige una fecha futura, el pedido se mueve a esa pestaña de día.
             </span>
           </label>
@@ -2445,6 +2482,7 @@ function EditModal({ pedido, onClose, onSave }) {
           <div style={{ display: "flex", gap: 6 }}>
             <button
               onClick={() => setForm({ ...form, estadoPago: "pagado" })}
+              aria-pressed={form.estadoPago === "pagado"}
               style={{
                 flex: 1,
                 fontSize: 12,
@@ -2458,6 +2496,7 @@ function EditModal({ pedido, onClose, onSave }) {
             </button>
             <button
               onClick={() => setForm({ ...form, estadoPago: "pendiente" })}
+              aria-pressed={form.estadoPago === "pendiente"}
               style={{
                 flex: 1,
                 fontSize: 12,
@@ -2479,6 +2518,7 @@ function EditModal({ pedido, onClose, onSave }) {
               {VEHICULOS.map((v) => (
                 <button
                   key={v.id}
+                  aria-pressed={form.vehiculo === v.id}
                   onClick={() => {
                     setAviso("");
                     setForm({
@@ -2514,6 +2554,7 @@ function EditModal({ pedido, onClose, onSave }) {
                   <button
                     key={v.id}
                     onClick={() => setForm({ ...form, vehiculoSecundario: activo ? null : v.id })}
+                    aria-pressed={activo}
                     style={{
                       flex: 1,
                       fontSize: 12,
@@ -2530,7 +2571,7 @@ function EditModal({ pedido, onClose, onSave }) {
                 );
               })}
             </div>
-            <span style={{ fontSize: 11, color: "var(--color-text-tertiary)", display: "block", marginTop: 4 }}>
+            <span style={{ fontSize: 12, color: "var(--color-text-tertiary)", display: "block", marginTop: 4 }}>
               El pedido aparecerá también en esa columna. Toca de nuevo para quitarlo.
             </span>
           </div>
@@ -2555,7 +2596,7 @@ function EditModal({ pedido, onClose, onSave }) {
           }}
           style={{ fontSize: 13, fontWeight: 500, background: "var(--color-background-info)", color: "var(--color-text-info)", border: "0.5px solid var(--color-border-info)" }}
         >
-          Guardar
+          Guardar cambios
         </button>
       </div>
     </ModalOverlay>
@@ -2623,14 +2664,14 @@ function CotizacionCard({ cotizacion, hoyIso, onDelete, onEdit, onVerPdf, onCamb
 
       <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 7, paddingLeft: 36, flexWrap: "wrap" }}>
         {cotizacion.numeroFactura && (
-          <span style={{ fontSize: 10.5, background: "var(--color-background-secondary)", color: "var(--color-text-secondary)", borderRadius: "var(--border-radius-sm)", padding: "2px 7px" }}>
+          <span style={{ fontSize: 12, background: "var(--color-background-secondary)", color: "var(--color-text-secondary)", borderRadius: "var(--border-radius-sm)", padding: "2px 7px" }}>
             Cotización {cotizacion.numeroFactura}
           </span>
         )}
-        {cotizacion.fecha && <span style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}>{cotizacion.fecha}</span>}
+        {cotizacion.fecha && <span style={{ fontSize: 12, color: "var(--color-text-tertiary)" }}>{cotizacion.fecha}</span>}
         <span
           style={{
-            fontSize: 11,
+            fontSize: 12,
             padding: "2px 8px",
             borderRadius: "var(--border-radius-sm)",
             background: badge.bg,
@@ -2659,7 +2700,7 @@ function CotizacionCard({ cotizacion, hoyIso, onDelete, onEdit, onVerPdf, onCamb
                 display: "flex",
                 alignItems: "center",
                 gap: 5,
-                fontSize: 11.5,
+                fontSize: 12.5,
                 color: vencido ? "var(--color-text-danger)" : "var(--color-text-secondary)",
                 fontWeight: vencido ? 500 : 400,
                 marginBottom: 7,
@@ -2680,7 +2721,7 @@ function CotizacionCard({ cotizacion, hoyIso, onDelete, onEdit, onVerPdf, onCamb
       {cotizacion.estado === "rechazada" && cotizacion.motivoRechazo && (
         <div
           style={{
-            fontSize: 11,
+            fontSize: 12,
             color: "var(--color-text-danger)",
             marginBottom: 8,
             marginLeft: 36,
@@ -2697,7 +2738,7 @@ function CotizacionCard({ cotizacion, hoyIso, onDelete, onEdit, onVerPdf, onCamb
       {cotizacion.notas && cotizacion.notas.trim() && (
         <div
           style={{
-            fontSize: 11,
+            fontSize: 12,
             color: "var(--color-text-secondary)",
             marginBottom: 8,
             marginLeft: 36,
@@ -2713,7 +2754,7 @@ function CotizacionCard({ cotizacion, hoyIso, onDelete, onEdit, onVerPdf, onCamb
 
       <div style={{ display: "flex", alignItems: "center", gap: 6, paddingLeft: 36, flexWrap: "wrap" }}>
         {cotizacion.pdfDataUrl && (
-          <button onClick={onVerPdf} style={{ fontSize: 11, padding: "5px 9px" }}>
+          <button onClick={onVerPdf} style={{ fontSize: 12.5, padding: "9px 12px", minHeight: 40 }}>
             <i className="ti ti-file-text" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
             Ver documento
           </button>
@@ -2721,8 +2762,9 @@ function CotizacionCard({ cotizacion, hoyIso, onDelete, onEdit, onVerPdf, onCamb
         <button
           onClick={onEdit}
           style={{
-            fontSize: 11,
-            padding: "5px 9px",
+            fontSize: 12.5,
+            padding: "9px 12px",
+            minHeight: 40,
             background: MARCA.azulClaro,
             color: MARCA.azulOscuro,
             border: `0.5px solid ${MARCA.azulMedio}`,
@@ -2739,12 +2781,12 @@ function CotizacionCard({ cotizacion, hoyIso, onDelete, onEdit, onVerPdf, onCamb
               style={{
                 flex: 1,
                 minWidth: 90,
-                height: 30,
+                minHeight: 40,
                 border: "none",
                 background: "#639922",
                 color: "white",
                 fontWeight: 500,
-                fontSize: 12,
+                fontSize: 13,
                 borderRadius: "var(--border-radius-md)",
                 display: "flex",
                 alignItems: "center",
@@ -2760,12 +2802,12 @@ function CotizacionCard({ cotizacion, hoyIso, onDelete, onEdit, onVerPdf, onCamb
               style={{
                 flex: 1,
                 minWidth: 90,
-                height: 30,
+                minHeight: 40,
                 border: "none",
                 background: "#A32D2D",
                 color: "white",
                 fontWeight: 500,
-                fontSize: 12,
+                fontSize: 13,
                 borderRadius: "var(--border-radius-md)",
                 display: "flex",
                 alignItems: "center",
@@ -2780,7 +2822,7 @@ function CotizacionCard({ cotizacion, hoyIso, onDelete, onEdit, onVerPdf, onCamb
         )}
 
         {cotizacion.estado !== "pendiente" && (
-          <button onClick={() => onCambiarEstado("pendiente")} style={{ fontSize: 11, padding: "5px 9px" }}>
+          <button onClick={() => onCambiarEstado("pendiente")} style={{ fontSize: 12.5, padding: "9px 12px", minHeight: 40 }}>
             <i className="ti ti-clock" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
             Volver a pendiente
           </button>
@@ -2790,8 +2832,9 @@ function CotizacionCard({ cotizacion, hoyIso, onDelete, onEdit, onVerPdf, onCamb
           <button
             onClick={onDelete}
             style={{
-              fontSize: 11,
-              padding: "5px 9px",
+              fontSize: 12.5,
+              padding: "9px 12px",
+              minHeight: 40,
               background: "var(--color-background-danger)",
               color: "var(--color-text-danger)",
               border: "0.5px solid var(--color-border-danger)",
@@ -2799,14 +2842,15 @@ function CotizacionCard({ cotizacion, hoyIso, onDelete, onEdit, onVerPdf, onCamb
             }}
           >
             <i className="ti ti-alert-triangle" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
-            ¿Seguro?
+            Toca otra vez para eliminar
           </button>
         ) : (
           <button
             onClick={() => setConfirmDelete(true)}
             style={{
-              fontSize: 11,
-              padding: "5px 9px",
+              fontSize: 12.5,
+              padding: "9px 12px",
+              minHeight: 40,
               background: "var(--color-background-danger)",
               color: "var(--color-text-danger)",
               border: "0.5px solid var(--color-border-danger)",
@@ -2910,7 +2954,7 @@ function ExtractReviewCardCotizacion({ data, onChange, onConfirm, onCancel }) {
           onChange={(e) => onChange({ ...data, fechaSeguimiento: e.target.value })}
           style={{ width: "100%" }}
         />
-        <span style={{ fontSize: 11, color: "var(--color-text-tertiary)", display: "block", marginTop: 4 }}>
+        <span style={{ fontSize: 12, color: "var(--color-text-tertiary)", display: "block", marginTop: 4 }}>
           Para recordarte cuándo llamar al cliente y dar seguimiento.
         </span>
       </div>
@@ -2928,7 +2972,7 @@ function ExtractReviewCardCotizacion({ data, onChange, onConfirm, onCancel }) {
           }}
         >
           <i className="ti ti-check" style={{ fontSize: 14, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
-          Agregar a la lista
+          Agregar cotización
         </button>
       </div>
     </div>
@@ -2952,7 +2996,7 @@ function MotivoRechazoModal({ cotizacion, onClose, onConfirm }) {
     <ModalOverlay onClose={onClose} maxWidth={400}>
       <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12 }}>
         <span style={{ fontWeight: 500, fontSize: 15 }}>¿Por qué se rechazó?</span>
-        <button onClick={onClose} aria-label="Cerrar" style={{ padding: "2px 8px" }}>
+        <button onClick={onClose} aria-label="Cerrar" style={{ padding: 8, minWidth: 40, minHeight: 40 }}>
           <i className="ti ti-x" style={{ fontSize: 14 }} aria-hidden="true"></i>
         </button>
       </div>
@@ -2966,6 +3010,7 @@ function MotivoRechazoModal({ cotizacion, onClose, onConfirm }) {
           <button
             key={m}
             onClick={() => setSeleccionado(m)}
+            aria-pressed={seleccionado === m}
             style={{
               textAlign: "left",
               fontSize: 13,
@@ -2981,6 +3026,7 @@ function MotivoRechazoModal({ cotizacion, onClose, onConfirm }) {
         ))}
         <button
           onClick={() => setSeleccionado("Otro")}
+          aria-pressed={seleccionado === "Otro"}
           style={{
             textAlign: "left",
             fontSize: 13,
@@ -3034,7 +3080,7 @@ function EditCotizacionModal({ cotizacion, onClose, onSave }) {
     <ModalOverlay onClose={onClose} maxWidth={420}>
       <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12 }}>
         <span style={{ fontWeight: 500, fontSize: 15 }}>Editar cotización</span>
-        <button onClick={onClose} aria-label="Cerrar" style={{ padding: "2px 8px" }}>
+        <button onClick={onClose} aria-label="Cerrar" style={{ padding: 8, minWidth: 40, minHeight: 40 }}>
           <i className="ti ti-x" style={{ fontSize: 14 }} aria-hidden="true"></i>
         </button>
       </div>
@@ -3049,6 +3095,7 @@ function EditCotizacionModal({ cotizacion, onClose, onSave }) {
               <button
                 key={key}
                 onClick={() => setForm({ ...form, estado: key })}
+                aria-pressed={form.estado === key}
                 style={{
                   flex: 1,
                   fontSize: 12,
@@ -3092,7 +3139,7 @@ function EditCotizacionModal({ cotizacion, onClose, onSave }) {
           onClick={() => onSave(form)}
           style={{ fontSize: 13, fontWeight: 500, background: "var(--color-background-info)", color: "var(--color-text-info)", border: "0.5px solid var(--color-border-info)" }}
         >
-          Guardar
+          Guardar cambios
         </button>
       </div>
     </ModalOverlay>
