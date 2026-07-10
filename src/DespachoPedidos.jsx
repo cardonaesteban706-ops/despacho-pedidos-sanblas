@@ -954,6 +954,16 @@ export default function DespachoPedidos() {
           outline: 3px solid #378ADD;
           outline-offset: 2px;
         }
+        button, a {
+          touch-action: manipulation;
+          -webkit-tap-highlight-color: rgba(55, 138, 221, 0.15);
+        }
+        /* En pantallas táctiles: target de 44px y fuente de input de 16px
+           (por debajo de 16px, iOS hace zoom automático al tocar un campo). */
+        @media (pointer: coarse) {
+          button { min-height: 44px; }
+          input, textarea, select { font-size: 16px; }
+        }
       `}</style>
       <h2 className="sr-only" style={{ position: "absolute", width: 1, height: 1, overflow: "hidden" }}>
         Sistema de despacho de pedidos: lista por vehículo con subida de facturas y cotizaciones en PDF
@@ -1559,6 +1569,8 @@ export default function DespachoPedidos() {
 }
 
 function ExtractReviewCard({ data, onChange, onConfirm, onCancel }) {
+  const [aviso, setAviso] = useState("");
+  const confirmadoRef = useRef(false);
   const missing = [];
   if (!data.cliente) missing.push("cliente");
   if (!data.numeroFactura) missing.push("número");
@@ -1600,10 +1612,11 @@ function ExtractReviewCard({ data, onChange, onConfirm, onCancel }) {
       )}
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 12 }}>
-        <Field label="N° documento" value={data.numeroFactura || ""} onChange={(v) => onChange({ ...data, numeroFactura: v })} />
+        <Field label="N° documento" inputMode="numeric" spellCheck={false} value={data.numeroFactura || ""} onChange={(v) => onChange({ ...data, numeroFactura: v })} />
         <Field label="Cliente" value={data.cliente || ""} onChange={(v) => onChange({ ...data, cliente: v })} />
         <Field
           label="Teléfono"
+          type="tel"
           value={data.telefono || ""}
           onChange={(v) => onChange({ ...data, telefono: v })}
         />
@@ -1691,6 +1704,7 @@ function ExtractReviewCard({ data, onChange, onConfirm, onCancel }) {
               <div style={{ marginTop: 8 }}>
                 <input
                   type="date"
+                  aria-label="Fecha de despacho"
                   value={fechaSel}
                   min={todayISO()}
                   onChange={(e) => onChange({ ...data, fechaDespacho: e.target.value || todayISO() })}
@@ -1755,7 +1769,10 @@ function ExtractReviewCard({ data, onChange, onConfirm, onCancel }) {
             {VEHICULOS.map((v) => (
               <button
                 key={v.id}
-                onClick={() => onChange({ ...data, vehiculo: v.id })}
+                onClick={() => {
+                  setAviso("");
+                  onChange({ ...data, vehiculo: v.id });
+                }}
                 aria-pressed={data.vehiculo === v.id}
                 style={{
                   flex: 1,
@@ -1776,10 +1793,30 @@ function ExtractReviewCard({ data, onChange, onConfirm, onCancel }) {
         </div>
       )}
 
+      {aviso && (
+        <div style={{ fontSize: 12, color: "var(--color-text-danger)", marginBottom: 8, textAlign: "right" }}>
+          <i className="ti ti-alert-triangle" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
+          {aviso}
+        </div>
+      )}
       <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
         <button onClick={onCancel} style={{ fontSize: 13 }}>Cancelar</button>
         <button
-          onClick={onConfirm}
+          onClick={() => {
+            // Evita el pedido duplicado por doble clic mientras la tarjeta se cierra.
+            if (confirmadoRef.current) return;
+            if (!data.sinFechaDefinida && !data.vehiculo) {
+              setAviso("Selecciona un vehículo antes de guardar");
+              return;
+            }
+            if (!data.cliente || !data.cliente.trim()) {
+              setAviso("Escribe el nombre del cliente antes de guardar");
+              return;
+            }
+            setAviso("");
+            confirmadoRef.current = true;
+            onConfirm();
+          }}
           style={{
             fontSize: 13,
             fontWeight: 500,
@@ -1796,11 +1833,19 @@ function ExtractReviewCard({ data, onChange, onConfirm, onCancel }) {
   );
 }
 
-function Field({ label, value, onChange }) {
+function Field({ label, value, onChange, type = "text", inputMode, spellCheck }) {
   return (
     <label style={{ display: "block" }}>
       <span style={{ fontSize: 12, color: "var(--color-text-secondary)", display: "block", marginBottom: 4 }}>{label}</span>
-      <input type="text" value={value} onChange={(e) => onChange(e.target.value)} style={{ width: "100%" }} />
+      <input
+        type={type}
+        inputMode={inputMode}
+        spellCheck={spellCheck}
+        autoComplete="off"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        style={{ width: "100%" }}
+      />
     </label>
   );
 }
@@ -2221,6 +2266,7 @@ function PdfCanvasViewer({ dataUrl }) {
           width: "100%",
           maxHeight: "72vh",
           overflow: "auto",
+          overscrollBehavior: "contain",
           background: "var(--color-background-secondary)",
           borderRadius: "var(--border-radius-md)",
           padding: 8,
@@ -2293,6 +2339,7 @@ function ModalOverlay({ onClose, children, maxWidth = 480 }) {
           maxWidth,
           maxHeight: "90vh",
           overflowY: "auto",
+          overscrollBehavior: "contain",
         }}
       >
         {children}
@@ -2333,12 +2380,28 @@ function HistorialRow({ pedido, onVerPdf }) {
   const [expanded, setExpanded] = useState(false);
   return (
     <div style={{ background: "var(--color-background-primary)", border: "0.5px solid var(--color-border-tertiary)", borderRadius: "var(--border-radius-md)", padding: "10px 14px" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }} onClick={() => setExpanded(!expanded)}>
+      <button
+        onClick={() => setExpanded(!expanded)}
+        aria-expanded={expanded}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 10,
+          cursor: "pointer",
+          width: "100%",
+          background: "transparent",
+          border: "none",
+          padding: 0,
+          font: "inherit",
+          textAlign: "left",
+          color: "inherit",
+        }}
+      >
         <i className={`ti ${(VEHICULOS.find((v) => v.id === pedido.vehiculo) || {}).icon || "ti-package"}`} style={{ fontSize: 16, color: "var(--color-text-secondary)" }} aria-hidden="true"></i>
         <span style={{ fontWeight: 500, fontSize: 13, flex: 1 }}>{pedido.cliente}</span>
         <span style={{ fontSize: 12, color: "var(--color-text-tertiary)" }}>{pedido.fechaEntrega || pedido.fecha}</span>
         <i className={`ti ti-chevron-${expanded ? "up" : "down"}`} style={{ fontSize: 14, color: "var(--color-text-tertiary)" }} aria-hidden="true"></i>
-      </div>
+      </button>
       {expanded && (
         <div style={{ marginTop: 10, paddingTop: 10, borderTop: "0.5px solid var(--color-border-tertiary)", fontSize: 12, color: "var(--color-text-secondary)" }}>
           <div>Documento: {pedido.numeroFactura || "-"} ({pedido.tipoDocumento === "cotizacion" ? "cotización" : "factura"})</div>
@@ -2391,7 +2454,7 @@ function NotaPendienteModal({ pedido, onClose, onGuardar, onQuitar }) {
         value={nota}
         onChange={(e) => setNota(e.target.value)}
         placeholder="Ej: faltó la arena y 2 tejas"
-        autoFocus
+        autoFocus={window.matchMedia("(pointer: fine)").matches}
         style={{ width: "100%", minHeight: 70, fontSize: 13, marginBottom: 6 }}
       />
       <div style={{ fontSize: 12, color: "var(--color-text-tertiary)", marginBottom: 14 }}>
@@ -2438,7 +2501,7 @@ function EditModal({ pedido, onClose, onSave }) {
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 14 }}>
         <Field label="Cliente" value={form.cliente || ""} onChange={(v) => setForm({ ...form, cliente: v })} />
-        <Field label="Teléfono" value={form.telefono || ""} onChange={(v) => setForm({ ...form, telefono: v })} />
+        <Field label="Teléfono" type="tel" value={form.telefono || ""} onChange={(v) => setForm({ ...form, telefono: v })} />
 
         <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: "var(--color-text-secondary)", padding: "6px 0" }}>
           <input
@@ -2866,6 +2929,8 @@ function CotizacionCard({ cotizacion, hoyIso, onDelete, onEdit, onVerPdf, onCamb
 }
 
 function ExtractReviewCardCotizacion({ data, onChange, onConfirm, onCancel }) {
+  const [aviso, setAviso] = useState("");
+  const confirmadoRef = useRef(false);
   const missing = [];
   if (!data.cliente) missing.push("cliente");
   if (!data.numeroFactura) missing.push("número");
@@ -2894,10 +2959,11 @@ function ExtractReviewCardCotizacion({ data, onChange, onConfirm, onCancel }) {
       )}
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 12 }}>
-        <Field label="N° cotización" value={data.numeroFactura || ""} onChange={(v) => onChange({ ...data, numeroFactura: v })} />
+        <Field label="N° cotización" inputMode="numeric" spellCheck={false} value={data.numeroFactura || ""} onChange={(v) => onChange({ ...data, numeroFactura: v })} />
         <Field label="Cliente" value={data.cliente || ""} onChange={(v) => onChange({ ...data, cliente: v })} />
         <Field
           label="Teléfono"
+          type="tel"
           value={data.telefono || ""}
           onChange={(v) => onChange({ ...data, telefono: v })}
         />
@@ -2944,7 +3010,7 @@ function ExtractReviewCardCotizacion({ data, onChange, onConfirm, onCancel }) {
         Esta cotización empieza en estado <b>Pendiente</b>. Después podrás marcarla como Aceptada o Rechazada.
       </div>
 
-      <div style={{ marginBottom: 12 }}>
+      <label style={{ display: "block", marginBottom: 12 }}>
         <span style={{ fontSize: 12, color: "var(--color-text-secondary)", display: "block", marginBottom: 6 }}>
           Fecha de seguimiento (opcional)
         </span>
@@ -2957,12 +3023,28 @@ function ExtractReviewCardCotizacion({ data, onChange, onConfirm, onCancel }) {
         <span style={{ fontSize: 12, color: "var(--color-text-tertiary)", display: "block", marginTop: 4 }}>
           Para recordarte cuándo llamar al cliente y dar seguimiento.
         </span>
-      </div>
+      </label>
 
+      {aviso && (
+        <div style={{ fontSize: 12, color: "var(--color-text-danger)", marginBottom: 8, textAlign: "right" }}>
+          <i className="ti ti-alert-triangle" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
+          {aviso}
+        </div>
+      )}
       <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
         <button onClick={onCancel} style={{ fontSize: 13 }}>Cancelar</button>
         <button
-          onClick={onConfirm}
+          onClick={() => {
+            // Evita la cotización duplicada por doble clic mientras la tarjeta se cierra.
+            if (confirmadoRef.current) return;
+            if (!data.cliente || !data.cliente.trim()) {
+              setAviso("Escribe el nombre del cliente antes de guardar");
+              return;
+            }
+            setAviso("");
+            confirmadoRef.current = true;
+            onConfirm();
+          }}
           style={{
             fontSize: 13,
             fontWeight: 500,
@@ -3045,8 +3127,11 @@ function MotivoRechazoModal({ cotizacion, onClose, onConfirm }) {
             placeholder="Escribe el motivo..."
             value={otroTexto}
             onChange={(e) => setOtroTexto(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && otroTexto.trim()) onConfirm(otroTexto.trim());
+            }}
             style={{ width: "100%" }}
-            autoFocus
+            autoFocus={window.matchMedia("(pointer: fine)").matches}
           />
         )}
       </div>
@@ -3086,7 +3171,7 @@ function EditCotizacionModal({ cotizacion, onClose, onSave }) {
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 14 }}>
         <Field label="Cliente" value={form.cliente || ""} onChange={(v) => setForm({ ...form, cliente: v })} />
-        <Field label="Teléfono" value={form.telefono || ""} onChange={(v) => setForm({ ...form, telefono: v })} />
+        <Field label="Teléfono" type="tel" value={form.telefono || ""} onChange={(v) => setForm({ ...form, telefono: v })} />
 
         <div>
           <span style={{ fontSize: 12, color: "var(--color-text-secondary)", display: "block", marginBottom: 4 }}>Estado</span>
