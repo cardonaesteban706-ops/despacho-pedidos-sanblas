@@ -8,6 +8,10 @@ const VEHICULOS = [
   { id: "tractor", label: "Tractor", icon: "ti-tractor", bg: "#EAF3DE", border: "#639922", text: "#27500A" },
 ];
 
+// Destinos frecuentes para marcar la zona del pedido al montarlo. "Otro" abre
+// un campo de texto para escribir cualquier otro lugar a mano.
+const DESTINOS = ["Corozal", "Morroa"];
+
 // Colores de identidad de marca SANBLAS (tomados del logo: azul oscuro
 // institucional + celeste claro de fondo). Se usan en el header, la
 // pestaña activa y el botón principal de subir documento.
@@ -36,6 +40,37 @@ function parseCantidad(s) {
     return parseFloat(str.replace(/\./g, "").replace(",", ".")) || 0;
   }
   return parseFloat(str.replace(",", ".")) || 0;
+}
+
+// Cantidad como número. Los productos ya vienen parseados a número, pero si
+// acaso llega un string lo normalizamos con la misma lógica colombiana.
+function cantidadNum(v) {
+  if (typeof v === "number") return v;
+  return parseCantidad(v);
+}
+
+function formatCantidad(n) {
+  return new Intl.NumberFormat("es-CO", { maximumFractionDigits: 2 }).format(n);
+}
+
+// Seguimiento de material por unidades: un producto "tocado" tiene el campo
+// cantidadEntregada. Devuelve los productos donde se entregaron MENOS unidades
+// que las de la factura (con cuántas faltan). Un pedido sin ningún producto
+// tocado devuelve lista vacía y se comporta como siempre.
+function faltantesDeProductos(productos) {
+  return (productos || [])
+    .filter((p) => p.cantidadEntregada !== undefined && p.cantidadEntregada !== null)
+    .map((p) => ({ ...p, faltan: cantidadNum(p.cantidad) - cantidadNum(p.cantidadEntregada) }))
+    .filter((p) => p.faltan > 0);
+}
+
+// Nota de texto (mismo formato de siempre: "2 tejas; 1 bulto cemento") armada
+// a partir de los faltantes por unidades. Se usa al pasar un pedido de
+// "Pendientes" a despacho, para no tener que reescribir la nota a mano.
+function notaDesdeFaltantes(productos) {
+  const faltan = faltantesDeProductos(productos);
+  if (faltan.length === 0) return "";
+  return faltan.map((p) => `${formatCantidad(p.faltan)} ${p.unidad || ""} ${p.descripcion || ""}`.replace(/\s+/g, " ").trim()).join("; ");
 }
 
 function todayStr() {
@@ -394,6 +429,7 @@ export default function DespachoPedidos() {
   const [viewingPdf, setViewingPdf] = useState(null);
   const [notaPendienteDe, setNotaPendienteDe] = useState(null);
   const [confirmandoEntrega, setConfirmandoEntrega] = useState(null);
+  const [materialDe, setMaterialDe] = useState(null);
   const [dragId, setDragId] = useState(null);
   const [dragOverCol, setDragOverCol] = useState(null);
   const [toast, setToast] = useState(null);
@@ -593,6 +629,7 @@ export default function DespachoPedidos() {
       total: data.total || null,
       productos: data.productos || [],
       vehiculo: sinTablero ? null : data.vehiculo,
+      destino: data.destino || "",
       pdfDataUrl: data.pdfDataUrl,
       fileName: data.fileName,
       fecha: todayStr(),
@@ -1247,12 +1284,15 @@ export default function DespachoPedidos() {
                 </span>
                 <i className="ti ti-chevron-right" style={{ fontSize: 15, marginLeft: "auto" }} aria-hidden="true"></i>
               </div>
-              {pedidosEsperaViaje.map((p) => (
-                <div key={p.id} style={{ fontSize: 12, color: "var(--color-text-info)", padding: "2px 0" }}>
-                  {p.cliente}
-                  {p.direccion && p.direccion.trim() ? ` — ${p.direccion}` : ""}
-                </div>
-              ))}
+              {pedidosEsperaViaje.map((p) => {
+                const zona = (p.destino && p.destino.trim()) || (p.direccion && p.direccion.trim()) || "";
+                return (
+                  <div key={p.id} style={{ fontSize: 12, color: "var(--color-text-info)", padding: "2px 0" }}>
+                    {p.cliente}
+                    {zona ? ` — ${zona}` : ""}
+                  </div>
+                );
+              })}
             </button>
           )}
           <div
@@ -1397,8 +1437,8 @@ export default function DespachoPedidos() {
                       onEntregado={() => solicitarEntrega(p)}
                       onEdit={() => setEditing(p)}
                       onVerPdf={() => setViewingPdf(p)}
-                      onNotaPendiente={() => setNotaPendienteDe(p)}
                       onProgramar={() => setEditing(p)}
+                      onMaterialUnidades={esViaje ? undefined : () => setMaterialDe(p)}
                     />
                   ))}
                 </div>
@@ -1623,9 +1663,25 @@ export default function DespachoPedidos() {
           pedido={editing}
           onClose={() => setEditing(null)}
           onSave={(patch) => {
-            updatePedido(editing.id, patch);
-            setEditing(null);
             const fechaAnterior = fechaDe(editing);
+            // Al pasar un pedido de "Pendientes" a una fecha real (despacho), si
+            // en el material por unidades quedaron faltantes, generamos sola la
+            // nota de material pendiente en el formato de siempre y lo marcamos.
+            const pasaADespacho =
+              fechaAnterior === "pendiente" &&
+              patch.fechaDespacho &&
+              patch.fechaDespacho !== "pendiente" &&
+              patch.fechaDespacho !== "viaje";
+            let patchFinal = patch;
+            let notaAuto = "";
+            if (pasaADespacho) {
+              notaAuto = notaDesdeFaltantes(patch.productos);
+              if (notaAuto) {
+                patchFinal = { ...patch, entregaPendiente: true, notaPendiente: notaAuto };
+              }
+            }
+            updatePedido(editing.id, patchFinal);
+            setEditing(null);
             if (patch.fechaDespacho === "pendiente" && fechaAnterior !== "pendiente") {
               // "pendiente" no es una fecha ISO: etiquetaFecha la partía con
               // split("-") y el toast decía "movido a undefined undefined".
@@ -1633,6 +1689,8 @@ export default function DespachoPedidos() {
             } else if (patch.fechaDespacho === "viaje" && fechaAnterior !== "viaje") {
               // "viaje" tampoco es una fecha ISO: mismo cuidado que "pendiente".
               showToast("Pedido movido a Por viaje");
+            } else if (notaAuto) {
+              showToast("Movido a despacho — quedó material pendiente");
             } else if (
               patch.fechaDespacho &&
               patch.fechaDespacho !== "pendiente" &&
@@ -1673,6 +1731,18 @@ export default function DespachoPedidos() {
           onConfirm={(estadoPago) => {
             marcarEntregado(confirmandoEntrega.id, { estadoPago });
             setConfirmandoEntrega(null);
+          }}
+        />
+      )}
+
+      {materialDe && (
+        <MaterialPorUnidadesModal
+          pedido={materialDe}
+          onClose={() => setMaterialDe(null)}
+          onGuardar={(productos) => {
+            updatePedido(materialDe.id, { productos });
+            setMaterialDe(null);
+            showToast("Material actualizado");
           }}
         />
       )}
@@ -1885,6 +1955,10 @@ function ExtractReviewCard({ data, onChange, onConfirm, onCancel }) {
       })()}
 
       <div style={{ marginBottom: 12 }}>
+        <DestinoSelector value={data.destino || ""} onChange={(v) => onChange({ ...data, destino: v })} />
+      </div>
+
+      <div style={{ marginBottom: 12 }}>
         <span style={{ fontSize: 12, color: "var(--color-text-secondary)", display: "block", marginBottom: 6 }}>
           Estado de pago
         </span>
@@ -2010,7 +2084,69 @@ function Field({ label, value, onChange, type = "text", inputMode, spellCheck })
   );
 }
 
-function PedidoCard({ pedido, posicion, esSecundario, isDragging, onDragStart, onDragEnd, onDragOverItem, onDropItem, onDelete, onEntregado, onEdit, onVerPdf, onNotaPendiente, atrasadoDesde, onMoverAHoy, onProgramar }) {
+// Selector de destino: Corozal / Morroa / Otro (con campo manual). Guarda el
+// nombre del lugar en "value" (un string): para los presets es su nombre; para
+// "Otro" es lo que se escriba a mano.
+function DestinoSelector({ value, onChange }) {
+  const esPreset = DESTINOS.includes(value);
+  const [otroManual, setOtroManual] = useState(!!value && !esPreset);
+  const mostrarOtro = otroManual || (!!value && !esPreset);
+  const opcion = (activo) => ({
+    flex: 1,
+    fontSize: 12.5,
+    padding: "8px 4px",
+    minHeight: 40,
+    borderRadius: "var(--border-radius-md)",
+    border: activo ? "2px solid var(--color-border-info)" : "0.5px solid var(--color-border-tertiary)",
+    background: activo ? "var(--color-background-info)" : "var(--color-background-primary)",
+    color: activo ? "var(--color-text-info)" : "var(--color-text-primary)",
+    fontWeight: activo ? 500 : 400,
+  });
+  return (
+    <div>
+      <span style={{ fontSize: 12, color: "var(--color-text-secondary)", display: "block", marginBottom: 4 }}>
+        ¿Para dónde va? <span style={{ color: "var(--color-text-tertiary)" }}>(opcional)</span>
+      </span>
+      <div style={{ display: "flex", gap: 6 }}>
+        {DESTINOS.map((d) => (
+          <button
+            key={d}
+            aria-pressed={value === d}
+            onClick={() => {
+              setOtroManual(false);
+              onChange(d);
+            }}
+            style={opcion(value === d)}
+          >
+            {d}
+          </button>
+        ))}
+        <button
+          aria-pressed={mostrarOtro}
+          onClick={() => {
+            setOtroManual(true);
+            if (esPreset) onChange("");
+          }}
+          style={opcion(mostrarOtro)}
+        >
+          Otro
+        </button>
+      </div>
+      {mostrarOtro && (
+        <input
+          type="text"
+          autoComplete="off"
+          placeholder="Escribe el lugar"
+          value={esPreset ? "" : value || ""}
+          onChange={(e) => onChange(e.target.value)}
+          style={{ width: "100%", marginTop: 8 }}
+        />
+      )}
+    </div>
+  );
+}
+
+function PedidoCard({ pedido, posicion, esSecundario, isDragging, onDragStart, onDragEnd, onDragOverItem, onDropItem, onDelete, onEntregado, onEdit, onVerPdf, onNotaPendiente, atrasadoDesde, onMoverAHoy, onProgramar, onMaterialUnidades }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [verProductos, setVerProductos] = useState(false);
   const productos = pedido.productos || [];
@@ -2101,6 +2237,12 @@ function PedidoCard({ pedido, posicion, esSecundario, isDragging, onDragStart, o
         {pedido.numeroFactura && (
           <span style={{ fontSize: 12, background: "var(--color-background-secondary)", color: "var(--color-text-secondary)", borderRadius: "var(--border-radius-sm)", padding: "2px 7px" }}>
             {pedido.tipoDocumento === "cotizacion" ? "Cotización" : "Factura"} {pedido.numeroFactura}
+          </span>
+        )}
+        {pedido.destino && pedido.destino.trim() && (
+          <span style={{ fontSize: 12, background: "var(--color-background-info)", color: "var(--color-text-info)", borderRadius: "var(--border-radius-sm)", padding: "2px 7px" }}>
+            <i className="ti ti-map-pin" style={{ fontSize: 11, verticalAlign: "-1px", marginRight: 3 }} aria-hidden="true"></i>
+            {pedido.destino}
           </span>
         )}
         {pedido.hora && <span style={{ fontSize: 12, color: "var(--color-text-tertiary)" }}>{pedido.hora}</span>}
@@ -2210,6 +2352,27 @@ function PedidoCard({ pedido, posicion, esSecundario, isDragging, onDragStart, o
             Mover a despacho
           </button>
         )}
+        {onMaterialUnidades &&
+          (() => {
+            const faltan = faltantesDeProductos(pedido.productos);
+            const tocado = (pedido.productos || []).some((p) => p.cantidadEntregada !== undefined && p.cantidadEntregada !== null);
+            return (
+              <button
+                onClick={onMaterialUnidades}
+                style={{
+                  fontSize: 12.5,
+                  padding: "9px 12px",
+                  minHeight: 40,
+                  background: faltan.length > 0 ? "var(--color-background-warning)" : "transparent",
+                  color: faltan.length > 0 ? "var(--color-text-warning)" : "var(--color-text-primary)",
+                  border: faltan.length > 0 ? "0.5px solid var(--color-border-warning)" : "0.5px solid var(--color-border-tertiary)",
+                }}
+              >
+                <i className="ti ti-checklist" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
+                {faltan.length > 0 ? `Material (faltan ${faltan.length})` : tocado ? "Material ✓" : "Material entregado"}
+              </button>
+            );
+          })()}
         {atrasadoDesde && !esSecundario && onMoverAHoy && (
           <button
             onClick={onMoverAHoy}
@@ -2602,6 +2765,7 @@ function HistorialRow({ pedido, onVerPdf, onDevolver }) {
           <div>Documento: {pedido.numeroFactura || "-"} ({pedido.tipoDocumento === "cotizacion" ? "cotización" : "factura"})</div>
           <div>Vendedor: {pedido.vendedor || "-"}</div>
           <div>Vehículo: {(VEHICULOS.find((v) => v.id === pedido.vehiculo) || {}).label || "-"}</div>
+          {pedido.destino && pedido.destino.trim() && <div>Destino: {pedido.destino}</div>}
           <div>Total: {pedido.total ? `$${formatCOP(pedido.total)}` : "-"}</div>
           <div style={{ color: pagado ? "var(--color-text-success)" : "var(--color-text-warning)", fontWeight: 500 }}>
             Pago: {pagado ? "Pagado" : "Quedó debiendo"}
@@ -2715,6 +2879,114 @@ function NotaPendienteModal({ pedido, onClose, onGuardar, onQuitar }) {
           }}
         >
           Marcar como pendiente
+        </button>
+      </div>
+    </ModalOverlay>
+  );
+}
+
+// Solo se usa en la pestaña "Pendientes": lista producto por producto cuántas
+// unidades se entregaron (de las que trae la factura), por si no se entregó
+// todo. Guarda cantidadEntregada en cada producto. La nota de material
+// pendiente NO se crea aquí: se genera sola al pasar el pedido a despacho.
+function MaterialPorUnidadesModal({ pedido, onClose, onGuardar }) {
+  const [items, setItems] = useState(() =>
+    (pedido.productos || []).map((p) => ({
+      ...p,
+      // Por defecto asumimos que se entregó todo; el usuario baja las que
+      // faltaron. Si ya se había tocado antes, respetamos ese valor.
+      entregadas: p.cantidadEntregada !== undefined && p.cantidadEntregada !== null ? cantidadNum(p.cantidadEntregada) : cantidadNum(p.cantidad),
+    }))
+  );
+
+  const setEntregadas = (idx, valor) => {
+    setItems((prev) =>
+      prev.map((it, i) => {
+        if (i !== idx) return it;
+        const total = cantidadNum(it.cantidad);
+        let n = valor;
+        if (isNaN(n) || n < 0) n = 0;
+        if (n > total) n = total;
+        return { ...it, entregadas: n };
+      })
+    );
+  };
+
+  return (
+    <ModalOverlay onClose={onClose} maxWidth={460}>
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+        <span style={{ fontWeight: 500, fontSize: 15 }}>Material entregado</span>
+        <button onClick={onClose} aria-label="Cerrar" style={{ padding: 8, minWidth: 40, minHeight: 40 }}>
+          <i className="ti ti-x" style={{ fontSize: 14 }} aria-hidden="true"></i>
+        </button>
+      </div>
+      <div style={{ fontSize: 12.5, color: "var(--color-text-tertiary)", marginBottom: 12 }}>
+        {pedido.cliente} · marca cuántas unidades de cada material se entregaron.
+      </div>
+
+      {items.length === 0 && (
+        <div style={{ fontSize: 13, color: "var(--color-text-tertiary)", padding: "8px 4px" }}>
+          Este pedido no tiene productos detallados.
+        </div>
+      )}
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 14 }}>
+        {items.map((it, idx) => {
+          const total = cantidadNum(it.cantidad);
+          const falta = total - it.entregadas;
+          const completo = falta <= 0;
+          return (
+            <div
+              key={idx}
+              style={{
+                border: completo ? "0.5px solid var(--color-border-success)" : "0.5px solid var(--color-border-warning)",
+                borderRadius: "var(--border-radius-md)",
+                padding: "8px 10px",
+              }}
+            >
+              <div style={{ fontSize: 13, marginBottom: 6 }}>
+                <b style={{ fontWeight: 500 }}>{formatCantidad(total)} {it.unidad}</b> — {it.descripcion}
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                <span style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>Entregadas:</span>
+                <input
+                  type="number"
+                  inputMode="decimal"
+                  min={0}
+                  max={total}
+                  value={it.entregadas}
+                  onChange={(e) => setEntregadas(idx, parseCantidad(e.target.value))}
+                  style={{ width: 80 }}
+                />
+                <button onClick={() => setEntregadas(idx, total)} style={{ fontSize: 12, padding: "6px 10px", minHeight: 36 }}>
+                  Todo
+                </button>
+                <button onClick={() => setEntregadas(idx, 0)} style={{ fontSize: 12, padding: "6px 10px", minHeight: 36 }}>
+                  Nada
+                </button>
+                <span
+                  style={{
+                    marginLeft: "auto",
+                    fontSize: 12,
+                    fontWeight: 500,
+                    color: completo ? "var(--color-text-success)" : "var(--color-text-warning)",
+                  }}
+                >
+                  {completo ? "Completo" : `Faltan ${formatCantidad(falta)}`}
+                </span>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+        <button onClick={onClose} style={{ fontSize: 13 }}>Cancelar</button>
+        <button
+          onClick={() => onGuardar(items.map(({ entregadas, ...rest }) => ({ ...rest, cantidadEntregada: entregadas })))}
+          style={{ fontSize: 13, fontWeight: 500, background: "var(--color-background-info)", color: "var(--color-text-info)", border: "0.5px solid var(--color-border-info)" }}
+        >
+          Guardar
         </button>
       </div>
     </ModalOverlay>
@@ -2866,6 +3138,8 @@ function EditModal({ pedido, onClose, onSave }) {
             </span>
           </label>
         )}
+
+        <DestinoSelector value={form.destino || ""} onChange={(v) => setForm({ ...form, destino: v })} />
 
         <div>
           <span style={{ fontSize: 12, color: "var(--color-text-secondary)", display: "block", marginBottom: 4 }}>
