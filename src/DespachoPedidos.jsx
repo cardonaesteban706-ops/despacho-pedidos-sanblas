@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { cargarPedidosActivos, cargarHistorial, guardarPedido, actualizarPedido, eliminarPedido, cargarPdfPedido } from "./supabaseClient";
 import { cargarCotizaciones, guardarCotizacion, eliminarCotizacion, cargarPdfCotizacion } from "./supabaseClient";
 
@@ -11,6 +11,14 @@ const VEHICULOS = [
 // Destinos frecuentes para marcar la zona del pedido al montarlo. "Otro" abre
 // un campo de texto para escribir cualquier otro lugar a mano.
 const DESTINOS = ["Corozal", "Morroa"];
+
+// Columnas del tablero de cotizaciones. A nivel de módulo (igual que
+// VEHICULOS): es una constante y no hay razón para recrearla en cada render.
+const ESTADOS_COTIZACION = [
+  { id: "pendiente", label: "Pendiente", icon: "ti-clock", bg: "#FAEEDA", border: "#BA7517", text: "#633806" },
+  { id: "aceptada", label: "Aceptada", icon: "ti-check", bg: "#EAF3DE", border: "#639922", text: "#27500A" },
+  { id: "rechazada", label: "Rechazada", icon: "ti-x", bg: "#FBE6E6", border: "#CC3333", text: "#7A1F1F" },
+];
 
 // Colores de identidad de marca SANBLAS (tomados del logo: azul oscuro
 // institucional + celeste claro de fondo). Se usan en el header, la
@@ -847,43 +855,49 @@ export default function DespachoPedidos() {
     persistCotizaciones(cotizaciones.map((c) => (c.id === id ? actualizada : c)), actualizada);
   }
 
-  const ESTADOS_COTIZACION = [
-    { id: "pendiente", label: "Pendiente", icon: "ti-clock", bg: "#FAEEDA", border: "#BA7517", text: "#633806" },
-    { id: "aceptada", label: "Aceptada", icon: "ti-check", bg: "#EAF3DE", border: "#639922", text: "#27500A" },
-    { id: "rechazada", label: "Rechazada", icon: "ti-x", bg: "#FBE6E6", border: "#CC3333", text: "#7A1F1F" },
-  ];
-
-  const cotizacionesFiltradas = cotizaciones.filter((c) => {
-    if (!cotizacionFilter.trim()) return true;
-    const q = cotizacionFilter.toLowerCase();
-    return (
-      (c.cliente || "").toLowerCase().includes(q) ||
-      (c.numeroFactura || "").toLowerCase().includes(q) ||
-      (c.fecha || "").toLowerCase().includes(q)
-    );
-  });
-
-  const cotizacionesAgrupadas = ESTADOS_COTIZACION.map((est) => ({
-    ...est,
-    items: cotizacionesFiltradas
-      .filter((c) => (c.estado || "pendiente") === est.id)
-      .sort((a, b) => (b.id > a.id ? 1 : -1)),
-  }));
+  // Derivaciones memoizadas: sin useMemo, cada render del componente (un
+  // toast, una tecla en un buscador, un dragover) rehacía todos estos
+  // filter/sort aunque los datos no hubieran cambiado.
+  const cotizacionesAgrupadas = useMemo(() => {
+    const filtradas = cotizaciones.filter((c) => {
+      if (!cotizacionFilter.trim()) return true;
+      const q = cotizacionFilter.toLowerCase();
+      return (
+        (c.cliente || "").toLowerCase().includes(q) ||
+        (c.numeroFactura || "").toLowerCase().includes(q) ||
+        (c.fecha || "").toLowerCase().includes(q)
+      );
+    });
+    return ESTADOS_COTIZACION.map((est) => ({
+      ...est,
+      items: filtradas
+        .filter((c) => (c.estado || "pendiente") === est.id)
+        .sort((a, b) => (b.id > a.id ? 1 : -1)),
+    }));
+  }, [cotizaciones, cotizacionFilter]);
 
   // Avisos de seguimiento: cotizaciones pendientes cuya fecha de
   // seguimiento es hoy o mañana, para recordar llamar al cliente.
   const mananaIso = addDaysISO(hoyIso, 1);
-  const cotizacionesConSeguimientoProximo = cotizaciones.filter(
-    (c) =>
-      (c.estado || "pendiente") === "pendiente" &&
-      c.fechaSeguimiento &&
-      (c.fechaSeguimiento === hoyIso || c.fechaSeguimiento === mananaIso)
+  const cotizacionesConSeguimientoProximo = useMemo(
+    () =>
+      cotizaciones.filter(
+        (c) =>
+          (c.estado || "pendiente") === "pendiente" &&
+          c.fechaSeguimiento &&
+          (c.fechaSeguimiento === hoyIso || c.fechaSeguimiento === mananaIso)
+      ),
+    [cotizaciones, hoyIso, mananaIso]
   );
 
   // Cotizaciones pendientes cuya fecha de seguimiento ya pasó sin que nadie
   // las atendiera: merecen una alerta más urgente que las de "próximo".
-  const cotizacionesConSeguimientoVencido = cotizaciones.filter(
-    (c) => (c.estado || "pendiente") === "pendiente" && c.fechaSeguimiento && c.fechaSeguimiento < hoyIso
+  const cotizacionesConSeguimientoVencido = useMemo(
+    () =>
+      cotizaciones.filter(
+        (c) => (c.estado || "pendiente") === "pendiente" && c.fechaSeguimiento && c.fechaSeguimiento < hoyIso
+      ),
+    [cotizaciones, hoyIso]
   );
 
   function handleDragStart(id) {
@@ -927,9 +941,11 @@ export default function DespachoPedidos() {
     // Copias con el orden nuevo (mutar los objetos del estado anterior en
     // sitio corrompía el snapshot previo de React), y a la base de datos
     // solo van las filas que de verdad cambiaron, no toda la columna.
+    // El Map por id evita un find() dentro del filter (O(n²) → O(n)).
     const reordenados = colItems.map((p, i) => ({ ...p, orden: i + 1 }));
+    const porId = new Map(pedidos.map((p) => [p.id, p]));
     const cambiados = reordenados.filter((p) => {
-      const antes = pedidos.find((x) => x.id === p.id);
+      const antes = porId.get(p.id);
       return (
         !antes ||
         antes.orden !== p.orden ||
@@ -945,14 +961,14 @@ export default function DespachoPedidos() {
 
   // Pedidos que quedaron debiendo material, sin importar de qué día sean.
   // Es lo primero que la persona del mostrador necesita ver al abrir la app.
-  const pedidosConEntregaPendiente = pedidos.filter((p) => p.entregaPendiente);
+  const pedidosConEntregaPendiente = useMemo(() => pedidos.filter((p) => p.entregaPendiente), [pedidos]);
 
-  const pedidosPendientes = pedidos.filter((p) => fechaDe(p) === "pendiente");
+  const pedidosPendientes = useMemo(() => pedidos.filter((p) => fechaDe(p) === "pendiente"), [pedidos, hoyIso]);
 
   // Pedidos que ya están listos pero se llevan solo cuando salga un viaje a
   // esa zona. Usan el valor especial "viaje" en fechaDespacho (hermano de
   // "pendiente"): no ocupan una fecha real ni el tablero de un día.
-  const pedidosEsperaViaje = pedidos.filter((p) => fechaDe(p) === "viaje");
+  const pedidosEsperaViaje = useMemo(() => pedidos.filter((p) => fechaDe(p) === "viaje"), [pedidos, hoyIso]);
 
   // Un pedido cuya fecha de despacho ya pasó y sigue activo está ATRASADO:
   // se muestra automáticamente en la pestaña "Hoy" (con etiqueta roja), en
@@ -963,45 +979,53 @@ export default function DespachoPedidos() {
     const f = fechaDe(p);
     return f !== "pendiente" && f !== "viaje" && f < hoyIso;
   };
-  const pedidosDelDia =
-    selectedDate === hoyIso
-      ? pedidos.filter((p) => fechaDe(p) === hoyIso || esAtrasado(p))
-      : pedidos.filter((p) => fechaDe(p) === selectedDate);
 
   // Un pedido aparece en la columna de su vehículo principal y, si tiene un
   // vehículo secundario asignado, también en la columna de ese segundo
   // vehículo. No se duplica el registro: es la misma tarjeta mostrada dos
   // veces. En la columna secundaria se muestra en modo "solo lectura".
-  const grouped = VEHICULOS.map((v) => ({
-    ...v,
-    items: pedidosDelDia
-      .filter((p) => p.vehiculo === v.id || p.vehiculoSecundario === v.id)
-      .sort((a, b) => {
-        // Los atrasados van primero (los más viejos arriba); dentro de la
-        // misma fecha se respeta el orden que armó el despachador.
-        const fa = fechaDe(a);
-        const fb = fechaDe(b);
-        if (fa !== fb) return fa < fb ? -1 : 1;
-        return a.orden - b.orden;
-      }),
-  }));
+  const grouped = useMemo(() => {
+    const pedidosDelDia =
+      selectedDate === hoyIso
+        ? pedidos.filter((p) => fechaDe(p) === hoyIso || esAtrasado(p))
+        : pedidos.filter((p) => fechaDe(p) === selectedDate);
+    return VEHICULOS.map((v) => ({
+      ...v,
+      items: pedidosDelDia
+        .filter((p) => p.vehiculo === v.id || p.vehiculoSecundario === v.id)
+        .sort((a, b) => {
+          // Los atrasados van primero (los más viejos arriba); dentro de la
+          // misma fecha se respeta el orden que armó el despachador.
+          const fa = fechaDe(a);
+          const fb = fechaDe(b);
+          if (fa !== fb) return fa < fb ? -1 : 1;
+          return a.orden - b.orden;
+        }),
+    }));
+  }, [pedidos, selectedDate, hoyIso]);
 
   // Pestañas de fecha: siempre Hoy y Mañana, más cualquier fecha futura que
   // ya tenga pedidos programados. Las fechas pasadas no generan pestaña:
   // sus pedidos (atrasados) se muestran dentro de "Hoy" con etiqueta roja.
   // "pendiente" se excluye de este cálculo: tiene su propia pestaña fija aparte.
-  const fechasConPedidos = Array.from(new Set(pedidos.map(fechaDe))).filter(
-    (f) => f !== "pendiente" && f !== "viaje" && f >= hoyIso
-  );
-  const fechasTabs = Array.from(new Set([hoyIso, addDaysISO(hoyIso, 1), ...fechasConPedidos])).sort();
-  const conteoPorFecha = fechasTabs.reduce((acc, f) => {
-    // "Hoy" cuenta también los atrasados, porque se muestran ahí.
-    acc[f] =
-      f === hoyIso
-        ? pedidos.filter((p) => fechaDe(p) === hoyIso || esAtrasado(p)).length
-        : pedidos.filter((p) => fechaDe(p) === f).length;
-    return acc;
-  }, {});
+  // El conteo por pestaña se hace en UNA sola pasada sobre los pedidos (antes
+  // era un filter completo por cada pestaña): un atrasado (fecha < hoy) cuenta
+  // en "Hoy", que es donde se muestra.
+  const { fechasTabs, conteoPorFecha } = useMemo(() => {
+    const fechasConPedidos = Array.from(new Set(pedidos.map(fechaDe))).filter(
+      (f) => f !== "pendiente" && f !== "viaje" && f >= hoyIso
+    );
+    const tabs = Array.from(new Set([hoyIso, addDaysISO(hoyIso, 1), ...fechasConPedidos])).sort();
+    const conteo = {};
+    for (const f of tabs) conteo[f] = 0;
+    for (const p of pedidos) {
+      const f = fechaDe(p);
+      if (f === "pendiente" || f === "viaje") continue;
+      const tab = f < hoyIso ? hoyIso : f;
+      if (conteo[tab] !== undefined) conteo[tab] += 1;
+    }
+    return { fechasTabs: tabs, conteoPorFecha: conteo };
+  }, [pedidos, hoyIso]);
 
   // Si la pestaña seleccionada deja de existir (se entregó el último pedido
   // de una fecha atrasada, o la app quedó abierta de un día para otro y
@@ -1013,15 +1037,19 @@ export default function DespachoPedidos() {
     }
   }, [selectedDate, fechasTabs.join(","), hoyIso]);
 
-  const filteredHistorial = historial.filter((h) => {
-    if (!historyFilter.trim()) return true;
-    const q = historyFilter.toLowerCase();
-    return (
-      (h.cliente || "").toLowerCase().includes(q) ||
-      (h.numeroFactura || "").toLowerCase().includes(q) ||
-      (h.fecha || "").toLowerCase().includes(q)
-    );
-  });
+  const filteredHistorial = useMemo(
+    () =>
+      historial.filter((h) => {
+        if (!historyFilter.trim()) return true;
+        const q = historyFilter.toLowerCase();
+        return (
+          (h.cliente || "").toLowerCase().includes(q) ||
+          (h.numeroFactura || "").toLowerCase().includes(q) ||
+          (h.fecha || "").toLowerCase().includes(q)
+        );
+      }),
+    [historial, historyFilter]
+  );
 
   if (loading) {
     return (
