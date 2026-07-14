@@ -134,6 +134,57 @@ function fechaEntregaISO(pedido) {
   return null;
 }
 
+// Traduce la carga del día (kilos) frente al promedio en un veredicto claro:
+// "Día fuerte / normal / flojo" con una frase que lo explica en palabras. Si
+// todavía no hay promedio (pocos días de historial), lo dice honestamente.
+function veredictoDia(kilos, promedio) {
+  if (!promedio || promedio <= 0) {
+    return {
+      texto: "Sin comparación todavía",
+      detalle: "Necesito unos días más de despachos para decirte si el día fue fuerte o flojo.",
+      color: "var(--color-text-tertiary)",
+      fondo: "var(--color-background-secondary)",
+      borde: "var(--color-border-tertiary)",
+    };
+  }
+  const ratio = kilos / promedio;
+  const dif = Math.round(Math.abs(ratio - 1) * 100);
+  if (ratio >= 1.25) {
+    return {
+      texto: "Día fuerte",
+      detalle: `Se movió un ${dif}% más de carga que un día normal.`,
+      color: "var(--color-text-success)",
+      fondo: "var(--color-background-success)",
+      borde: "var(--color-border-success)",
+    };
+  }
+  if (ratio >= 0.85) {
+    return {
+      texto: "Día normal",
+      detalle: "Se movió más o menos la carga de un día normal.",
+      color: "var(--color-text-info)",
+      fondo: "var(--color-background-info)",
+      borde: "var(--color-border-info)",
+    };
+  }
+  if (ratio >= 0.5) {
+    return {
+      texto: "Día flojo",
+      detalle: `Se movió un ${dif}% menos de carga que un día normal.`,
+      color: "var(--color-text-warning)",
+      fondo: "var(--color-background-warning)",
+      borde: "var(--color-border-warning)",
+    };
+  }
+  return {
+    texto: "Día muy flojo",
+    detalle: `Se movió un ${dif}% menos de carga que un día normal.`,
+    color: "var(--color-text-danger)",
+    fondo: "var(--color-background-danger)",
+    borde: "var(--color-border-danger)",
+  };
+}
+
 // Estilos reutilizables del Panel (tarjetas y filas del resumen).
 const tarjetaPanel = {
   background: "var(--color-background-secondary)",
@@ -1133,13 +1184,11 @@ export default function DespachoPedidos() {
   const resumenPanel = useMemo(() => {
     const lista = entregasPorDia.get(panelDiaMostrado) || [];
     let kilos = 0;
-    let facturado = 0;
     const porVehiculo = new Map();
     const porDestino = new Map();
     for (const p of lista) {
       const cargaP = cargaDePedido(p);
       kilos += cargaP;
-      facturado += Number(p.total) || 0;
       const veh = p.vehiculo || "Sin vehículo";
       if (!porVehiculo.has(veh)) porVehiculo.set(veh, { pedidos: 0, kilos: 0 });
       porVehiculo.get(veh).pedidos += 1;
@@ -1154,7 +1203,6 @@ export default function DespachoPedidos() {
     return {
       totalPedidos: lista.length,
       kilos,
-      facturado,
       porVehiculo: [...porVehiculo.entries()].sort((a, b) => b[1].kilos - a[1].kilos),
       porDestino: [...porDestino.entries()].sort((a, b) => b[1] - a[1]),
     };
@@ -1986,29 +2034,36 @@ export default function DespachoPedidos() {
               </div>
             ) : (
               <>
+                {(() => {
+                  const v = veredictoDia(resumenPanel.kilos, promedioKilos30d);
+                  return (
+                    <div style={{ background: v.fondo, border: `0.5px solid ${v.borde}`, borderRadius: "var(--border-radius-md)", padding: "14px 16px", marginBottom: 16, textAlign: "center" }}>
+                      <div style={{ fontSize: 20, fontWeight: 700, color: v.color }}>{v.texto}</div>
+                      <div style={{ fontSize: 13, color: "var(--color-text-secondary)", marginTop: 4 }}>{v.detalle}</div>
+                    </div>
+                  );
+                })()}
+
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10, marginBottom: 18 }}>
                   <div style={tarjetaPanel}>
                     <div style={etiquetaPanel}>Pedidos despachados</div>
                     <div style={numeroPanel}>{resumenPanel.totalPedidos}</div>
+                    <div style={{ fontSize: 11, marginTop: 4, color: "var(--color-text-tertiary)" }}>Cuántos pedidos salieron este día.</div>
                   </div>
                   <div style={tarjetaPanel}>
-                    <div style={etiquetaPanel}>Kilos movidos</div>
+                    <div style={etiquetaPanel}>Carga movida</div>
                     <div style={numeroPanel}>
                       {formatCOP(Math.round(resumenPanel.kilos))} <span style={{ fontSize: 14, fontWeight: 400 }}>kg</span>
                     </div>
-                    {promedioKilos30d > 0 && (
-                      <div style={{ fontSize: 12, marginTop: 4, color: resumenPanel.kilos >= promedioKilos30d ? "var(--color-text-success)" : "var(--color-text-tertiary)" }}>
-                        {Math.round((resumenPanel.kilos / promedioKilos30d) * 100)}% del promedio (30 días)
-                      </div>
-                    )}
-                  </div>
-                  <div style={tarjetaPanel}>
-                    <div style={etiquetaPanel}>Total facturado</div>
-                    <div style={numeroPanel}>${formatCOP(resumenPanel.facturado)}</div>
+                    <div style={{ fontSize: 11, marginTop: 4, color: "var(--color-text-tertiary)" }}>
+                      Peso del material despachado.
+                      {promedioKilos30d > 0 && ` Un día normal: ~${formatCOP(Math.round(promedioKilos30d))} kg.`}
+                    </div>
                   </div>
                 </div>
 
-                <div style={{ fontSize: 13, fontWeight: 600, color: MARCA.azulMuyOscuro, marginBottom: 8 }}>Por vehículo</div>
+                <div style={{ fontSize: 13, fontWeight: 600, color: MARCA.azulMuyOscuro, marginBottom: 2 }}>Por vehículo</div>
+                <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", marginBottom: 8 }}>Cuánto movió cada carro: pedidos y peso.</div>
                 <div style={{ marginBottom: 18 }}>
                   {resumenPanel.porVehiculo.map(([veh, d]) => (
                     <div key={veh} style={filaPanel}>
@@ -2023,7 +2078,8 @@ export default function DespachoPedidos() {
                   ))}
                 </div>
 
-                <div style={{ fontSize: 13, fontWeight: 600, color: MARCA.azulMuyOscuro, marginBottom: 8 }}>Por destino</div>
+                <div style={{ fontSize: 13, fontWeight: 600, color: MARCA.azulMuyOscuro, marginBottom: 2 }}>Por destino</div>
+                <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", marginBottom: 8 }}>A dónde fueron los pedidos.</div>
                 <div>
                   {resumenPanel.porDestino.map(([dest, n]) => (
                     <div key={dest} style={filaPanel}>
