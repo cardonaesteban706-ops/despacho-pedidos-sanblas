@@ -142,6 +142,7 @@ function veredictoDia(kilos, promedio) {
     return {
       texto: "Sin comparación todavía",
       detalle: "Necesito unos días más de despachos para decirte si el día fue fuerte o flojo.",
+      icono: "ti-minus",
       color: "var(--color-text-tertiary)",
       fondo: "var(--color-background-secondary)",
       borde: "var(--color-border-tertiary)",
@@ -153,6 +154,7 @@ function veredictoDia(kilos, promedio) {
     return {
       texto: "Día fuerte",
       detalle: `Se movió un ${dif}% más de carga que un día normal.`,
+      icono: "ti-trending-up",
       color: "var(--color-text-success)",
       fondo: "var(--color-background-success)",
       borde: "var(--color-border-success)",
@@ -162,6 +164,7 @@ function veredictoDia(kilos, promedio) {
     return {
       texto: "Día normal",
       detalle: "Se movió más o menos la carga de un día normal.",
+      icono: "ti-arrow-right",
       color: "var(--color-text-info)",
       fondo: "var(--color-background-info)",
       borde: "var(--color-border-info)",
@@ -171,6 +174,7 @@ function veredictoDia(kilos, promedio) {
     return {
       texto: "Día flojo",
       detalle: `Se movió un ${dif}% menos de carga que un día normal.`,
+      icono: "ti-trending-down",
       color: "var(--color-text-warning)",
       fondo: "var(--color-background-warning)",
       borde: "var(--color-border-warning)",
@@ -179,6 +183,7 @@ function veredictoDia(kilos, promedio) {
   return {
     texto: "Día muy flojo",
     detalle: `Se movió un ${dif}% menos de carga que un día normal.`,
+    icono: "ti-trending-down",
     color: "var(--color-text-danger)",
     fondo: "var(--color-background-danger)",
     borde: "var(--color-border-danger)",
@@ -1236,6 +1241,23 @@ export default function DespachoPedidos() {
     return masNuevos.length ? masNuevos[masNuevos.length - 1] : null;
   }, [diasConEntrega, panelDiaMostrado]);
 
+  // Carga (kilos) de los últimos 14 días terminando en el día mostrado, para la
+  // mini-gráfica de tendencia. El último punto es el día que se está viendo.
+  const tendenciaPanel = useMemo(() => {
+    const DIAS = 14;
+    const dias = [];
+    let max = 0;
+    for (let i = DIAS - 1; i >= 0; i--) {
+      const iso = addDaysISO(panelDiaMostrado, -i);
+      const lista = entregasPorDia.get(iso) || [];
+      let kg = 0;
+      for (const p of lista) kg += cargaDePedido(p);
+      if (kg > max) max = kg;
+      dias.push({ iso, kg, esActual: i === 0 });
+    }
+    return { dias, max };
+  }, [entregasPorDia, panelDiaMostrado]);
+
   // Un pedido cuya fecha de despacho ya pasó y sigue activo está ATRASADO:
   // se muestra automáticamente en la pestaña "Hoy" (con etiqueta roja), en
   // vez de quedar escondido en una pestaña de fecha vieja. No le reescribimos
@@ -2037,45 +2059,71 @@ export default function DespachoPedidos() {
                 {(() => {
                   const v = veredictoDia(resumenPanel.kilos, promedioKilos30d);
                   return (
-                    <div style={{ background: v.fondo, border: `0.5px solid ${v.borde}`, borderRadius: "var(--border-radius-md)", padding: "14px 16px", marginBottom: 16, textAlign: "center" }}>
-                      <div style={{ fontSize: 20, fontWeight: 700, color: v.color }}>{v.texto}</div>
-                      <div style={{ fontSize: 13, color: "var(--color-text-secondary)", marginTop: 4 }}>{v.detalle}</div>
+                    <div style={{ background: v.fondo, border: `0.5px solid ${v.borde}`, borderRadius: 12, padding: "16px", marginBottom: 14, textAlign: "center" }}>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+                        <i className={`ti ${v.icono}`} style={{ fontSize: 22, color: v.color }} aria-hidden="true"></i>
+                        <span style={{ fontSize: 22, fontWeight: 500, color: v.color }}>{v.texto}</span>
+                      </div>
+                      <div style={{ fontSize: 13, color: v.color, marginTop: 4 }}>{v.detalle}</div>
                     </div>
                   );
                 })()}
 
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10, marginBottom: 18 }}>
+                <div style={{ background: "var(--color-background-secondary)", borderRadius: 12, padding: "12px 14px", marginBottom: 14 }}>
+                  <div style={{ fontSize: 12, color: "var(--color-text-tertiary)", marginBottom: 8 }}>Carga de los últimos 14 días</div>
+                  <div style={{ display: "flex", alignItems: "flex-end", gap: 4, height: 48 }}>
+                    {tendenciaPanel.dias.map((d) => {
+                      const alto = tendenciaPanel.max > 0 ? Math.round((d.kg / tendenciaPanel.max) * 44) + 2 : 2;
+                      return (
+                        <div
+                          key={d.iso}
+                          title={`${formatFechaCorta(d.iso)}: ${formatCOP(Math.round(d.kg))} kg`}
+                          style={{ flex: 1, height: alto, background: d.esActual ? MARCA.azulMedio : "var(--color-border-secondary)", borderRadius: 2 }}
+                        ></div>
+                      );
+                    })}
+                  </div>
+                  <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", marginTop: 6, textAlign: "right" }}>Día mostrado resaltado en azul</div>
+                </div>
+
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 10, marginBottom: 16 }}>
                   <div style={tarjetaPanel}>
                     <div style={etiquetaPanel}>Pedidos despachados</div>
-                    <div style={numeroPanel}>{resumenPanel.totalPedidos}</div>
-                    <div style={{ fontSize: 11, marginTop: 4, color: "var(--color-text-tertiary)" }}>Cuántos pedidos salieron este día.</div>
+                    <div style={{ ...numeroPanel, fontVariantNumeric: "tabular-nums" }}>{resumenPanel.totalPedidos}</div>
                   </div>
                   <div style={tarjetaPanel}>
                     <div style={etiquetaPanel}>Carga movida</div>
-                    <div style={numeroPanel}>
-                      {formatCOP(Math.round(resumenPanel.kilos))} <span style={{ fontSize: 14, fontWeight: 400 }}>kg</span>
+                    <div style={{ ...numeroPanel, fontVariantNumeric: "tabular-nums" }}>
+                      {formatCOP(Math.round(resumenPanel.kilos))} <span style={{ fontSize: 13, fontWeight: 400, color: "var(--color-text-secondary)" }}>kg</span>
                     </div>
-                    <div style={{ fontSize: 11, marginTop: 4, color: "var(--color-text-tertiary)" }}>
-                      Peso del material despachado.
-                      {promedioKilos30d > 0 && ` Un día normal: ~${formatCOP(Math.round(promedioKilos30d))} kg.`}
-                    </div>
+                    {promedioKilos30d > 0 && (
+                      <div style={{ fontSize: 11, marginTop: 2, color: "var(--color-text-tertiary)" }}>Normal: ~{formatCOP(Math.round(promedioKilos30d))} kg</div>
+                    )}
                   </div>
                 </div>
 
                 <div style={{ fontSize: 13, fontWeight: 600, color: MARCA.azulMuyOscuro, marginBottom: 2 }}>Por vehículo</div>
-                <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", marginBottom: 8 }}>Cuánto movió cada carro: pedidos y peso.</div>
-                <div style={{ marginBottom: 18 }}>
-                  {resumenPanel.porVehiculo.map(([veh, d]) => (
-                    <div key={veh} style={filaPanel}>
-                      <span>
-                        <i className="ti ti-truck" style={{ fontSize: 15, verticalAlign: "-2px", marginRight: 6, color: MARCA.azulMedio }} aria-hidden="true"></i>
-                        {veh}
-                      </span>
-                      <span style={{ color: "var(--color-text-tertiary)", fontSize: 13 }}>
-                        {d.pedidos} {d.pedidos === 1 ? "pedido" : "pedidos"} · {formatCOP(Math.round(d.kilos))} kg
-                      </span>
-                    </div>
-                  ))}
+                <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", marginBottom: 8 }}>Cuánto movió cada carro.</div>
+                <div style={{ marginBottom: 16 }}>
+                  {(() => {
+                    const maxVeh = (resumenPanel.porVehiculo[0] && resumenPanel.porVehiculo[0][1].kilos) || 1;
+                    return resumenPanel.porVehiculo.map(([veh, d]) => (
+                      <div key={veh} style={{ padding: "8px 0", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 5 }}>
+                          <span style={{ fontSize: 14 }}>
+                            <i className="ti ti-truck" style={{ fontSize: 15, verticalAlign: "-2px", marginRight: 6, color: MARCA.azulMedio }} aria-hidden="true"></i>
+                            {veh}
+                          </span>
+                          <span style={{ color: "var(--color-text-tertiary)", fontSize: 13, fontVariantNumeric: "tabular-nums" }}>
+                            {d.pedidos} {d.pedidos === 1 ? "pedido" : "pedidos"} · {formatCOP(Math.round(d.kilos))} kg
+                          </span>
+                        </div>
+                        <div style={{ height: 5, background: "var(--color-background-secondary)", borderRadius: 3 }}>
+                          <div style={{ width: `${Math.round((d.kilos / maxVeh) * 100)}%`, height: 5, background: MARCA.azulMedio, borderRadius: 3 }}></div>
+                        </div>
+                      </div>
+                    ));
+                  })()}
                 </div>
 
                 <div style={{ fontSize: 13, fontWeight: 600, color: MARCA.azulMuyOscuro, marginBottom: 2 }}>Por destino</div>
@@ -2087,7 +2135,7 @@ export default function DespachoPedidos() {
                         <i className="ti ti-map-pin" style={{ fontSize: 15, verticalAlign: "-2px", marginRight: 6, color: MARCA.azulMedio }} aria-hidden="true"></i>
                         {dest}
                       </span>
-                      <span style={{ color: "var(--color-text-tertiary)", fontSize: 13 }}>
+                      <span style={{ color: "var(--color-text-tertiary)", fontSize: 13, fontVariantNumeric: "tabular-nums" }}>
                         {n} {n === 1 ? "pedido" : "pedidos"}
                       </span>
                     </div>
