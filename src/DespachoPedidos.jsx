@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
-import { cargarPedidosActivos, cargarHistorial, guardarPedido, actualizarPedido, eliminarPedido } from "./supabaseClient";
-import { cargarCotizaciones, guardarCotizacion, eliminarCotizacion } from "./supabaseClient";
+import { cargarPedidosActivos, cargarHistorial, guardarPedido, actualizarPedido, eliminarPedido, cargarPdfPedido } from "./supabaseClient";
+import { cargarCotizaciones, guardarCotizacion, eliminarCotizacion, cargarPdfCotizacion } from "./supabaseClient";
 
 const VEHICULOS = [
   { id: "camion", label: "Camión", icon: "ti-truck", bg: "#E6F1FB", border: "#378ADD", text: "#0C447C" },
@@ -1705,7 +1705,7 @@ export default function DespachoPedidos() {
         />
       )}
 
-      {viewingPdf && <PdfModal pedido={viewingPdf} onClose={() => setViewingPdf(null)} />}
+      {viewingPdf && <PdfModal pedido={viewingPdf} fetchPdf={cargarPdfPedido} onClose={() => setViewingPdf(null)} />}
 
       {notaPendienteDe && (
         <NotaPendienteModal
@@ -1760,7 +1760,7 @@ export default function DespachoPedidos() {
       )}
 
       {viewingPdfCotizacion && (
-        <PdfModal pedido={viewingPdfCotizacion} onClose={() => setViewingPdfCotizacion(null)} />
+        <PdfModal pedido={viewingPdfCotizacion} fetchPdf={cargarPdfCotizacion} onClose={() => setViewingPdfCotizacion(null)} />
       )}
 
       {rechazandoCotizacion && (
@@ -2390,7 +2390,7 @@ function PedidoCard({ pedido, posicion, esSecundario, isDragging, onDragStart, o
             Mover a hoy
           </button>
         )}
-        {pedido.pdfDataUrl && (
+        {(pedido.tienePdf || pedido.pdfDataUrl) && (
           <button onClick={onVerPdf} style={{ fontSize: 12.5, padding: "9px 12px", minHeight: 40 }}>
             <i className="ti ti-file-text" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
             Ver documento
@@ -2688,7 +2688,38 @@ function ModalOverlay({ onClose, children, maxWidth = 480 }) {
   );
 }
 
-function PdfModal({ pedido, onClose }) {
+// El PDF ya no viene en la carga inicial (pesa demasiado): si el pedido no lo
+// trae en memoria pero tiene_pdf es true, lo pedimos aquí con fetchPdf al abrir
+// el visor. Estados: "cargando" | "listo" | "vacio" | "error".
+function PdfModal({ pedido, fetchPdf, onClose }) {
+  const [dataUrl, setDataUrl] = useState(pedido.pdfDataUrl || null);
+  const [estado, setEstado] = useState(
+    pedido.pdfDataUrl ? "listo" : pedido.tienePdf ? "cargando" : "vacio"
+  );
+
+  useEffect(() => {
+    // Si ya lo tenemos (pedido recién subido) o no hay PDF, no cargamos nada.
+    if (pedido.pdfDataUrl || !pedido.tienePdf || !fetchPdf) return;
+    let activo = true;
+    setEstado("cargando");
+    fetchPdf(pedido.id)
+      .then((url) => {
+        if (!activo) return;
+        if (url) {
+          setDataUrl(url);
+          setEstado("listo");
+        } else {
+          setEstado("vacio");
+        }
+      })
+      .catch(() => {
+        if (activo) setEstado("error");
+      });
+    return () => {
+      activo = false;
+    };
+  }, [pedido.id, pedido.pdfDataUrl, pedido.tienePdf, fetchPdf]);
+
   return (
     <ModalOverlay onClose={onClose} maxWidth={860}>
       <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
@@ -2699,14 +2730,25 @@ function PdfModal({ pedido, onClose }) {
           <i className="ti ti-x" style={{ fontSize: 14 }} aria-hidden="true"></i>
         </button>
       </div>
-      {pedido.pdfDataUrl ? <PdfCanvasViewer dataUrl={pedido.pdfDataUrl} /> : (
+      {estado === "listo" && dataUrl && <PdfCanvasViewer dataUrl={dataUrl} />}
+      {estado === "cargando" && (
+        <div style={{ fontSize: 13, color: "var(--color-text-secondary)", padding: "2rem 0", textAlign: "center" }}>
+          Cargando documento…
+        </div>
+      )}
+      {estado === "vacio" && (
         <div style={{ fontSize: 13, color: "var(--color-text-secondary)", padding: "2rem 0", textAlign: "center" }}>
           No hay documento adjunto para este pedido
         </div>
       )}
-      {pedido.pdfDataUrl && (
+      {estado === "error" && (
+        <div style={{ fontSize: 13, color: "var(--color-text-warning)", padding: "2rem 0", textAlign: "center" }}>
+          No se pudo cargar el documento. Revisa tu conexión e inténtalo de nuevo.
+        </div>
+      )}
+      {estado === "listo" && dataUrl && (
         <div style={{ marginTop: 8, textAlign: "right" }}>
-          <a href={pedido.pdfDataUrl} download={pedido.fileName || "documento.pdf"} style={{ fontSize: 12 }}>
+          <a href={dataUrl} download={pedido.fileName || "documento.pdf"} style={{ fontSize: 12 }}>
             <i className="ti ti-download" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
             Descargar PDF
           </a>
@@ -2778,7 +2820,7 @@ function HistorialRow({ pedido, onVerPdf, onDevolver }) {
             </div>
           )}
           <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
-            {pedido.pdfDataUrl && (
+            {(pedido.tienePdf || pedido.pdfDataUrl) && (
               <button onClick={onVerPdf} style={{ fontSize: 12.5, padding: "9px 12px", minHeight: 40 }}>
                 <i className="ti ti-file-text" style={{ fontSize: 12, verticalAlign: "-1px", marginRight: 3 }} aria-hidden="true"></i>
                 Ver documento
@@ -3419,7 +3461,7 @@ function CotizacionCard({ cotizacion, hoyIso, onDelete, onEdit, onVerPdf, onCamb
       )}
 
       <div style={{ display: "flex", alignItems: "center", gap: 6, paddingLeft: 36, flexWrap: "wrap" }}>
-        {cotizacion.pdfDataUrl && (
+        {(cotizacion.tienePdf || cotizacion.pdfDataUrl) && (
           <button onClick={onVerPdf} style={{ fontSize: 12.5, padding: "9px 12px", minHeight: 40 }}>
             <i className="ti ti-file-text" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
             Ver documento

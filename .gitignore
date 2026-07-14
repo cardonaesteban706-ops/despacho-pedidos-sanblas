@@ -2,3 +2,7 @@ node_modules
 dist
 .vercel
 .claude
+
+# Skills de desarrollo (Supabase, Postgres) — herramientas del agente, no del producto
+.agents
+skills-lock.json

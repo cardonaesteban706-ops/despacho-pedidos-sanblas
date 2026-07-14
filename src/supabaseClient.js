@@ -13,6 +13,18 @@ const SUPABASE_ANON_KEY = "sb_publishable_qyROZeNMERQlLjHQqYJC0g_nIeW5i7c";
 
 export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
+// Columnas que se cargan al abrir la app. Deliberadamente NO incluimos
+// "pdf_data_url": ese PDF va en base64 y pesa 1-3 MB por pedido, así que
+// traerlo de todos los pedidos e historial en cada carga descarga decenas
+// de MB inútiles (el PDF solo se ve al abrir el visor o descargar).
+// En su lugar traemos la columna generada "tiene_pdf" (un booleano) para
+// saber si mostrar el botón "Ver documento", y cargamos el PDF bajo
+// demanda con cargarPdfPedido / cargarPdfCotizacion.
+const COLUMNAS_PEDIDO =
+  "id, tipo_documento, numero_factura, cliente, telefono, telefono_contacto, direccion, vendedor, total, productos, vehiculo, vehiculo_secundario, destino, entrega_pendiente, nota_pendiente, file_name, fecha, fecha_despacho, hora, orden, estado, estado_pago, entregado_en, fecha_entrega, tiene_pdf";
+const COLUMNAS_COTIZACION =
+  "id, numero_cotizacion, cliente, telefono, telefono_contacto, direccion, vendedor, total, productos, file_name, fecha, estado, fecha_seguimiento, fecha_vencimiento, notas, motivo_rechazo, tiene_pdf, created_at";
+
 // Convierte una fila de la tabla "pedidos" (snake_case, como vive en la
 // base de datos) al formato que usa el componente React (camelCase).
 function filaAPedido(fila) {
@@ -32,7 +44,10 @@ function filaAPedido(fila) {
     destino: fila.destino,
     entregaPendiente: fila.entrega_pendiente,
     notaPendiente: fila.nota_pendiente,
+    // pdfDataUrl queda undefined en la carga de listas (no lo pedimos); se
+    // llena bajo demanda. tienePdf dice si existe sin traer el PDF completo.
     pdfDataUrl: fila.pdf_data_url,
+    tienePdf: fila.tiene_pdf,
     fileName: fila.file_name,
     fecha: fila.fecha,
     fechaDespacho: fila.fecha_despacho,
@@ -47,7 +62,7 @@ function filaAPedido(fila) {
 // Convierte un pedido del formato del componente (camelCase) al formato
 // de la tabla (snake_case) para guardarlo.
 function pedidoAFila(p, estado) {
-  return {
+  const fila = {
     id: p.id,
     tipo_documento: p.tipoDocumento,
     numero_factura: p.numeroFactura,
@@ -63,7 +78,6 @@ function pedidoAFila(p, estado) {
     destino: p.destino || null,
     entrega_pendiente: p.entregaPendiente || false,
     nota_pendiente: p.notaPendiente || null,
-    pdf_data_url: p.pdfDataUrl,
     file_name: p.fileName,
     fecha: p.fecha,
     fecha_despacho: p.fechaDespacho,
@@ -74,20 +88,34 @@ function pedidoAFila(p, estado) {
     entregado_en: p.entregadoEn || null,
     fecha_entrega: p.fechaEntrega || null,
   };
+  // Solo mandamos pdf_data_url cuando el pedido realmente lo tiene en memoria
+  // (pedido nuevo recién subido). Si es undefined significa "no lo cargué" —
+  // NO lo incluimos, para que un update/upsert no borre el PDF ya guardado.
+  // (tiene_pdf es una columna generada por la BD; nunca la escribimos.)
+  if (p.pdfDataUrl !== undefined) fila.pdf_data_url = p.pdfDataUrl;
+  return fila;
 }
 
 // Carga los pedidos activos (los que se ven en las 3 columnas de despacho).
 export async function cargarPedidosActivos() {
-  const { data, error } = await supabase.from("pedidos").select("*").eq("estado", "activo");
+  const { data, error } = await supabase.from("pedidos").select(COLUMNAS_PEDIDO).eq("estado", "activo");
   if (error) throw error;
   return (data || []).map(filaAPedido);
 }
 
 // Carga el historial (pedidos ya entregados).
 export async function cargarHistorial() {
-  const { data, error } = await supabase.from("pedidos").select("*").eq("estado", "entregado");
+  const { data, error } = await supabase.from("pedidos").select(COLUMNAS_PEDIDO).eq("estado", "entregado");
   if (error) throw error;
   return (data || []).map(filaAPedido);
+}
+
+// Trae el PDF (base64) de un pedido, bajo demanda, al abrir el visor o
+// descargar. Devuelve la cadena data-url o null si no hay documento.
+export async function cargarPdfPedido(id) {
+  const { data, error } = await supabase.from("pedidos").select("pdf_data_url").eq("id", id).maybeSingle();
+  if (error) throw error;
+  return (data && data.pdf_data_url) || null;
 }
 
 // Guarda (crea o actualiza) un pedido individual. Usamos "upsert" porque
@@ -135,6 +163,7 @@ function filaACotizacion(fila) {
     total: fila.total,
     productos: fila.productos || [],
     pdfDataUrl: fila.pdf_data_url,
+    tienePdf: fila.tiene_pdf,
     fileName: fila.file_name,
     fecha: fila.fecha,
     estado: fila.estado,
@@ -148,7 +177,7 @@ function filaACotizacion(fila) {
 // Convierte una cotización del formato del componente (camelCase) al
 // formato de la tabla (snake_case) para guardarla.
 function cotizacionAFila(c) {
-  return {
+  const fila = {
     id: c.id,
     numero_cotizacion: c.numeroFactura,
     cliente: c.cliente,
@@ -158,7 +187,6 @@ function cotizacionAFila(c) {
     vendedor: c.vendedor,
     total: c.total,
     productos: c.productos || [],
-    pdf_data_url: c.pdfDataUrl,
     file_name: c.fileName,
     fecha: c.fecha,
     estado: c.estado || "pendiente",
@@ -168,16 +196,28 @@ function cotizacionAFila(c) {
     motivo_rechazo: c.motivoRechazo || null,
     updated_at: new Date().toISOString(),
   };
+  // Igual que en pedidos: solo escribimos el PDF si está en memoria, para no
+  // borrarlo al actualizar una cotización cuyo PDF nunca se cargó.
+  if (c.pdfDataUrl !== undefined) fila.pdf_data_url = c.pdfDataUrl;
+  return fila;
 }
 
 // Carga todas las cotizaciones.
 export async function cargarCotizaciones() {
   const { data, error } = await supabase
     .from("cotizaciones")
-    .select("*")
+    .select(COLUMNAS_COTIZACION)
     .order("created_at", { ascending: false });
   if (error) throw error;
   return (data || []).map(filaACotizacion);
+}
+
+// Trae el PDF (base64) de una cotización, bajo demanda. Devuelve la cadena
+// data-url o null si no hay documento.
+export async function cargarPdfCotizacion(id) {
+  const { data, error } = await supabase.from("cotizaciones").select("pdf_data_url").eq("id", id).maybeSingle();
+  if (error) throw error;
+  return (data && data.pdf_data_url) || null;
 }
 
 // Guarda (crea o actualiza) una cotización. Igual que con pedidos,
