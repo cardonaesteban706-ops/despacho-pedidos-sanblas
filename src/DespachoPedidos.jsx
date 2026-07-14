@@ -61,6 +61,97 @@ function formatCantidad(n) {
   return new Intl.NumberFormat("es-CO", { maximumFractionDigits: 2 }).format(n);
 }
 
+// ---------------------------------------------------------------------
+// Panel (resumen del día): PIN de acceso y pesos de material.
+// ---------------------------------------------------------------------
+
+// PIN para entrar al Panel. Es una BARRERA VISUAL para que el personal no vea
+// los números, NO una seguridad real: la app usa la llave pública de Supabase,
+// así que alguien con conocimiento técnico podría saltárselo. Para blindarlo de
+// verdad habría que migrar a login por usuario. Cambia el valor por el que quieras.
+const PIN_PANEL = "1234";
+
+// Peso (en kg) de UNA unidad de material tal como sale en la factura —un bulto,
+// una varilla, un bloque…—, según fichas técnicas colombianas. La "carga" del
+// día son los kilos movidos = peso × cantidad, sumados. Ajusta los kg o agrega
+// categorías cuando haga falta. El ORDEN importa: se usa la primera categoría
+// cuya palabra clave aparezca en la descripción, así que las más específicas
+// (bloque, ladrillo, pegante) van antes que las genéricas (cemento).
+const PESO_POR_DEFECTO = 1; // material desconocido: cuenta 1 kg (no lo dejamos en 0)
+const CATEGORIAS_PESO = [
+  { nombre: "Pegante / mortero seco", kg: 25, claves: ["pegante", "pegacor", "mega pega", "megapega", "mortero seco", "concreto seco"] },
+  { nombre: "Bloque", kg: 12, claves: ["bloque", "bloquelon", "adoquin"] },
+  { nombre: "Ladrillo", kg: 3, claves: ["ladrillo", "tolete", "adobe", "farol"] },
+  { nombre: "Varilla / hierro", kg: 5, claves: ["varilla", "hierro", "figurado", "estribo", "fleje", "corrugad"] },
+  { nombre: "Cerámica / piso", kg: 20, claves: ["ceramica", "porcelanato", "baldosa", "enchape"] },
+  { nombre: "Arena / gravilla / áridos", kg: 40, claves: ["arena", "gravilla", "triturado", "recebo", "balastro", "arenilla"] },
+  { nombre: "Tubería PVC", kg: 3, claves: ["tuberia", "novafort"] },
+  { nombre: "Accesorios / menores", kg: 0.2, claves: ["codo", "adaptador", "registro", "tornillo", "puntilla", "silicona", "sifon", "abrazadera", "reduccion"] },
+  { nombre: "Cemento", kg: 50, claves: ["cemento"] },
+];
+
+// Quita tildes y pasa a minúsculas para comparar sin importar cómo venga escrito
+// en la factura ("CERÁMICA", "Ceramica", "cerámica" → "ceramica").
+function normalizarTexto(s) {
+  return (s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+}
+
+function categoriaDeProducto(descripcion) {
+  const d = normalizarTexto(descripcion);
+  for (const cat of CATEGORIAS_PESO) {
+    if (cat.claves.some((k) => d.includes(k))) return cat;
+  }
+  return null;
+}
+
+// Kilos de una línea de producto: peso unitario de su categoría × cantidad.
+function pesoDeProducto(prod) {
+  const cat = categoriaDeProducto(prod && prod.descripcion);
+  const kgUnidad = cat ? cat.kg : PESO_POR_DEFECTO;
+  return kgUnidad * (cantidadNum(prod && prod.cantidad) || 0);
+}
+
+// Kilos totales de un pedido: suma de todas sus líneas.
+function cargaDePedido(pedido) {
+  const items = pedido && pedido.productos ? pedido.productos : [];
+  return items.reduce((sum, p) => sum + pesoDeProducto(p), 0);
+}
+
+// Día local de Colombia (YYYY-MM-DD) en que se entregó el pedido. Preferimos
+// entregadoEn (timestamp exacto); si es un pedido viejo sin ese dato, caemos a
+// fechaEntrega ("DD/MM/YYYY" es-CO). Devuelve null si no hay ninguno.
+function fechaEntregaISO(pedido) {
+  if (pedido && pedido.entregadoEn) {
+    const dt = new Date(pedido.entregadoEn);
+    if (!isNaN(dt.getTime())) {
+      return dt.toLocaleDateString("en-CA", { timeZone: "America/Bogota" });
+    }
+  }
+  if (pedido && pedido.fechaEntrega && pedido.fechaEntrega.includes("/")) {
+    const [d, m, y] = pedido.fechaEntrega.split("/");
+    if (d && m && y) return `${y}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`;
+  }
+  return null;
+}
+
+// Estilos reutilizables del Panel (tarjetas y filas del resumen).
+const tarjetaPanel = {
+  background: "var(--color-background-secondary)",
+  border: "0.5px solid var(--color-border-tertiary)",
+  borderRadius: "var(--border-radius-md)",
+  padding: "12px 14px",
+};
+const etiquetaPanel = { fontSize: 12, color: "var(--color-text-tertiary)", marginBottom: 4 };
+const numeroPanel = { fontSize: 22, fontWeight: 600, color: MARCA.azulMuyOscuro, lineHeight: 1.1 };
+const filaPanel = {
+  display: "flex",
+  justifyContent: "space-between",
+  alignItems: "center",
+  padding: "8px 0",
+  borderBottom: "0.5px solid var(--color-border-tertiary)",
+  fontSize: 14,
+};
+
 // Seguimiento de material por unidades: un producto "tocado" tiene el campo
 // cantidadEntregada. Devuelve los productos donde se entregaron MENOS unidades
 // que las de la factura (con cuántas faltan). Un pedido sin ningún producto
@@ -117,6 +208,13 @@ function etiquetaFecha(iso, hoyIso) {
   if (iso === hoyIso) return "Hoy";
   if (iso === addDaysISO(hoyIso, 1)) return "Mañana";
   return formatFechaCorta(iso);
+}
+
+// Fecha larga y legible para el encabezado del Panel: "martes, 8 de julio de 2026".
+function formatFechaLarga(iso) {
+  const [y, m, d] = iso.split("-").map(Number);
+  const dt = new Date(y, m - 1, d);
+  return dt.toLocaleDateString("es-CO", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
 }
 
 // Guía de carga interna: NO es una factura ni la reemplaza (no lleva CUFE, QR
@@ -443,6 +541,21 @@ export default function DespachoPedidos() {
   const [toast, setToast] = useState(null);
   const [historyFilter, setHistoryFilter] = useState("");
   const [selectedDate, setSelectedDate] = useState(todayISO());
+
+  // --- Estado del Panel (resumen del día, protegido con PIN) ---
+  const [panelDesbloqueado, setPanelDesbloqueado] = useState(() => {
+    try {
+      return sessionStorage.getItem("panelDesbloqueado") === "1";
+    } catch (e) {
+      console.warn("No se pudo leer el estado del panel:", e);
+      return false;
+    }
+  });
+  const [pinIntento, setPinIntento] = useState("");
+  const [pinError, setPinError] = useState(false);
+  // Día que muestra el Panel (YYYY-MM-DD). null = aún sin fijar; se resuelve a
+  // "ayer" (o al día más reciente con entregas) al abrir la vista.
+  const [panelDia, setPanelDia] = useState(null);
 
   // --- Estado del módulo de Cotizaciones (independiente de despacho) ---
   const [cotizaciones, setCotizaciones] = useState([]);
@@ -970,6 +1083,111 @@ export default function DespachoPedidos() {
   // "pendiente"): no ocupan una fecha real ni el tablero de un día.
   const pedidosEsperaViaje = useMemo(() => pedidos.filter((p) => fechaDe(p) === "viaje"), [pedidos, hoyIso]);
 
+  // --- Cálculos del Panel (resumen del día) ---
+  function intentarDesbloquearPanel() {
+    if (pinIntento === PIN_PANEL) {
+      setPanelDesbloqueado(true);
+      setPinIntento("");
+      setPinError(false);
+      try {
+        sessionStorage.setItem("panelDesbloqueado", "1");
+      } catch (e) {
+        console.warn("No se pudo recordar el desbloqueo del panel:", e);
+      }
+    } else {
+      setPinError(true);
+    }
+  }
+
+  // Agrupa el historial (pedidos entregados) por día local de Colombia.
+  const entregasPorDia = useMemo(() => {
+    const mapa = new Map();
+    for (const p of historial) {
+      const iso = fechaEntregaISO(p);
+      if (!iso) continue;
+      if (!mapa.has(iso)) mapa.set(iso, []);
+      mapa.get(iso).push(p);
+    }
+    return mapa;
+  }, [historial]);
+
+  // Días con al menos una entrega, del más nuevo al más viejo.
+  const diasConEntrega = useMemo(
+    () => [...entregasPorDia.keys()].sort((a, b) => (a < b ? 1 : -1)),
+    [entregasPorDia]
+  );
+
+  // Día por defecto al abrir el Panel: ayer si tuvo entregas; si no, el día más
+  // reciente que sí tuvo (y si no hay ninguno, ayer aunque salga vacío).
+  const panelDiaPorDefecto = useMemo(() => {
+    const ayer = addDaysISO(todayISO(), -1);
+    if (entregasPorDia.has(ayer)) return ayer;
+    return diasConEntrega[0] || ayer;
+  }, [entregasPorDia, diasConEntrega]);
+
+  const panelDiaMostrado = panelDia || panelDiaPorDefecto;
+
+  // Resumen del día mostrado: pedidos, kilos, facturado y desglose por vehículo
+  // y por destino. Los kilos de un pedido con dos vehículos se cuentan solo al
+  // principal (para no duplicar el total del día); el secundario suma el pedido.
+  const resumenPanel = useMemo(() => {
+    const lista = entregasPorDia.get(panelDiaMostrado) || [];
+    let kilos = 0;
+    let facturado = 0;
+    const porVehiculo = new Map();
+    const porDestino = new Map();
+    for (const p of lista) {
+      const cargaP = cargaDePedido(p);
+      kilos += cargaP;
+      facturado += Number(p.total) || 0;
+      const veh = p.vehiculo || "Sin vehículo";
+      if (!porVehiculo.has(veh)) porVehiculo.set(veh, { pedidos: 0, kilos: 0 });
+      porVehiculo.get(veh).pedidos += 1;
+      porVehiculo.get(veh).kilos += cargaP;
+      if (p.vehiculoSecundario) {
+        if (!porVehiculo.has(p.vehiculoSecundario)) porVehiculo.set(p.vehiculoSecundario, { pedidos: 0, kilos: 0 });
+        porVehiculo.get(p.vehiculoSecundario).pedidos += 1;
+      }
+      const dest = p.destino || "Sin destino";
+      porDestino.set(dest, (porDestino.get(dest) || 0) + 1);
+    }
+    return {
+      totalPedidos: lista.length,
+      kilos,
+      facturado,
+      porVehiculo: [...porVehiculo.entries()].sort((a, b) => b[1].kilos - a[1].kilos),
+      porDestino: [...porDestino.entries()].sort((a, b) => b[1] - a[1]),
+    };
+  }, [entregasPorDia, panelDiaMostrado]);
+
+  // Promedio de kilos por día CON despacho en los últimos 30 días. Es la
+  // referencia del % de rendimiento (los días cerrados no cuentan como 0).
+  const promedioKilos30d = useMemo(() => {
+    const hoy = todayISO();
+    const hace30 = addDaysISO(hoy, -30);
+    let suma = 0;
+    let dias = 0;
+    for (const [iso, lista] of entregasPorDia.entries()) {
+      if (iso >= hace30 && iso <= hoy) {
+        let k = 0;
+        for (const p of lista) k += cargaDePedido(p);
+        suma += k;
+        dias += 1;
+      }
+    }
+    return dias ? suma / dias : 0;
+  }, [entregasPorDia]);
+
+  // Navegación entre días con entregas, relativa al día mostrado.
+  const panelDiaAnterior = useMemo(
+    () => diasConEntrega.find((d) => d < panelDiaMostrado) || null,
+    [diasConEntrega, panelDiaMostrado]
+  );
+  const panelDiaSiguiente = useMemo(() => {
+    const masNuevos = diasConEntrega.filter((d) => d > panelDiaMostrado);
+    return masNuevos.length ? masNuevos[masNuevos.length - 1] : null;
+  }, [diasConEntrega, panelDiaMostrado]);
+
   // Un pedido cuya fecha de despacho ya pasó y sigue activo está ATRASADO:
   // se muestra automáticamente en la pestaña "Hoy" (con etiqueta roja), en
   // vez de quedar escondido en una pestaña de fecha vieja. No le reescribimos
@@ -1164,6 +1382,23 @@ export default function DespachoPedidos() {
           >
             <i className="ti ti-file-text" style={{ fontSize: 16, verticalAlign: "-2px", marginRight: 6 }} aria-hidden="true"></i>
             Cotizaciones
+          </button>
+          <button
+            onClick={() => setView("panel")}
+            aria-pressed={view === "panel"}
+            style={{
+              border: view === "panel" ? "none" : "0.5px solid var(--color-border-tertiary)",
+              background: view === "panel" ? MARCA.azulOscuro : "transparent",
+              color: view === "panel" ? "white" : "var(--color-text-primary)",
+              fontWeight: view === "panel" ? 500 : 400,
+              padding: "6px 14px",
+              minHeight: 40,
+              borderRadius: "var(--border-radius-md)",
+              fontSize: 14,
+            }}
+          >
+            <i className="ti ti-chart-bar" style={{ fontSize: 16, verticalAlign: "-2px", marginRight: 6 }} aria-hidden="true"></i>
+            Panel
           </button>
         </div>
 
@@ -1571,7 +1806,7 @@ export default function DespachoPedidos() {
             </div>
           )}
         </div>
-      ) : (
+      ) : view === "cotizaciones" ? (
         <div>
           {cotizacionesConSeguimientoVencido.length > 0 && (
             <div
@@ -1684,7 +1919,128 @@ export default function DespachoPedidos() {
             ))}
           </div>
         </div>
-      )}
+      ) : null}
+
+      {view === "panel" &&
+        (!panelDesbloqueado ? (
+          <div style={{ maxWidth: 340, margin: "40px auto", textAlign: "center" }}>
+            <i className="ti ti-lock" style={{ fontSize: 32, color: MARCA.azulMedio }} aria-hidden="true"></i>
+            <div style={{ fontSize: 17, fontWeight: 500, color: MARCA.azulMuyOscuro, marginTop: 10 }}>Panel del administrador</div>
+            <div style={{ fontSize: 13, color: "var(--color-text-tertiary)", marginTop: 4, marginBottom: 16 }}>
+              Ingresa el PIN para ver el resumen del día.
+            </div>
+            <input
+              type="password"
+              inputMode="numeric"
+              value={pinIntento}
+              onChange={(e) => {
+                setPinIntento(e.target.value);
+                setPinError(false);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") intentarDesbloquearPanel();
+              }}
+              placeholder="PIN"
+              aria-label="PIN del panel"
+              style={{ width: "100%", textAlign: "center", letterSpacing: 4, fontSize: 18, marginBottom: 10 }}
+            />
+            {pinError && (
+              <div style={{ fontSize: 13, color: "var(--color-text-danger)", marginBottom: 10 }}>PIN incorrecto. Inténtalo de nuevo.</div>
+            )}
+            <button
+              onClick={intentarDesbloquearPanel}
+              style={{ width: "100%", border: "none", background: MARCA.azulOscuro, color: "white", fontWeight: 500, minHeight: 44, borderRadius: "var(--border-radius-md)", fontSize: 15 }}
+            >
+              Entrar
+            </button>
+          </div>
+        ) : (
+          <div>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 16 }}>
+              <button
+                onClick={() => panelDiaAnterior && setPanelDia(panelDiaAnterior)}
+                disabled={!panelDiaAnterior}
+                aria-label="Día anterior con entregas"
+                style={{ border: "0.5px solid var(--color-border-tertiary)", background: "transparent", minHeight: 40, minWidth: 40, borderRadius: "var(--border-radius-md)", color: panelDiaAnterior ? "var(--color-text-primary)" : "var(--color-text-tertiary)" }}
+              >
+                <i className="ti ti-chevron-left" aria-hidden="true"></i>
+              </button>
+              <div style={{ textAlign: "center" }}>
+                <div style={{ fontSize: 12, color: "var(--color-text-tertiary)" }}>Resumen del día</div>
+                <div style={{ fontSize: 16, fontWeight: 600, color: MARCA.azulMuyOscuro, textTransform: "capitalize" }}>{formatFechaLarga(panelDiaMostrado)}</div>
+              </div>
+              <button
+                onClick={() => panelDiaSiguiente && setPanelDia(panelDiaSiguiente)}
+                disabled={!panelDiaSiguiente}
+                aria-label="Día siguiente con entregas"
+                style={{ border: "0.5px solid var(--color-border-tertiary)", background: "transparent", minHeight: 40, minWidth: 40, borderRadius: "var(--border-radius-md)", color: panelDiaSiguiente ? "var(--color-text-primary)" : "var(--color-text-tertiary)" }}
+              >
+                <i className="ti ti-chevron-right" aria-hidden="true"></i>
+              </button>
+            </div>
+
+            {resumenPanel.totalPedidos === 0 ? (
+              <div style={{ textAlign: "center", color: "var(--color-text-tertiary)", padding: "40px 0" }}>
+                <i className="ti ti-calendar-off" style={{ fontSize: 28 }} aria-hidden="true"></i>
+                <div style={{ marginTop: 8 }}>No hubo despachos este día.</div>
+              </div>
+            ) : (
+              <>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10, marginBottom: 18 }}>
+                  <div style={tarjetaPanel}>
+                    <div style={etiquetaPanel}>Pedidos despachados</div>
+                    <div style={numeroPanel}>{resumenPanel.totalPedidos}</div>
+                  </div>
+                  <div style={tarjetaPanel}>
+                    <div style={etiquetaPanel}>Kilos movidos</div>
+                    <div style={numeroPanel}>
+                      {formatCOP(Math.round(resumenPanel.kilos))} <span style={{ fontSize: 14, fontWeight: 400 }}>kg</span>
+                    </div>
+                    {promedioKilos30d > 0 && (
+                      <div style={{ fontSize: 12, marginTop: 4, color: resumenPanel.kilos >= promedioKilos30d ? "var(--color-text-success)" : "var(--color-text-tertiary)" }}>
+                        {Math.round((resumenPanel.kilos / promedioKilos30d) * 100)}% del promedio (30 días)
+                      </div>
+                    )}
+                  </div>
+                  <div style={tarjetaPanel}>
+                    <div style={etiquetaPanel}>Total facturado</div>
+                    <div style={numeroPanel}>${formatCOP(resumenPanel.facturado)}</div>
+                  </div>
+                </div>
+
+                <div style={{ fontSize: 13, fontWeight: 600, color: MARCA.azulMuyOscuro, marginBottom: 8 }}>Por vehículo</div>
+                <div style={{ marginBottom: 18 }}>
+                  {resumenPanel.porVehiculo.map(([veh, d]) => (
+                    <div key={veh} style={filaPanel}>
+                      <span>
+                        <i className="ti ti-truck" style={{ fontSize: 15, verticalAlign: "-2px", marginRight: 6, color: MARCA.azulMedio }} aria-hidden="true"></i>
+                        {veh}
+                      </span>
+                      <span style={{ color: "var(--color-text-tertiary)", fontSize: 13 }}>
+                        {d.pedidos} {d.pedidos === 1 ? "pedido" : "pedidos"} · {formatCOP(Math.round(d.kilos))} kg
+                      </span>
+                    </div>
+                  ))}
+                </div>
+
+                <div style={{ fontSize: 13, fontWeight: 600, color: MARCA.azulMuyOscuro, marginBottom: 8 }}>Por destino</div>
+                <div>
+                  {resumenPanel.porDestino.map(([dest, n]) => (
+                    <div key={dest} style={filaPanel}>
+                      <span>
+                        <i className="ti ti-map-pin" style={{ fontSize: 15, verticalAlign: "-2px", marginRight: 6, color: MARCA.azulMedio }} aria-hidden="true"></i>
+                        {dest}
+                      </span>
+                      <span style={{ color: "var(--color-text-tertiary)", fontSize: 13 }}>
+                        {n} {n === 1 ? "pedido" : "pedidos"}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+        ))}
 
       {editing && (
         <EditModal
