@@ -119,11 +119,24 @@ function categoriaDeProducto(descripcion) {
   return null;
 }
 
-// Kilos de una línea de producto: peso unitario de su categoría × cantidad.
+// Cantidad que de verdad se entregó de una línea: si el despachador marcó
+// "Material entregado" (cantidadEntregada), esa es la verdad; si no, se asume
+// que se entregó todo lo facturado. El Panel usa SIEMPRE esta cantidad — contar
+// lo facturado inflaba los kilos cuando la entrega fue incompleta, y contaba
+// doble a las facturas madre archivadas (su material ya salió vía remisiones).
+function cantidadEntregadaDe(prod) {
+  if (prod && prod.cantidadEntregada !== undefined && prod.cantidadEntregada !== null) {
+    return cantidadNum(prod.cantidadEntregada);
+  }
+  return cantidadNum(prod && prod.cantidad) || 0;
+}
+
+// Kilos de una línea de producto: peso unitario de su categoría × cantidad
+// realmente entregada. (Solo se usa en el Panel, sobre el historial.)
 function pesoDeProducto(prod) {
   const cat = categoriaDeProducto(prod && prod.descripcion);
   const kgUnidad = cat ? cat.kg : PESO_POR_DEFECTO;
-  return kgUnidad * (cantidadNum(prod && prod.cantidad) || 0);
+  return kgUnidad * cantidadEntregadaDe(prod);
 }
 
 // Kilos totales de un pedido: suma de todas sus líneas.
@@ -957,11 +970,19 @@ export default function DespachoPedidos() {
     showToast("Pedido movido a hoy");
   }
 
-  // Cuánto queda por despachar de un producto de una factura madre: si ya se le
-  // hicieron remisiones tiene cantidadRestante; si no, es la cantidad original.
+  // Cuánto queda por despachar de un producto de una factura madre:
+  // - si ya se le hicieron remisiones, manda cantidadRestante (que ya nació
+  //   descontando lo entregado a mano, ver abajo);
+  // - si no, es la cantidad original MENOS lo que el despachador ya haya
+  //   marcado como entregado en "Material entregado" — sin este descuento,
+  //   una factura con material ya entregado ofrecía el total completo para
+  //   remisionar y se duplicaba material.
   function disponibleDe(prod) {
     if (prod && prod.cantidadRestante !== undefined && prod.cantidadRestante !== null) return Number(prod.cantidadRestante) || 0;
-    return cantidadNum(prod && prod.cantidad);
+    const original = cantidadNum(prod && prod.cantidad);
+    const yaEntregado =
+      prod && prod.cantidadEntregada !== undefined && prod.cantidadEntregada !== null ? cantidadNum(prod.cantidadEntregada) : 0;
+    return Math.max(0, original - yaEntregado);
   }
 
   // Siguiente número correlativo de remisión (REM-0001, REM-0002...). Se saca
@@ -1047,7 +1068,14 @@ export default function DespachoPedidos() {
     if (madreAgotada) {
       const madreCompletada = {
         ...madre,
-        productos: nuevosProductosMadre,
+        // El material de esta factura ya se contó en el Panel el día que se
+        // entregó cada remisión. Al archivarla fijamos cantidadEntregada
+        // (lo marcado a mano en "Material entregado", o 0) para que el Panel
+        // NO le sume el peso completo otra vez el día del archivo.
+        productos: nuevosProductosMadre.map((p) => ({
+          ...p,
+          cantidadEntregada: p.cantidadEntregada !== undefined && p.cantidadEntregada !== null ? p.cantidadEntregada : 0,
+        })),
         entregaPendiente: false,
         notaPendiente: "",
         entregadoEn: new Date().toISOString(),
@@ -1372,7 +1400,7 @@ export default function DespachoPedidos() {
         const cat = categoriaDeProducto(prod && prod.descripcion);
         const nombre = cat ? cat.nombre : "Otros";
         if (!porCategoria.has(nombre)) porCategoria.set(nombre, { unidades: 0, kilos: 0 });
-        porCategoria.get(nombre).unidades += cantidadNum(prod && prod.cantidad) || 0;
+        porCategoria.get(nombre).unidades += cantidadEntregadaDe(prod);
         porCategoria.get(nombre).kilos += pesoDeProducto(prod);
       }
       pedidosDia.push({
@@ -1411,7 +1439,7 @@ export default function DespachoPedidos() {
         if (!mapa.has(clave)) mapa.set(clave, { descripcion: desc, veces: 0, unidades: 0 });
         const entry = mapa.get(clave);
         entry.veces += 1;
-        entry.unidades += cantidadNum(prod && prod.cantidad) || 0;
+        entry.unidades += cantidadEntregadaDe(prod);
       }
     }
     return [...mapa.values()].sort((a, b) => b.veces - a.veces);
@@ -3299,6 +3327,7 @@ function PedidoCard({ pedido, posicion, esSecundario, isDragging, onDragStart, o
           </button>
         )}
         {onMaterialUnidades &&
+          !esMadreConSaldo &&
           (() => {
             const faltan = faltantesDeProductos(pedido.productos);
             const tocado = (pedido.productos || []).some((p) => p.cantidadEntregada !== undefined && p.cantidadEntregada !== null);
@@ -3750,7 +3779,10 @@ function HistorialRow({ pedido, onVerPdf, onDevolver }) {
       </button>
       {expanded && (
         <div style={{ marginTop: 10, paddingTop: 10, borderTop: "0.5px solid var(--color-border-tertiary)", fontSize: 12, color: "var(--color-text-secondary)" }}>
-          <div>Documento: {pedido.numeroFactura || "-"} ({pedido.tipoDocumento === "cotizacion" ? "cotización" : "factura"})</div>
+          <div>
+            Documento: {pedido.numeroFactura || "-"} (
+            {pedido.remisionDe ? `remisión de Factura ${pedido.remisionDe}` : pedido.tipoDocumento === "cotizacion" ? "cotización" : "factura"})
+          </div>
           <div>Vendedor: {pedido.vendedor || "-"}</div>
           <div>Vehículo: {(VEHICULOS.find((v) => v.id === pedido.vehiculo) || {}).label || "-"}</div>
           {pedido.destino && pedido.destino.trim() && <div>Destino: {pedido.destino}</div>}
@@ -3987,7 +4019,13 @@ function MaterialPorUnidadesModal({ pedido, onClose, onGuardar }) {
 // como pedido activo en la fecha elegida. Ver crearRemision() en el componente.
 function RemisionModal({ pedido, hoyIso, onClose, onCrear }) {
   const productos = pedido.productos || [];
-  const dispo = (p) => (p.cantidadRestante !== undefined && p.cantidadRestante !== null ? Number(p.cantidadRestante) : cantidadNum(p.cantidad));
+  // Igual que disponibleDe() del componente: el saldo manda si existe; si no,
+  // lo original menos lo ya marcado como entregado a mano.
+  const dispo = (p) => {
+    if (p.cantidadRestante !== undefined && p.cantidadRestante !== null) return Number(p.cantidadRestante) || 0;
+    const entregado = p.cantidadEntregada !== undefined && p.cantidadEntregada !== null ? cantidadNum(p.cantidadEntregada) : 0;
+    return Math.max(0, cantidadNum(p.cantidad) - entregado);
+  };
 
   const [cantidades, setCantidades] = useState(() => productos.map(() => 0));
   const [fechaOpcion, setFechaOpcion] = useState("hoy");
