@@ -82,9 +82,24 @@ const CATEGORIAS_PESO = [
   { nombre: "Pegante / mortero seco", kg: 25, claves: ["pegante", "pegacor", "mega pega", "megapega", "mortero seco", "concreto seco"] },
   { nombre: "Bloque", kg: 12, claves: ["bloque", "bloquelon", "adoquin"] },
   { nombre: "Ladrillo", kg: 3, claves: ["ladrillo", "tolete", "adobe", "farol"] },
+  // Cubiertas / tejas. Van ANTES de "Varilla / hierro" a propósito: si una hoja
+  // de zinc viene descrita como "corrugada", esa palabra (clave de hierro) le
+  // ganaría y la clasificaría mal. Los pesos son estimados de ficha técnica —
+  // ajústalos si quieres afinar el Panel. El ORDEN dentro del bloque también
+  // importa: las específicas (eternit, arquitectónica, zinc) antes que la
+  // genérica "teja".
+  { nombre: "Teja fibrocemento (Eternit / Ruralit)", kg: 22, claves: ["eternit", "ruralit", "fibrocemento", "fibrocement"] },
+  { nombre: "Teja arquitectónica metálica", kg: 12, claves: ["arquitectonic"] },
+  { nombre: "Zinc / hoja de zinc", kg: 5, claves: ["zinc"] },
+  { nombre: "Metaldeck / steel deck", kg: 20, claves: ["metaldeck", "metal deck", "steeldeck", "steel deck"] },
+  { nombre: "Teja (otra)", kg: 10, claves: ["teja"] },
   { nombre: "Varilla / hierro", kg: 5, claves: ["varilla", "hierro", "figurado", "estribo", "fleje", "corrugad"] },
   { nombre: "Cerámica / piso", kg: 20, claves: ["ceramica", "porcelanato", "baldosa", "enchape"] },
   { nombre: "Arena / gravilla / áridos", kg: 40, claves: ["arena", "gravilla", "triturado", "recebo", "balastro", "arenilla"] },
+  // Tubo galvanizado ANTES de "Tubería PVC" para que "tubería galvanizada" no
+  // caiga como PVC. Claves específicas ("tubo/tubería galvaniz") para no atrapar
+  // otros galvanizados (puntilla, malla, alambre) que no pesan lo mismo.
+  { nombre: "Tubo galvanizado", kg: 8, claves: ["tubo galvaniz", "tuberia galvaniz"] },
   { nombre: "Tubería PVC", kg: 3, claves: ["tuberia", "novafort"] },
   { nombre: "Accesorios / menores", kg: 0.2, claves: ["codo", "adaptador", "registro", "tornillo", "puntilla", "silicona", "sifon", "abrazadera", "reduccion"] },
   { nombre: "Cemento", kg: 50, claves: ["cemento"] },
@@ -596,6 +611,10 @@ export default function DespachoPedidos() {
   const [dragOverCol, setDragOverCol] = useState(null);
   const [toast, setToast] = useState(null);
   const [historyFilter, setHistoryFilter] = useState("");
+  // Texto del buscador de Despachos. Cuando tiene algo, el tablero por fecha se
+  // reemplaza por una lista plana con los pedidos activos que coincidan (útil
+  // cuando hay muchas facturas cargadas y no sabes en qué día quedó una).
+  const [busquedaDespacho, setBusquedaDespacho] = useState("");
   const [selectedDate, setSelectedDate] = useState(todayISO());
 
   // --- Estado del Panel (resumen del día, protegido con PIN) ---
@@ -612,6 +631,9 @@ export default function DespachoPedidos() {
   // Día que muestra el Panel (YYYY-MM-DD). null = aún sin fijar; se resuelve a
   // "ayer" (o al día más reciente con entregas) al abrir la vista.
   const [panelDia, setPanelDia] = useState(null);
+  // Si la sección "Sin categorizar" del Panel está expandida (colapsada por
+  // defecto: puede ser una lista larga y no es lo primero que se necesita ver).
+  const [sinCategorizarAbierto, setSinCategorizarAbierto] = useState(false);
 
   // --- Estado del módulo de Cotizaciones (independiente de despacho) ---
   const [cotizaciones, setCotizaciones] = useState([]);
@@ -1139,6 +1161,19 @@ export default function DespachoPedidos() {
   // "pendiente"): no ocupan una fecha real ni el tablero de un día.
   const pedidosEsperaViaje = useMemo(() => pedidos.filter((p) => fechaDe(p) === "viaje"), [pedidos, hoyIso]);
 
+  // Resultados del buscador de Despachos: pedidos activos (de cualquier fecha,
+  // incluidos Pendientes y Por viaje) que coincidan por cliente, número de
+  // factura, dirección, destino o vendedor. Sin acentos ni mayúsculas para que
+  // "corozal" encuentre "Corozal". Vacío = no se filtra (se usa el tablero).
+  const busquedaNorm = normalizarTexto(busquedaDespacho).trim();
+  const resultadosBusqueda = useMemo(() => {
+    if (!busquedaNorm) return [];
+    return pedidos.filter((p) => {
+      const campos = [p.cliente, p.numeroFactura, p.direccion, p.destino, p.vendedor];
+      return campos.some((c) => normalizarTexto(c).includes(busquedaNorm));
+    });
+  }, [pedidos, busquedaNorm]);
+
   // --- Cálculos del Panel (resumen del día) ---
   function intentarDesbloquearPanel() {
     if (pinIntento === PIN_PANEL) {
@@ -1191,6 +1226,12 @@ export default function DespachoPedidos() {
     let kilos = 0;
     const porVehiculo = new Map();
     const porDestino = new Map();
+    // "Qué se movió": agrupa TODAS las líneas de producto del día por categoría
+    // de material (la misma que usa el peso). Suma unidades y kilos por categoría
+    // para ver de verdad qué salió (ej: "Cemento: 120 bultos"). Los productos sin
+    // categoría conocida caen en "Otros".
+    const porCategoria = new Map();
+    const pedidosDia = [];
     for (const p of lista) {
       const cargaP = cargaDePedido(p);
       kilos += cargaP;
@@ -1204,14 +1245,54 @@ export default function DespachoPedidos() {
       }
       const dest = p.destino || "Sin destino";
       porDestino.set(dest, (porDestino.get(dest) || 0) + 1);
+      for (const prod of p.productos || []) {
+        const cat = categoriaDeProducto(prod && prod.descripcion);
+        const nombre = cat ? cat.nombre : "Otros";
+        if (!porCategoria.has(nombre)) porCategoria.set(nombre, { unidades: 0, kilos: 0 });
+        porCategoria.get(nombre).unidades += cantidadNum(prod && prod.cantidad) || 0;
+        porCategoria.get(nombre).kilos += pesoDeProducto(prod);
+      }
+      pedidosDia.push({
+        id: p.id,
+        cliente: p.cliente,
+        numeroFactura: p.numeroFactura,
+        vehiculo: p.vehiculo,
+        kilos: cargaP,
+      });
     }
     return {
       totalPedidos: lista.length,
       kilos,
       porVehiculo: [...porVehiculo.entries()].sort((a, b) => b[1].kilos - a[1].kilos),
       porDestino: [...porDestino.entries()].sort((a, b) => b[1] - a[1]),
+      porCategoria: [...porCategoria.entries()].sort((a, b) => b[1].kilos - a[1].kilos),
+      pedidosDia: pedidosDia.sort((a, b) => b.kilos - a.kilos),
     };
   }, [entregasPorDia, panelDiaMostrado]);
+
+  // "Sin categorizar": productos entregados (en TODO el historial, no solo el
+  // día mostrado — para tener datos suficientes) cuya descripción no coincidió
+  // con ninguna clave de CATEGORIAS_PESO y cayeron en "Otros". Se agrupan por
+  // descripción normalizada para ver cuáles se repiten más — esas son las que
+  // vale la pena agregar a la tabla de pesos. No es un cálculo "en vivo": es
+  // una foto de lo que ya se entregó, así que un ajuste a la tabla no lo hace
+  // desaparecer de aquí retroactivamente hasta la próxima entrega.
+  const sinCategorizar = useMemo(() => {
+    const mapa = new Map();
+    for (const p of historial) {
+      for (const prod of p.productos || []) {
+        const cat = categoriaDeProducto(prod && prod.descripcion);
+        if (cat) continue; // ya tiene categoría, no nos interesa aquí
+        const desc = (prod && prod.descripcion ? prod.descripcion.trim() : "") || "(sin descripción)";
+        const clave = normalizarTexto(desc);
+        if (!mapa.has(clave)) mapa.set(clave, { descripcion: desc, veces: 0, unidades: 0 });
+        const entry = mapa.get(clave);
+        entry.veces += 1;
+        entry.unidades += cantidadNum(prod && prod.cantidad) || 0;
+      }
+    }
+    return [...mapa.values()].sort((a, b) => b.veces - a.veces);
+  }, [historial]);
 
   // Promedio de kilos por día CON despacho en los últimos 30 días. Es la
   // referencia del % de rendimiento (los días cerrados no cuentan como 0).
@@ -1628,6 +1709,60 @@ export default function DespachoPedidos() {
               })}
             </button>
           )}
+          {/* Buscador del tablero: cuando hay texto, se ocultan las pestañas de
+              fecha y se muestra una lista plana con las coincidencias (§resultadosBusqueda). */}
+          <div style={{ position: "relative", marginBottom: 12 }}>
+            <i
+              className="ti ti-search"
+              style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", fontSize: 15, color: "var(--color-text-tertiary)" }}
+              aria-hidden="true"
+            ></i>
+            <input
+              type="text"
+              placeholder="Buscar pedido por cliente, factura, dirección..."
+              value={busquedaDespacho}
+              onChange={(e) => setBusquedaDespacho(e.target.value)}
+              aria-label="Buscar pedidos en despacho"
+              style={{ width: "100%", paddingLeft: 34, paddingRight: busquedaDespacho ? 40 : 12 }}
+            />
+            {busquedaDespacho && (
+              <button
+                onClick={() => setBusquedaDespacho("")}
+                aria-label="Borrar búsqueda"
+                style={{ position: "absolute", right: 6, top: "50%", transform: "translateY(-50%)", minWidth: 32, minHeight: 32, padding: 0, border: "none", background: "transparent", color: "var(--color-text-tertiary)" }}
+              >
+                <i className="ti ti-x" style={{ fontSize: 14 }} aria-hidden="true"></i>
+              </button>
+            )}
+          </div>
+
+          {busquedaNorm ? (
+            <div>
+              <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 10 }}>
+                {resultadosBusqueda.length === 0
+                  ? `No se encontró ningún pedido con "${busquedaDespacho.trim()}".`
+                  : `${resultadosBusqueda.length} ${resultadosBusqueda.length === 1 ? "pedido encontrado" : "pedidos encontrados"} (en todas las fechas).`}
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12 }}>
+                {resultadosBusqueda.map((p) => (
+                  <PedidoCard
+                    key={p.id}
+                    pedido={p}
+                    posicion={null}
+                    isDragging={false}
+                    onDragStart={() => {}}
+                    onDragOverItem={() => {}}
+                    onDropItem={() => {}}
+                    onDelete={() => deletePedido(p.id)}
+                    onEntregado={() => solicitarEntrega(p)}
+                    onEdit={() => setEditing(p)}
+                    onVerPdf={() => setViewingPdf(p)}
+                  />
+                ))}
+              </div>
+            </div>
+          ) : (
+          <>
           <div
             style={{
               display: "flex",
@@ -1851,6 +1986,8 @@ export default function DespachoPedidos() {
             </div>
             ))}
           </div>
+          )}
+          </>
           )}
         </>
       ) : view === "historial" ? (
@@ -2141,7 +2278,97 @@ export default function DespachoPedidos() {
                     </div>
                   ))}
                 </div>
+
+                <div style={{ fontSize: 13, fontWeight: 600, color: MARCA.azulMuyOscuro, marginTop: 18, marginBottom: 2 }}>Qué se movió</div>
+                <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", marginBottom: 8 }}>Material que salió ese día, por tipo (unidades tal como vienen en la factura).</div>
+                <div style={{ marginBottom: 4 }}>
+                  {(() => {
+                    const maxCat = (resumenPanel.porCategoria[0] && resumenPanel.porCategoria[0][1].kilos) || 1;
+                    return resumenPanel.porCategoria.map(([cat, d]) => (
+                      <div key={cat} style={{ padding: "8px 0", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 5, gap: 10 }}>
+                          <span style={{ fontSize: 14 }}>
+                            <i className="ti ti-package" style={{ fontSize: 15, verticalAlign: "-2px", marginRight: 6, color: MARCA.azulMedio }} aria-hidden="true"></i>
+                            {cat}
+                          </span>
+                          <span style={{ color: "var(--color-text-tertiary)", fontSize: 13, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>
+                            {formatCantidad(d.unidades)} u · {formatCOP(Math.round(d.kilos))} kg
+                          </span>
+                        </div>
+                        <div style={{ height: 5, background: "var(--color-background-secondary)", borderRadius: 3 }}>
+                          <div style={{ width: `${Math.round((d.kilos / maxCat) * 100)}%`, height: 5, background: MARCA.azulMedio, borderRadius: 3 }}></div>
+                        </div>
+                      </div>
+                    ));
+                  })()}
+                </div>
+
+                <div style={{ fontSize: 13, fontWeight: 600, color: MARCA.azulMuyOscuro, marginTop: 18, marginBottom: 2 }}>Pedidos del día</div>
+                <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", marginBottom: 8 }}>Cada entrega, del más pesado al más liviano.</div>
+                <div>
+                  {resumenPanel.pedidosDia.map((p) => (
+                    <div key={p.id} style={filaPanel}>
+                      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        <i className="ti ti-user" style={{ fontSize: 15, verticalAlign: "-2px", marginRight: 6, color: MARCA.azulMedio }} aria-hidden="true"></i>
+                        {p.cliente || "Sin nombre"}
+                        {p.numeroFactura ? <span style={{ color: "var(--color-text-tertiary)" }}> · {p.numeroFactura}</span> : ""}
+                      </span>
+                      <span style={{ color: "var(--color-text-tertiary)", fontSize: 13, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap", marginLeft: 8 }}>
+                        {formatCOP(Math.round(p.kilos))} kg
+                      </span>
+                    </div>
+                  ))}
+                </div>
               </>
+            )}
+
+            {/* Independiente del día mostrado: revisa TODO el historial para
+                que tengas suficientes datos, no solo un día. */}
+            {sinCategorizar.length > 0 && (
+              <div style={{ marginTop: 18 }}>
+                <button
+                  onClick={() => setSinCategorizarAbierto((v) => !v)}
+                  aria-expanded={sinCategorizarAbierto}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    width: "100%",
+                    textAlign: "left",
+                    border: "0.5px solid var(--color-border-warning)",
+                    background: "var(--color-background-warning)",
+                    borderRadius: "var(--border-radius-md)",
+                    padding: "10px 12px",
+                    color: "var(--color-text-warning)",
+                  }}
+                >
+                  <i className="ti ti-help-circle" style={{ fontSize: 16 }} aria-hidden="true"></i>
+                  <span style={{ fontWeight: 500, fontSize: 13 }}>
+                    Sin categorizar ({sinCategorizar.length} {sinCategorizar.length === 1 ? "producto distinto" : "productos distintos"})
+                  </span>
+                  <i className={`ti ${sinCategorizarAbierto ? "ti-chevron-up" : "ti-chevron-down"}`} style={{ fontSize: 15, marginLeft: "auto" }} aria-hidden="true"></i>
+                </button>
+                {sinCategorizarAbierto && (
+                  <div>
+                    <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", margin: "8px 0" }}>
+                      Estos productos (de todo el historial de entregas) no coincidieron con ninguna categoría de la tabla de pesos y cayeron en "Otros". Los que más se repiten son los que más vale la pena agregar. Cuéntame cuáles son y con qué peso, y los meto a la tabla.
+                    </div>
+                    {sinCategorizar.slice(0, 30).map((item) => (
+                      <div key={item.descripcion} style={filaPanel}>
+                        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.descripcion}</span>
+                        <span style={{ color: "var(--color-text-tertiary)", fontSize: 13, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap", marginLeft: 8 }}>
+                          {item.veces} {item.veces === 1 ? "vez" : "veces"} · {formatCantidad(item.unidades)} u
+                        </span>
+                      </div>
+                    ))}
+                    {sinCategorizar.length > 30 && (
+                      <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", marginTop: 6, textAlign: "center" }}>
+                        Mostrando los 30 más frecuentes de {sinCategorizar.length}.
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
             )}
           </div>
         ))}
