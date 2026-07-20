@@ -2721,56 +2721,7 @@ export default function DespachoPedidos() {
                   );
                 })()}
 
-                <div style={{ background: "var(--color-background-secondary)", borderRadius: 12, padding: "14px 14px 10px", marginBottom: 14 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8 }}>
-                    <span style={{ fontSize: 12, fontWeight: 500, color: MARCA.azulMuyOscuro }}>Carga de los últimos 14 días</span>
-                    <span style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}>kg por día</span>
-                  </div>
-                  {(() => {
-                    const W = 340, H = 118, padT = 20, padB = 18, padX = 2;
-                    const plotH = H - padT - padB;
-                    const n = tendenciaPanel.dias.length;
-                    const slot = (W - padX * 2) / n;
-                    const barW = slot * 0.64;
-                    const max = tendenciaPanel.max || 1;
-                    const yDe = (kg) => padT + plotH - (kg / max) * plotH;
-                    const promY = promedioKilos30d > 0 && promedioKilos30d <= max ? yDe(promedioKilos30d) : null;
-                    return (
-                      <svg viewBox={`0 0 ${W} ${H}`} width="100%" style={{ display: "block", overflow: "visible" }} role="img" aria-label="Gráfica de carga de los últimos 14 días">
-                        {/* Línea de promedio (referencia de un día normal). */}
-                        {promY !== null && (
-                          <>
-                            <line x1={padX} y1={promY} x2={W - padX} y2={promY} stroke={MARCA.azulMedio} strokeWidth="1" strokeDasharray="4 3" opacity="0.6" />
-                            <text x={W - padX} y={promY - 3} textAnchor="end" fontSize="8.5" fill={MARCA.azulMedio} opacity="0.9">prom {formatCOP(Math.round(promedioKilos30d))}</text>
-                          </>
-                        )}
-                        {tendenciaPanel.dias.map((d, i) => {
-                          const x = padX + i * slot + (slot - barW) / 2;
-                          const h = Math.max(d.kg > 0 ? 2 : 0, (d.kg / max) * plotH);
-                          const y = padT + plotH - h;
-                          const [yy, mm, dd] = d.iso.split("-").map(Number);
-                          const fechaObj = new Date(yy, mm - 1, dd);
-                          const inicial = fechaObj.toLocaleDateString("es-CO", { weekday: "narrow" });
-                          const finde = fechaObj.getDay() === 0 || fechaObj.getDay() === 6;
-                          return (
-                            <g key={d.iso}>
-                              <rect x={x} y={y} width={barW} height={h} rx="2" fill={d.esActual ? MARCA.azulMedio : d.kg === 0 ? "var(--color-border-secondary)" : "var(--color-border-primary)"} opacity={d.kg === 0 ? 0.4 : 1}>
-                                <title>{`${formatFechaCorta(d.iso)}: ${formatCOP(Math.round(d.kg))} kg`}</title>
-                              </rect>
-                              {d.esActual && d.kg > 0 && (
-                                <text x={x + barW / 2} y={y - 4} textAnchor="middle" fontSize="9" fontWeight="600" fill={MARCA.azulOscuro}>{formatCOP(Math.round(d.kg))}</text>
-                              )}
-                              <text x={x + barW / 2} y={H - 5} textAnchor="middle" fontSize="8.5" fill={d.esActual ? MARCA.azulOscuro : finde ? "var(--color-text-tertiary)" : "var(--color-text-secondary)"} fontWeight={d.esActual ? "600" : "400"} style={{ textTransform: "uppercase" }}>{inicial}</text>
-                            </g>
-                          );
-                        })}
-                      </svg>
-                    );
-                  })()}
-                  <div style={{ fontSize: 10.5, color: "var(--color-text-tertiary)", marginTop: 4, textAlign: "right" }}>Día mostrado en azul · línea = día normal</div>
-                </div>
-
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 10, marginBottom: 16 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 10, marginBottom: 14 }}>
                   <div style={tarjetaPanel}>
                     <div style={etiquetaPanel}>Pedidos despachados</div>
                     <div style={{ ...numeroPanel, fontVariantNumeric: "tabular-nums" }}>{resumenPanel.totalPedidos}</div>
@@ -2786,6 +2737,67 @@ export default function DespachoPedidos() {
                   </div>
                 </div>
 
+                {/* Tendencia en HTML/CSS puro: las barras son divs y los textos
+                    tienen tamaño fijo en px, así en el celular se leen igual de
+                    bien que en el computador (el SVG escalaba los textos con el
+                    ancho de pantalla y quedaban ilegibles). */}
+                <div style={{ background: "var(--color-background-secondary)", borderRadius: 12, padding: "12px 14px", marginBottom: 16 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 10, gap: 8 }}>
+                    <span style={{ fontSize: 12.5, fontWeight: 600, color: MARCA.azulMuyOscuro }}>Últimos 14 días</span>
+                    {promedioKilos30d > 0 && (
+                      <span style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}>
+                        <span style={{ display: "inline-block", width: 14, borderTop: `2px dashed ${MARCA.azulMedio}`, verticalAlign: "middle", marginRight: 4 }}></span>
+                        día normal (~{formatCOP(Math.round(promedioKilos30d))} kg)
+                      </span>
+                    )}
+                  </div>
+                  {(() => {
+                    const max = tendenciaPanel.max || 1;
+                    const promPct = promedioKilos30d > 0 && promedioKilos30d <= max ? (promedioKilos30d / max) * 100 : null;
+                    return (
+                      <>
+                        <div style={{ position: "relative", height: 64 }}>
+                          {promPct !== null && (
+                            <div style={{ position: "absolute", left: 0, right: 0, bottom: `${promPct}%`, borderTop: `2px dashed ${MARCA.azulMedio}`, opacity: 0.55, pointerEvents: "none" }}></div>
+                          )}
+                          <div style={{ display: "flex", alignItems: "flex-end", gap: 3, height: "100%" }}>
+                            {tendenciaPanel.dias.map((d) => (
+                              <div
+                                key={d.iso}
+                                title={`${formatFechaCorta(d.iso)}: ${formatCOP(Math.round(d.kg))} kg`}
+                                style={{
+                                  flex: 1,
+                                  height: `${Math.max(d.kg > 0 ? 4 : 2, (d.kg / max) * 100)}%`,
+                                  background: d.esActual ? MARCA.azulMedio : d.kg === 0 ? "var(--color-border-tertiary)" : "var(--color-border-primary)",
+                                  borderRadius: "3px 3px 0 0",
+                                }}
+                              ></div>
+                            ))}
+                          </div>
+                        </div>
+                        <div style={{ display: "flex", gap: 3, marginTop: 4 }}>
+                          {tendenciaPanel.dias.map((d) => {
+                            const [yy, mm, dd] = d.iso.split("-").map(Number);
+                            const fechaObj = new Date(yy, mm - 1, dd);
+                            const inicial = fechaObj.toLocaleDateString("es-CO", { weekday: "narrow" }).toUpperCase();
+                            return (
+                              <div key={d.iso} style={{ flex: 1, textAlign: "center", fontSize: 9, color: d.esActual ? MARCA.azulOscuro : "var(--color-text-tertiary)", fontWeight: d.esActual ? 700 : 400 }}>
+                                {inicial}
+                              </div>
+                            );
+                          })}
+                        </div>
+                        <div style={{ fontSize: 11, color: "var(--color-text-secondary)", marginTop: 8, textAlign: "center" }}>
+                          El día que estás viendo (azul) movió <b style={{ fontVariantNumeric: "tabular-nums" }}>{formatCOP(Math.round(resumenPanel.kilos))} kg</b>
+                          {promedioKilos30d > 0 && (
+                            <> — {resumenPanel.kilos >= promedioKilos30d ? "por encima" : "por debajo"} de lo normal</>
+                          )}
+                        </div>
+                      </>
+                    );
+                  })()}
+                </div>
+
                 <div style={{ fontSize: 13, fontWeight: 600, color: MARCA.azulMuyOscuro, marginBottom: 2 }}>Por vehículo</div>
                 <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", marginBottom: 8 }}>Cómo se repartió la carga entre los carros.</div>
                 <div style={{ marginBottom: 16 }}>
@@ -2795,58 +2807,36 @@ export default function DespachoPedidos() {
                       return { veh, d, label: info ? info.label : veh, color: info ? info.border : "#9AA0A6", icon: info ? info.icon : "ti-package" };
                     });
                     const totalKg = datos.reduce((s, x) => s + x.d.kilos, 0) || 1;
-                    const maxVeh = Math.max(...datos.map((x) => x.d.kilos), 1);
-                    // Dona: cada carro un segmento del anillo, proporcional a sus kg.
-                    const R = 46, SW = 20, C = 2 * Math.PI * R;
-                    let acumulado = 0;
                     return (
-                      <div style={{ display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
-                        <svg viewBox="0 0 120 120" width="118" height="118" style={{ flexShrink: 0 }} role="img" aria-label="Reparto de carga por vehículo">
-                          <circle cx="60" cy="60" r={R} fill="none" stroke="var(--color-background-secondary)" strokeWidth={SW} />
-                          {datos.map((x) => {
-                            const frac = x.d.kilos / totalKg;
-                            const dash = frac * C;
-                            const seg = (
-                              <circle
-                                key={x.veh}
-                                cx="60"
-                                cy="60"
-                                r={R}
-                                fill="none"
-                                stroke={x.color}
-                                strokeWidth={SW}
-                                strokeDasharray={`${dash} ${C - dash}`}
-                                strokeDashoffset={-acumulado}
-                                transform="rotate(-90 60 60)"
-                              >
-                                <title>{`${x.label}: ${formatCOP(Math.round(x.d.kilos))} kg (${Math.round(frac * 100)}%)`}</title>
-                              </circle>
-                            );
-                            acumulado += dash;
-                            return seg;
-                          })}
-                          <text x="60" y="56" textAnchor="middle" fontSize="16" fontWeight="600" fill={MARCA.azulMuyOscuro}>{formatCOP(Math.round(totalKg))}</text>
-                          <text x="60" y="70" textAnchor="middle" fontSize="9" fill="var(--color-text-tertiary)">kg total</text>
-                        </svg>
-                        <div style={{ flex: 1, minWidth: 180 }}>
+                      <>
+                        {/* Barra apilada: una sola barra horizontal donde cada
+                            carro es un segmento proporcional a sus kg. Más
+                            legible en celular que una dona. */}
+                        <div style={{ display: "flex", height: 16, borderRadius: 8, overflow: "hidden", marginBottom: 10 }}>
                           {datos.map((x) => (
-                            <div key={x.veh} style={{ padding: "6px 0", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>
-                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4, gap: 8 }}>
-                                <span style={{ fontSize: 13.5, display: "inline-flex", alignItems: "center", gap: 6 }}>
-                                  <span style={{ width: 10, height: 10, borderRadius: 3, background: x.color, flexShrink: 0 }}></span>
-                                  {x.label}
-                                </span>
-                                <span style={{ color: "var(--color-text-tertiary)", fontSize: 12.5, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>
-                                  {x.d.pedidos} {x.d.pedidos === 1 ? "pedido" : "pedidos"} · {formatCOP(Math.round(x.d.kilos))} kg
-                                </span>
-                              </div>
-                              <div style={{ height: 5, background: "var(--color-background-secondary)", borderRadius: 3 }}>
-                                <div style={{ width: `${Math.round((x.d.kilos / maxVeh) * 100)}%`, height: 5, background: x.color, borderRadius: 3 }}></div>
-                              </div>
-                            </div>
+                            <div
+                              key={x.veh}
+                              title={`${x.label}: ${formatCOP(Math.round(x.d.kilos))} kg (${Math.round((x.d.kilos / totalKg) * 100)}%)`}
+                              style={{ width: `${(x.d.kilos / totalKg) * 100}%`, background: x.color, minWidth: x.d.kilos > 0 ? 8 : 0 }}
+                            ></div>
                           ))}
                         </div>
-                      </div>
+                        {datos.map((x) => {
+                          const pct = Math.round((x.d.kilos / totalKg) * 100);
+                          return (
+                            <div key={x.veh} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "9px 0", borderBottom: "0.5px solid var(--color-border-tertiary)", gap: 8 }}>
+                              <span style={{ fontSize: 14, display: "inline-flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+                                <span style={{ width: 11, height: 11, borderRadius: 3, background: x.color, flexShrink: 0 }}></span>
+                                <i className={`ti ${x.icon}`} style={{ fontSize: 15, color: x.color, flexShrink: 0 }} aria-hidden="true"></i>
+                                {x.label}
+                              </span>
+                              <span style={{ color: "var(--color-text-secondary)", fontSize: 13, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>
+                                {x.d.pedidos} {x.d.pedidos === 1 ? "pedido" : "pedidos"} · {formatCOP(Math.round(x.d.kilos))} kg · <b>{pct}%</b>
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </>
                     );
                   })()}
                 </div>
@@ -2897,20 +2887,30 @@ export default function DespachoPedidos() {
 
                 <div style={{ fontSize: 13, fontWeight: 600, color: MARCA.azulMuyOscuro, marginTop: 18, marginBottom: 2 }}>Pedidos del día</div>
                 <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", marginBottom: 8 }}>Cada entrega, del más pesado al más liviano.</div>
-                <div>
-                  {resumenPanel.pedidosDia.map((p) => (
-                    <div key={p.id} style={filaPanel}>
-                      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                        <i className="ti ti-user" style={{ fontSize: 15, verticalAlign: "-2px", marginRight: 6, color: MARCA.azulMedio }} aria-hidden="true"></i>
-                        {p.cliente || "Sin nombre"}
-                        {p.numeroFactura ? <span style={{ color: "var(--color-text-tertiary)" }}> · {p.numeroFactura}</span> : ""}
-                      </span>
-                      <span style={{ color: "var(--color-text-tertiary)", fontSize: 13, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap", marginLeft: 8 }}>
-                        {formatCOP(Math.round(p.kilos))} kg
-                      </span>
-                    </div>
-                  ))}
-                </div>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                  <thead>
+                    <tr style={{ borderBottom: "1px solid var(--color-border-secondary)" }}>
+                      <th style={{ textAlign: "left", fontSize: 11, fontWeight: 600, color: "var(--color-text-tertiary)", textTransform: "uppercase", letterSpacing: "0.04em", padding: "6px 0" }}>Cliente</th>
+                      <th style={{ textAlign: "left", fontSize: 11, fontWeight: 600, color: "var(--color-text-tertiary)", textTransform: "uppercase", letterSpacing: "0.04em", padding: "6px 8px" }}>Doc.</th>
+                      <th style={{ textAlign: "right", fontSize: 11, fontWeight: 600, color: "var(--color-text-tertiary)", textTransform: "uppercase", letterSpacing: "0.04em", padding: "6px 0" }}>Carga</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {resumenPanel.pedidosDia.map((p) => (
+                      <tr key={p.id} style={{ borderBottom: "0.5px solid var(--color-border-tertiary)" }}>
+                        <td style={{ padding: "9px 8px 9px 0", maxWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.cliente || "Sin nombre"}</td>
+                        <td style={{ padding: "9px 8px", color: "var(--color-text-tertiary)", fontSize: 12, whiteSpace: "nowrap" }}>{p.numeroFactura || "—"}</td>
+                        <td style={{ padding: "9px 0", textAlign: "right", fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>{formatCOP(Math.round(p.kilos))} kg</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot>
+                    <tr>
+                      <td colSpan={2} style={{ padding: "9px 8px 4px 0", fontWeight: 600, fontSize: 12.5 }}>Total del día</td>
+                      <td style={{ padding: "9px 0 4px", textAlign: "right", fontWeight: 600, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>{formatCOP(Math.round(resumenPanel.kilos))} kg</td>
+                    </tr>
+                  </tfoot>
+                </table>
               </>
             )}
 
