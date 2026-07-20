@@ -2419,7 +2419,7 @@ export default function DespachoPedidos() {
                         onEntregado={() => solicitarEntrega(u.pedido)}
                         onEdit={() => setEditing(u.pedido)}
                         onVerPdf={() => setViewingPdf(u.pedido)}
-                        onNotaPendiente={() => setNotaPendienteDe(u.pedido)}
+                        onMaterialUnidades={() => setMaterialDe(u.pedido)}
                         atrasadoDesde={esAtrasado(u.pedido) ? fechaDe(u.pedido) : null}
                         onMoverAHoy={() => moverAHoy(u.pedido.id)}
                       />
@@ -2910,7 +2910,23 @@ export default function DespachoPedidos() {
           pedido={materialDe}
           onClose={() => setMaterialDe(null)}
           onGuardar={(productos) => {
-            updatePedido(materialDe.id, { productos });
+            // En Pendientes/Por viaje solo se guarda lo marcado (el aviso de
+            // "debe material" se prende después, al programarlo a una fecha).
+            // En una fecha de día, el marcado ES la entrega: si algo quedó
+            // faltando, se prende solo el aviso rojo con una nota automática
+            // (sin escribir nada); si se entregó todo, se apaga.
+            const enDia = fechaDe(materialDe) !== "pendiente" && fechaDe(materialDe) !== "viaje";
+            if (enDia) {
+              const faltan = faltantesDeProductos(productos);
+              updatePedido(
+                materialDe.id,
+                faltan.length > 0
+                  ? { productos, entregaPendiente: true, notaPendiente: notaDesdeFaltantes(productos) }
+                  : { productos, entregaPendiente: false, notaPendiente: "" }
+              );
+            } else {
+              updatePedido(materialDe.id, { productos });
+            }
             setMaterialDe(null);
             showToast("Material actualizado");
           }}
@@ -3109,14 +3125,50 @@ function ExtractReviewCard({ data, onChange, onConfirm, onCancel }) {
             </div>
             {esProgramado && (
               <div style={{ marginTop: 8 }}>
-                <input
-                  type="date"
-                  aria-label="Fecha de despacho"
-                  value={fechaSel}
-                  min={todayISO()}
-                  onChange={(e) => onChange({ ...data, fechaDespacho: e.target.value || todayISO() })}
-                  style={{ width: "100%" }}
-                />
+                <div style={{ display: "flex", gap: 6, overflowX: "auto", paddingBottom: 4, marginBottom: 8 }}>
+                  {Array.from({ length: 7 }, (_, i) => addDaysISO(todayISO(), i + 1)).map((iso) => {
+                    const [yy, mm, dd] = iso.split("-").map(Number);
+                    const fechaObj = new Date(yy, mm - 1, dd);
+                    const etiqueta = iso === addDaysISO(todayISO(), 1) ? "Mañana" : fechaObj.toLocaleDateString("es-CO", { weekday: "short" }).replace(".", "");
+                    const mesAbrev = fechaObj.toLocaleDateString("es-CO", { month: "short" }).replace(".", "");
+                    const sel = fechaSel === iso;
+                    return (
+                      <button
+                        key={iso}
+                        onClick={() => onChange({ ...data, fechaDespacho: iso })}
+                        aria-pressed={sel}
+                        style={{
+                          flexShrink: 0,
+                          minWidth: 62,
+                          padding: "8px 8px",
+                          display: "flex",
+                          flexDirection: "column",
+                          alignItems: "center",
+                          gap: 1,
+                          borderRadius: "var(--border-radius-md)",
+                          border: sel ? "2px solid var(--color-border-info)" : "0.5px solid var(--color-border-tertiary)",
+                          background: sel ? "var(--color-background-info)" : "var(--color-background-primary)",
+                          color: sel ? "var(--color-text-info)" : "var(--color-text-primary)",
+                        }}
+                      >
+                        <span style={{ fontSize: 11, textTransform: "capitalize", color: sel ? "var(--color-text-info)" : "var(--color-text-tertiary)" }}>{etiqueta}</span>
+                        <span style={{ fontSize: 19, fontWeight: 600, lineHeight: 1.1 }}>{dd}</span>
+                        <span style={{ fontSize: 10, textTransform: "capitalize", color: sel ? "var(--color-text-info)" : "var(--color-text-tertiary)" }}>{mesAbrev}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+                <label style={{ display: "block" }}>
+                  <span style={{ fontSize: 12, color: "var(--color-text-tertiary)", display: "block", marginBottom: 4 }}>u otra fecha</span>
+                  <input
+                    type="date"
+                    aria-label="Fecha de despacho"
+                    value={fechaSel}
+                    min={todayISO()}
+                    onChange={(e) => onChange({ ...data, fechaDespacho: e.target.value || todayISO() })}
+                    style={{ width: "100%" }}
+                  />
+                </label>
                 <div style={{ fontSize: 12, color: "var(--color-text-tertiary)", marginTop: 4 }}>
                   El pedido queda programado para esa fecha y aparece en su pestaña de día.
                 </div>
@@ -4746,21 +4798,62 @@ function EditModal({ pedido, onClose, onSave }) {
         </div>
 
         {!sinFecha && (
-          <label style={{ display: "block" }}>
-            <span style={{ fontSize: 12, color: "var(--color-text-secondary)", display: "block", marginBottom: 4 }}>
+          <div>
+            <span style={{ fontSize: 12, color: "var(--color-text-secondary)", display: "block", marginBottom: 6 }}>
               Fecha de despacho
             </span>
-            <input
-              type="date"
-              value={form.fechaDespacho || todayISO()}
-              min={todayISO()}
-              onChange={(e) => setForm({ ...form, fechaDespacho: e.target.value })}
-              style={{ width: "100%" }}
-            />
+            {/* Botones grandes para los próximos días (elegir de un toque), y
+                un calendario de respaldo abajo para fechas más lejanas. */}
+            <div style={{ display: "flex", gap: 6, overflowX: "auto", paddingBottom: 4, marginBottom: 8 }}>
+              {Array.from({ length: 8 }, (_, i) => addDaysISO(todayISO(), i)).map((iso, i) => {
+                const [yy, mm, dd] = iso.split("-").map(Number);
+                const fechaObj = new Date(yy, mm - 1, dd);
+                const diaSemana = fechaObj.toLocaleDateString("es-CO", { weekday: "short" }).replace(".", "");
+                const mesAbrev = fechaObj.toLocaleDateString("es-CO", { month: "short" }).replace(".", "");
+                const etiqueta = i === 0 ? "Hoy" : i === 1 ? "Mañana" : diaSemana;
+                const sel = (form.fechaDespacho || todayISO()) === iso;
+                return (
+                  <button
+                    key={iso}
+                    onClick={() => setForm({ ...form, fechaDespacho: iso })}
+                    aria-pressed={sel}
+                    style={{
+                      flexShrink: 0,
+                      minWidth: 62,
+                      padding: "8px 8px",
+                      display: "flex",
+                      flexDirection: "column",
+                      alignItems: "center",
+                      gap: 1,
+                      borderRadius: "var(--border-radius-md)",
+                      border: sel ? "2px solid var(--color-border-info)" : "0.5px solid var(--color-border-tertiary)",
+                      background: sel ? "var(--color-background-info)" : "var(--color-background-primary)",
+                      color: sel ? "var(--color-text-info)" : "var(--color-text-primary)",
+                    }}
+                  >
+                    <span style={{ fontSize: 11, textTransform: "capitalize", color: sel ? "var(--color-text-info)" : "var(--color-text-tertiary)" }}>{etiqueta}</span>
+                    <span style={{ fontSize: 19, fontWeight: 600, lineHeight: 1.1 }}>{dd}</span>
+                    <span style={{ fontSize: 10, textTransform: "capitalize", color: sel ? "var(--color-text-info)" : "var(--color-text-tertiary)" }}>{mesAbrev}</span>
+                  </button>
+                );
+              })}
+            </div>
+            <label style={{ display: "block" }}>
+              <span style={{ fontSize: 12, color: "var(--color-text-tertiary)", display: "block", marginBottom: 4 }}>
+                u otra fecha
+              </span>
+              <input
+                type="date"
+                value={form.fechaDespacho || todayISO()}
+                min={todayISO()}
+                onChange={(e) => setForm({ ...form, fechaDespacho: e.target.value })}
+                style={{ width: "100%" }}
+              />
+            </label>
             <span style={{ fontSize: 12, color: "var(--color-text-tertiary)", display: "block", marginTop: 4 }}>
               Si elige una fecha futura, el pedido se mueve a esa pestaña de día.
             </span>
-          </label>
+          </div>
         )}
 
         <DestinoSelector value={form.destino || ""} onChange={(v) => setForm({ ...form, destino: v })} />
