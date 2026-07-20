@@ -622,6 +622,8 @@ export default function DespachoPedidos() {
   const [materialDe, setMaterialDe] = useState(null);
   // Factura madre sobre la que se está creando una remisión (abre RemisionModal).
   const [remisionDeModal, setRemisionDeModal] = useState(null);
+  // Abre el formulario de remisión manual (pedido escrito a mano, sin PDF).
+  const [remisionManualAbierta, setRemisionManualAbierta] = useState(false);
   const [dragId, setDragId] = useState(null);
   const [dragOverCol, setDragOverCol] = useState(null);
   // Modo "juntar pedidos": al activarlo, las tarjetas del tablero se vuelven
@@ -1016,6 +1018,59 @@ export default function DespachoPedidos() {
       setHistorial(prevHistorial);
       showToast("No se pudo guardar la entrega del grupo. Nada cambió.", 5000);
     }
+  }
+
+  // Crea una remisión manual (pedido escrito a mano, sin PDF ni factura de
+  // origen). Materiales tipo arena/bloque que a veces se piden en una hoja
+  // aparte de remisiones. Nace como pedido activo con número REM correlativo.
+  function crearRemisionManual(data) {
+    const productos = (data.productos || [])
+      .filter((p) => (p.descripcion || "").trim() && cantidadNum(p.cantidad) > 0)
+      .map((p) => ({
+        descripcion: p.descripcion.trim(),
+        cantidad: String(p.cantidad).trim(),
+        unidad: (p.unidad || "").trim(),
+        total: "0",
+      }));
+    if (productos.length === 0) {
+      showToast("Agrega al menos un material con cantidad.");
+      return;
+    }
+    const esConFecha = data.fechaDespacho !== "pendiente" && data.fechaDespacho !== "viaje";
+    const vehiculoDest = esConFecha ? data.vehiculo || VEHICULOS[0].id : null;
+    let orden = 0;
+    if (esConFecha) {
+      orden =
+        pedidos
+          .filter((p) => p.vehiculo === vehiculoDest && fechaDe(p) === data.fechaDespacho)
+          .reduce((max, p) => Math.max(max, p.orden || 0), 0) + 1;
+    }
+    const nuevo = {
+      id: uid(),
+      tipoDocumento: "remision",
+      numeroFactura: siguienteNumeroRemision(),
+      remisionDe: null,
+      cliente: (data.cliente || "").trim(),
+      telefono: (data.telefono || "").trim(),
+      direccion: (data.direccion || "").trim(),
+      vendedor: "",
+      total: null,
+      productos,
+      vehiculo: vehiculoDest,
+      destino: data.destino || null,
+      fecha: todayStr(),
+      fechaDespacho: data.fechaDespacho,
+      hora: nowTimeStr(),
+      orden,
+      estadoPago: data.estadoPago || "pendiente",
+      tienePdf: false,
+    };
+    persistPedidos([...pedidos, nuevo], [nuevo], { crear: true });
+    setRemisionManualAbierta(false);
+    if (esConFecha) setSelectedDate(data.fechaDespacho);
+    else if (data.fechaDespacho === "viaje") setSelectedDate("viaje");
+    else setSelectedDate("pendiente");
+    showToast(`Remisión manual ${nuevo.numeroFactura} creada.`);
   }
 
   // Corrige una entrega marcada por error: saca el pedido del historial y lo
@@ -1823,7 +1878,7 @@ export default function DespachoPedidos() {
         </div>
 
         {view === "despacho" && (
-          <div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             <input ref={fileInputRef} type="file" accept="application/pdf" onChange={handleFileSelected} style={{ display: "none" }} />
             <button
               onClick={() => fileInputRef.current && fileInputRef.current.click()}
@@ -1841,6 +1896,22 @@ export default function DespachoPedidos() {
             >
               <i className="ti ti-file-upload" style={{ fontSize: 16, verticalAlign: "-2px", marginRight: 6 }} aria-hidden="true"></i>
               {uploadState === "reading" ? "Leyendo PDF..." : libsReady ? "Subir factura o cotización" : "Preparando lector de PDF..."}
+            </button>
+            <button
+              onClick={() => setRemisionManualAbierta(true)}
+              style={{
+                border: "0.5px solid var(--color-border-tertiary)",
+                background: "var(--color-background-secondary)",
+                color: "var(--color-text-primary)",
+                fontWeight: 500,
+                padding: "8px 16px",
+                minHeight: 44,
+                borderRadius: "var(--border-radius-md)",
+                fontSize: 14,
+              }}
+            >
+              <i className="ti ti-pencil-plus" style={{ fontSize: 16, verticalAlign: "-2px", marginRight: 6 }} aria-hidden="true"></i>
+              Remisión manual
             </button>
           </div>
         )}
@@ -2945,6 +3016,14 @@ export default function DespachoPedidos() {
         />
       )}
 
+      {remisionManualAbierta && (
+        <RemisionManualModal
+          hoyIso={hoyIso}
+          onClose={() => setRemisionManualAbierta(false)}
+          onCrear={crearRemisionManual}
+        />
+      )}
+
       {editingCotizacion && (
         <EditCotizacionModal
           cotizacion={editingCotizacion}
@@ -3390,8 +3469,9 @@ function PedidoCard({ pedido, posicion, esSecundario, isDragging, onDragStart, o
   // Es una factura madre que ya generó remisiones (sus productos llevan saldo
   // restante). Mientras tenga saldo no se entrega entera: solo genera remisiones.
   const esMadreConSaldo = productos.some((p) => p.cantidadRestante !== undefined && p.cantidadRestante !== null);
-  // Es una remisión (parte de una factura grande).
-  const esRemision = !!pedido.remisionDe;
+  // Es una remisión: puede venir de una factura grande (remisionDe) o ser
+  // manual (tipoDocumento "remision", sin factura de origen).
+  const esRemision = !!pedido.remisionDe || pedido.tipoDocumento === "remision";
 
   return (
     <div
@@ -3478,7 +3558,7 @@ function PedidoCard({ pedido, posicion, esSecundario, isDragging, onDragStart, o
             {esRemision ? (
               <>
                 <i className="ti ti-arrows-split" style={{ fontSize: 11, verticalAlign: "-1px", marginRight: 3 }} aria-hidden="true"></i>
-                {pedido.numeroFactura} · de Factura {pedido.remisionDe}
+                {pedido.remisionDe ? `${pedido.numeroFactura} · de Factura ${pedido.remisionDe}` : `${pedido.numeroFactura} · manual`}
               </>
             ) : (
               `${pedido.tipoDocumento === "cotizacion" ? "Cotización" : "Factura"} ${pedido.numeroFactura}`
@@ -4246,7 +4326,7 @@ function HistorialRow({ pedido, onVerPdf, onDevolver }) {
         <div style={{ marginTop: 10, paddingTop: 10, borderTop: "0.5px solid var(--color-border-tertiary)", fontSize: 12, color: "var(--color-text-secondary)" }}>
           <div>
             Documento: {pedido.numeroFactura || "-"} (
-            {pedido.remisionDe ? `remisión de Factura ${pedido.remisionDe}` : pedido.tipoDocumento === "cotizacion" ? "cotización" : "factura"})
+            {pedido.remisionDe ? `remisión de Factura ${pedido.remisionDe}` : pedido.tipoDocumento === "remision" ? "remisión manual" : pedido.tipoDocumento === "cotizacion" ? "cotización" : "factura"})
           </div>
           <div>Vendedor: {pedido.vendedor || "-"}</div>
           <div>Vehículo: {(VEHICULOS.find((v) => v.id === pedido.vehiculo) || {}).label || "-"}</div>
@@ -4672,6 +4752,236 @@ function RemisionModal({ pedido, hoyIso, onClose, onCrear }) {
 // Al entregar un pedido "paga al recibir" preguntamos si el cliente pagó, para
 // dejar el registro correcto en el historial. Los pedidos que ya venían
 // "pagado" NO pasan por aquí: se entregan de un solo toque, como siempre.
+// Formulario para crear una remisión a mano (sin PDF): pedidos que llegan en
+// hoja aparte de remisiones (arena, bloque, etc.), ajenos a World Office. El
+// número REM lo pone el componente padre (siguienteNumeroRemision).
+function RemisionManualModal({ hoyIso, onClose, onCrear }) {
+  const [cliente, setCliente] = useState("");
+  const [telefono, setTelefono] = useState("");
+  const [direccion, setDireccion] = useState("");
+  const [destino, setDestino] = useState("");
+  const [estadoPago, setEstadoPago] = useState("pendiente");
+  const [productos, setProductos] = useState([{ descripcion: "", cantidad: "", unidad: "" }]);
+  const [fechaOpcion, setFechaOpcion] = useState("hoy");
+  const [fechaOtro, setFechaOtro] = useState(addDaysISO(hoyIso, 1));
+  const [vehiculo, setVehiculo] = useState(VEHICULOS[0].id);
+
+  const esConFecha = fechaOpcion === "hoy" || fechaOpcion === "otro";
+  const fechaResuelta = fechaOpcion === "hoy" ? hoyIso : fechaOpcion === "otro" ? fechaOtro : fechaOpcion; // "pendiente" | "viaje"
+
+  const setProd = (i, campo, valor) => setProductos((prev) => prev.map((p, idx) => (idx === i ? { ...p, [campo]: valor } : p)));
+  const agregarFila = () => setProductos((prev) => [...prev, { descripcion: "", cantidad: "", unidad: "" }]);
+  const quitarFila = (i) => setProductos((prev) => (prev.length === 1 ? prev : prev.filter((_, idx) => idx !== i)));
+
+  const hayMaterial = productos.some((p) => (p.descripcion || "").trim() && cantidadNum(p.cantidad) > 0);
+  const puedeCrear = cliente.trim() && hayMaterial && (fechaOpcion !== "otro" || !!fechaOtro);
+
+  const opcionesFecha = [
+    { id: "hoy", label: "Hoy" },
+    { id: "otro", label: "Otro día" },
+    { id: "pendiente", label: "Sin fecha" },
+    { id: "viaje", label: "Por viaje" },
+  ];
+
+  const chipFecha = (activo) => ({
+    fontSize: 12.5,
+    padding: "8px 12px",
+    minHeight: 40,
+    fontWeight: activo ? 600 : 400,
+    background: activo ? "var(--color-background-info)" : "var(--color-background-primary)",
+    color: activo ? "var(--color-text-info)" : "var(--color-text-primary)",
+    border: activo ? "2px solid var(--color-border-info)" : "0.5px solid var(--color-border-tertiary)",
+  });
+
+  return (
+    <ModalOverlay onClose={onClose} maxWidth={500}>
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+        <span style={{ fontWeight: 500, fontSize: 15 }}>Remisión manual</span>
+        <button onClick={onClose} aria-label="Cerrar" style={{ padding: 8, minWidth: 40, minHeight: 40 }}>
+          <i className="ti ti-x" style={{ fontSize: 14 }} aria-hidden="true"></i>
+        </button>
+      </div>
+      <div style={{ fontSize: 12.5, color: "var(--color-text-tertiary)", marginBottom: 14 }}>
+        Para pedidos escritos a mano (arena, bloque, etc.). Se le pone un número REM automático.
+      </div>
+
+      <label style={{ display: "block", marginBottom: 10 }}>
+        <span style={{ fontSize: 12, color: "var(--color-text-secondary)", display: "block", marginBottom: 4 }}>Cliente</span>
+        <input type="text" value={cliente} onChange={(e) => setCliente(e.target.value)} placeholder="Nombre del cliente" style={{ width: "100%" }} />
+      </label>
+
+      <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
+        <label style={{ flex: 1, minWidth: 140 }}>
+          <span style={{ fontSize: 12, color: "var(--color-text-secondary)", display: "block", marginBottom: 4 }}>Teléfono (opcional)</span>
+          <input type="tel" value={telefono} onChange={(e) => setTelefono(e.target.value)} style={{ width: "100%" }} />
+        </label>
+        <label style={{ flex: 1, minWidth: 140 }}>
+          <span style={{ fontSize: 12, color: "var(--color-text-secondary)", display: "block", marginBottom: 4 }}>Dirección (opcional)</span>
+          <input type="text" value={direccion} onChange={(e) => setDireccion(e.target.value)} style={{ width: "100%" }} />
+        </label>
+      </div>
+
+      <span style={{ fontSize: 12, color: "var(--color-text-secondary)", display: "block", marginBottom: 6 }}>Material</span>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 8 }}>
+        {productos.map((p, i) => (
+          <div key={i} style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <input
+              type="text"
+              value={p.descripcion}
+              onChange={(e) => setProd(i, "descripcion", e.target.value)}
+              placeholder="Material (arena, bloque...)"
+              style={{ flex: 1, minWidth: 0 }}
+            />
+            <input
+              type="number"
+              inputMode="decimal"
+              value={p.cantidad}
+              onChange={(e) => setProd(i, "cantidad", e.target.value)}
+              placeholder="Cant."
+              style={{ width: 66 }}
+            />
+            <input
+              type="text"
+              value={p.unidad}
+              onChange={(e) => setProd(i, "unidad", e.target.value)}
+              placeholder="und"
+              style={{ width: 60 }}
+            />
+            <button
+              onClick={() => quitarFila(i)}
+              aria-label="Quitar material"
+              disabled={productos.length === 1}
+              style={{ minWidth: 36, minHeight: 36, padding: 0, border: "0.5px solid var(--color-border-tertiary)", background: "transparent", opacity: productos.length === 1 ? 0.4 : 1 }}
+            >
+              <i className="ti ti-trash" style={{ fontSize: 14 }} aria-hidden="true"></i>
+            </button>
+          </div>
+        ))}
+      </div>
+      <button onClick={agregarFila} style={{ fontSize: 12.5, padding: "8px 12px", minHeight: 38, marginBottom: 14, background: "var(--color-background-secondary)", border: "0.5px solid var(--color-border-tertiary)" }}>
+        <i className="ti ti-plus" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
+        Agregar material
+      </button>
+
+      <div style={{ fontSize: 12.5, fontWeight: 500, marginBottom: 6 }}>¿Para cuándo?</div>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: fechaOpcion === "otro" ? 8 : 14 }}>
+        {opcionesFecha.map((o) => (
+          <button key={o.id} onClick={() => setFechaOpcion(o.id)} aria-pressed={fechaOpcion === o.id} style={chipFecha(fechaOpcion === o.id)}>
+            {o.label}
+          </button>
+        ))}
+      </div>
+      {fechaOpcion === "otro" && (
+        <div style={{ marginBottom: 14 }}>
+          <div style={{ display: "flex", gap: 6, overflowX: "auto", paddingBottom: 4, marginBottom: 8 }}>
+            {Array.from({ length: 7 }, (_, i) => addDaysISO(hoyIso, i + 1)).map((iso) => {
+              const [yy, mm, dd] = iso.split("-").map(Number);
+              const fechaObj = new Date(yy, mm - 1, dd);
+              const etiqueta = iso === addDaysISO(hoyIso, 1) ? "Mañana" : fechaObj.toLocaleDateString("es-CO", { weekday: "short" }).replace(".", "");
+              const mesAbrev = fechaObj.toLocaleDateString("es-CO", { month: "short" }).replace(".", "");
+              const sel = fechaOtro === iso;
+              return (
+                <button
+                  key={iso}
+                  onClick={() => setFechaOtro(iso)}
+                  aria-pressed={sel}
+                  style={{
+                    flexShrink: 0,
+                    minWidth: 62,
+                    padding: "8px 8px",
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "center",
+                    gap: 1,
+                    borderRadius: "var(--border-radius-md)",
+                    border: sel ? "2px solid var(--color-border-info)" : "0.5px solid var(--color-border-tertiary)",
+                    background: sel ? "var(--color-background-info)" : "var(--color-background-primary)",
+                    color: sel ? "var(--color-text-info)" : "var(--color-text-primary)",
+                  }}
+                >
+                  <span style={{ fontSize: 11, textTransform: "capitalize", color: sel ? "var(--color-text-info)" : "var(--color-text-tertiary)" }}>{etiqueta}</span>
+                  <span style={{ fontSize: 19, fontWeight: 600, lineHeight: 1.1 }}>{dd}</span>
+                  <span style={{ fontSize: 10, textTransform: "capitalize", color: sel ? "var(--color-text-info)" : "var(--color-text-tertiary)" }}>{mesAbrev}</span>
+                </button>
+              );
+            })}
+          </div>
+          <input type="date" value={fechaOtro} min={hoyIso} onChange={(e) => setFechaOtro(e.target.value || addDaysISO(hoyIso, 1))} style={{ width: "100%" }} />
+        </div>
+      )}
+
+      {esConFecha && (
+        <>
+          <div style={{ fontSize: 12.5, fontWeight: 500, marginBottom: 6 }}>¿En qué vehículo?</div>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 14 }}>
+            {VEHICULOS.map((v) => (
+              <button
+                key={v.id}
+                onClick={() => setVehiculo(v.id)}
+                aria-pressed={vehiculo === v.id}
+                style={{
+                  fontSize: 12.5,
+                  padding: "8px 12px",
+                  minHeight: 40,
+                  fontWeight: vehiculo === v.id ? 600 : 400,
+                  background: vehiculo === v.id ? v.bg : "var(--color-background-primary)",
+                  color: vehiculo === v.id ? v.text : "var(--color-text-primary)",
+                  border: vehiculo === v.id ? `2px solid ${v.border}` : "0.5px solid var(--color-border-tertiary)",
+                }}
+              >
+                <i className={`ti ${v.icon}`} style={{ fontSize: 14, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
+                {v.label}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+
+      <DestinoSelector value={destino} onChange={setDestino} />
+
+      <div style={{ fontSize: 12.5, fontWeight: 500, margin: "12px 0 6px" }}>Estado de pago</div>
+      <div style={{ display: "flex", gap: 6, marginBottom: 16 }}>
+        <button
+          onClick={() => setEstadoPago("pagado")}
+          aria-pressed={estadoPago === "pagado"}
+          style={{ flex: 1, fontSize: 12.5, padding: "8px 0", minHeight: 40, border: estadoPago === "pagado" ? "2px solid var(--color-border-success)" : "0.5px solid var(--color-border-tertiary)", background: estadoPago === "pagado" ? "var(--color-background-success)" : "transparent", color: estadoPago === "pagado" ? "var(--color-text-success)" : "var(--color-text-primary)" }}
+        >
+          Ya pagado
+        </button>
+        <button
+          onClick={() => setEstadoPago("pendiente")}
+          aria-pressed={estadoPago === "pendiente"}
+          style={{ flex: 1, fontSize: 12.5, padding: "8px 0", minHeight: 40, border: estadoPago === "pendiente" ? "2px solid var(--color-border-warning)" : "0.5px solid var(--color-border-tertiary)", background: estadoPago === "pendiente" ? "var(--color-background-warning)" : "transparent", color: estadoPago === "pendiente" ? "var(--color-text-warning)" : "var(--color-text-primary)" }}
+        >
+          Paga al recibir
+        </button>
+      </div>
+
+      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+        <button onClick={onClose} style={{ fontSize: 13 }}>Cancelar</button>
+        <button
+          onClick={() => puedeCrear && onCrear({ cliente, telefono, direccion, destino, productos, fechaDespacho: fechaResuelta, vehiculo, estadoPago })}
+          disabled={!puedeCrear}
+          style={{
+            fontSize: 13,
+            fontWeight: 500,
+            background: puedeCrear ? "#639922" : "var(--color-background-secondary)",
+            color: puedeCrear ? "white" : "var(--color-text-tertiary)",
+            border: "none",
+            borderRadius: "var(--border-radius-md)",
+            padding: "9px 14px",
+            minHeight: 40,
+            cursor: puedeCrear ? "pointer" : "not-allowed",
+          }}
+        >
+          <i className="ti ti-pencil-plus" style={{ fontSize: 14, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
+          Crear remisión
+        </button>
+      </div>
+    </ModalOverlay>
+  );
+}
+
 function ConfirmarEntregaModal({ pedido, onClose, onConfirm }) {
   return (
     <ModalOverlay onClose={onClose} maxWidth={380}>
