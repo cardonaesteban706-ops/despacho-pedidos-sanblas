@@ -624,6 +624,12 @@ export default function DespachoPedidos() {
   const [remisionDeModal, setRemisionDeModal] = useState(null);
   const [dragId, setDragId] = useState(null);
   const [dragOverCol, setDragOverCol] = useState(null);
+  // Modo "juntar pedidos": al activarlo, las tarjetas del tablero se vuelven
+  // seleccionables para agrupar varias en un solo viaje (mismo vehículo y día).
+  const [modoJuntar, setModoJuntar] = useState(false);
+  const [seleccionJuntar, setSeleccionJuntar] = useState([]);
+  // Grupo cuya entrega se está confirmando (todas sus facturas de una).
+  const [confirmandoEntregaGrupo, setConfirmandoEntregaGrupo] = useState(null);
   const [toast, setToast] = useState(null);
   const [historyFilter, setHistoryFilter] = useState("");
   // Texto del buscador de Despachos. Cuando tiene algo, el tablero por fecha se
@@ -917,6 +923,98 @@ export default function DespachoPedidos() {
       setPedidos(prevPedidos);
       setHistorial(prevHistorial);
       showToast("No se pudo guardar la entrega. El pedido volvió a despacho.", 5000);
+    }
+  }
+
+  // --- Juntar pedidos en un solo viaje (mismo vehículo y día) ---
+
+  // Alterna un pedido en la selección del modo juntar. Solo deja seleccionar
+  // pedidos del mismo vehículo y fecha que el primero marcado (van en un viaje).
+  function toggleSeleccionJuntar(pedido) {
+    setSeleccionJuntar((prev) => {
+      if (prev.includes(pedido.id)) return prev.filter((id) => id !== pedido.id);
+      return [...prev, pedido.id];
+    });
+  }
+
+  function salirModoJuntar() {
+    setModoJuntar(false);
+    setSeleccionJuntar([]);
+  }
+
+  // Asigna un mismo grupo_id a los pedidos seleccionados: pasan a mostrarse y
+  // entregarse como un solo viaje.
+  function confirmarJuntar() {
+    const ids = seleccionJuntar;
+    if (ids.length < 2) {
+      showToast("Selecciona al menos 2 pedidos para juntar.");
+      return;
+    }
+    const seleccionados = pedidos.filter((p) => ids.includes(p.id));
+    // Guardia: un viaje juntado es un solo vehículo y un solo día.
+    const mismoVehiculo = seleccionados.every((p) => p.vehiculo === seleccionados[0].vehiculo);
+    const mismaFecha = seleccionados.every((p) => fechaDe(p) === fechaDe(seleccionados[0]));
+    if (!mismoVehiculo || !mismaFecha) {
+      showToast("Solo se pueden juntar pedidos del mismo vehículo y día.", 4000);
+      return;
+    }
+    const grupoId = "g_" + uid();
+    const nuevos = pedidos.map((p) => (ids.includes(p.id) ? { ...p, grupoId } : p));
+    const cambiados = ids.map((id) => nuevos.find((p) => p.id === id)).filter(Boolean);
+    salirModoJuntar();
+    showToast(`${ids.length} pedidos juntados en un viaje.`);
+    persistPedidos(nuevos, cambiados);
+  }
+
+  // Deshace un grupo: cada factura vuelve a ser un pedido suelto.
+  function separarGrupo(grupoId) {
+    const cambiados = pedidos.filter((p) => p.grupoId === grupoId).map((p) => ({ ...p, grupoId: null }));
+    if (cambiados.length === 0) return;
+    const nuevos = pedidos.map((p) => (p.grupoId === grupoId ? { ...p, grupoId: null } : p));
+    showToast("Pedidos separados.");
+    persistPedidos(nuevos, cambiados);
+  }
+
+  // Entrega un viaje juntado: si alguna factura estaba "paga al recibir", pide
+  // una sola confirmación de pago para todo el grupo; si todas estaban pagadas,
+  // las entrega directo.
+  function solicitarEntregaGrupo(grupoId) {
+    const miembros = pedidos.filter((p) => p.grupoId === grupoId);
+    if (miembros.length === 0) return;
+    const hayPorCobrar = miembros.some((m) => (m.estadoPago || "pendiente") !== "pagado");
+    if (hayPorCobrar) {
+      const total = miembros.reduce((s, m) => s + (Number(m.total) || 0), 0);
+      setConfirmandoEntregaGrupo({ grupoId, count: miembros.length, total });
+    } else {
+      entregarGrupo(grupoId, "pagado");
+    }
+  }
+
+  async function entregarGrupo(grupoId, estadoPagoPorCobrar) {
+    const miembros = pedidos.filter((p) => p.grupoId === grupoId);
+    if (miembros.length === 0) return;
+    const entregados = miembros.map((m) => ({
+      ...m,
+      // Las que ya estaban pagadas se respetan; a las "paga al recibir" se les
+      // aplica la decisión tomada en la confirmación del grupo.
+      estadoPago: (m.estadoPago || "pendiente") === "pagado" ? "pagado" : estadoPagoPorCobrar,
+      entregaPendiente: false,
+      notaPendiente: "",
+      entregadoEn: new Date().toISOString(),
+      fechaEntrega: todayStr(),
+    }));
+    const ids = new Set(miembros.map((m) => m.id));
+    const prevPedidos = pedidos;
+    const prevHistorial = historial;
+    setPedidos(pedidos.filter((p) => !ids.has(p.id)));
+    setHistorial([...entregados, ...historial]);
+    showToast(`${miembros.length} pedidos entregados.`);
+    try {
+      for (const e of entregados) await guardarPedido(e, "entregado");
+    } catch (err) {
+      setPedidos(prevPedidos);
+      setHistorial(prevHistorial);
+      showToast("No se pudo guardar la entrega del grupo. Nada cambió.", 5000);
     }
   }
 
@@ -1260,25 +1358,38 @@ export default function DespachoPedidos() {
 
     const dragFecha = fechaDe(dragged);
 
+    // Si el pedido arrastrado es parte de un viaje juntado, se mueve TODO el
+    // grupo como un bloque (sus miembros siempre comparten vehículo y fecha).
+    const idsArrastrados = dragged.grupoId
+      ? pedidos.filter((p) => p.grupoId === dragged.grupoId).map((p) => p.id)
+      : [dragId];
+    const setArrastrados = new Set(idsArrastrados);
+
     // Solo reordenamos dentro de los pedidos de la misma fecha de despacho
     // que el pedido arrastrado; los de otras fechas quedan intactos.
     const others = pedidos.filter(
-      (p) => p.id !== dragId && !(fechaDe(p) === dragFecha && p.vehiculo === vehiculoId)
+      (p) => !setArrastrados.has(p.id) && !(fechaDe(p) === dragFecha && p.vehiculo === vehiculoId)
     );
     const colItems = pedidos
-      .filter((p) => p.id !== dragId && fechaDe(p) === dragFecha && p.vehiculo === vehiculoId)
+      .filter((p) => !setArrastrados.has(p.id) && fechaDe(p) === dragFecha && p.vehiculo === vehiculoId)
       .sort((a, b) => a.orden - b.orden);
 
-    // Si lo arrastran a la columna que ya era su vehículo secundario, el
-    // secundario deja de tener sentido (sería el mismo que el principal).
-    const moved = { ...dragged, vehiculo: vehiculoId };
-    if (moved.vehiculoSecundario === vehiculoId) moved.vehiculoSecundario = null;
+    // El bloque arrastrado (uno o varios si es grupo), en su orden interno.
+    const bloque = pedidos
+      .filter((p) => setArrastrados.has(p.id))
+      .sort((a, b) => a.orden - b.orden)
+      .map((p) => {
+        const m = { ...p, vehiculo: vehiculoId };
+        if (m.vehiculoSecundario === vehiculoId) m.vehiculoSecundario = null;
+        return m;
+      });
+
     let insertAt = colItems.length;
-    if (overId) {
+    if (overId && !setArrastrados.has(overId)) {
       const idx = colItems.findIndex((p) => p.id === overId);
       if (idx !== -1) insertAt = idx;
     }
-    colItems.splice(insertAt, 0, moved);
+    colItems.splice(insertAt, 0, ...bloque);
 
     // Copias con el orden nuevo (mutar los objetos del estado anterior en
     // sitio corrompía el snapshot previo de React), y a la base de datos
@@ -1556,6 +1667,13 @@ export default function DespachoPedidos() {
       setSelectedDate(hoyIso);
     }
   }, [selectedDate, fechasTabs.join(","), hoyIso]);
+
+  // Al cambiar de pestaña se sale del modo juntar (la selección era de esa
+  // pestaña; mantenerla abierta entre pestañas confundía qué se iba a juntar).
+  useEffect(() => {
+    setModoJuntar(false);
+    setSeleccionJuntar([]);
+  }, [selectedDate]);
 
   const filteredHistorial = useMemo(
     () =>
@@ -2113,8 +2231,68 @@ export default function DespachoPedidos() {
               );
             })()
           ) : (
+          <>
+          {/* Modo juntar: agrupar varios pedidos del mismo vehículo y día en un
+              solo viaje. Fuera del modo, botón para activarlo. */}
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
+            {!modoJuntar ? (
+              <button
+                onClick={() => setModoJuntar(true)}
+                style={{ fontSize: 12.5, padding: "9px 12px", minHeight: 40, background: "var(--color-background-secondary)", color: "var(--color-text-primary)", border: "0.5px solid var(--color-border-tertiary)" }}
+              >
+                <i className="ti ti-layers-intersect" style={{ fontSize: 14, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
+                Juntar pedidos
+              </button>
+            ) : (
+              <>
+                <span style={{ fontSize: 12.5, color: "var(--color-text-secondary)", marginRight: "auto" }}>
+                  Toca los pedidos que van juntos en un viaje (mismo vehículo).
+                </span>
+                <button
+                  onClick={confirmarJuntar}
+                  disabled={seleccionJuntar.length < 2}
+                  style={{
+                    fontSize: 12.5,
+                    padding: "9px 12px",
+                    minHeight: 40,
+                    fontWeight: 500,
+                    background: seleccionJuntar.length >= 2 ? "#639922" : "var(--color-background-secondary)",
+                    color: seleccionJuntar.length >= 2 ? "white" : "var(--color-text-tertiary)",
+                    border: "none",
+                    borderRadius: "var(--border-radius-md)",
+                    cursor: seleccionJuntar.length >= 2 ? "pointer" : "not-allowed",
+                  }}
+                >
+                  <i className="ti ti-layers-intersect" style={{ fontSize: 14, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
+                  Juntar ({seleccionJuntar.length})
+                </button>
+                <button onClick={salirModoJuntar} style={{ fontSize: 12.5, padding: "9px 12px", minHeight: 40 }}>
+                  Cancelar
+                </button>
+              </>
+            )}
+          </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12 }}>
-            {grouped.map((col) => (
+            {grouped.map((col) => {
+              // Vehículo del primer pedido marcado: fija a qué columna se limita
+              // la selección (un viaje = un solo vehículo).
+              const vehiculoSel = seleccionJuntar.length
+                ? (pedidos.find((p) => p.id === seleccionJuntar[0]) || {}).vehiculo
+                : null;
+              // Unidades a pintar: los pedidos de un mismo grupo se colapsan en
+              // una sola tarjeta (la primera aparición marca su posición).
+              const unidades = [];
+              const vistos = new Set();
+              for (const p of col.items) {
+                if (p.grupoId) {
+                  if (vistos.has(p.grupoId)) continue;
+                  vistos.add(p.grupoId);
+                  unidades.push({ tipo: "grupo", grupoId: p.grupoId, miembros: col.items.filter((x) => x.grupoId === p.grupoId) });
+                } else {
+                  unidades.push({ tipo: "pedido", pedido: p });
+                }
+              }
+              return (
               <div
                 key={col.id}
                 onDragOver={(e) => {
@@ -2155,37 +2333,103 @@ export default function DespachoPedidos() {
                 <div style={{ fontSize: 13, color: "var(--color-text-tertiary)", padding: "8px 4px" }}>Sin pedidos aún. Sube una factura con el botón azul de arriba.</div>
               )}
 
-              {col.items.map((p, idx) => (
-                <PedidoCard
-                  key={p.id}
-                  pedido={p}
-                  posicion={idx + 1}
-                  esSecundario={p.vehiculo !== col.id}
-                  isDragging={dragId === p.id}
-                  onDragStart={() => handleDragStart(p.id)}
-                  onDragEnd={handleDragEnd}
-                  onDragOverItem={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    setDragOverCol(col.id);
-                  }}
-                  onDropItem={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    handleDropOnColumn(col.id, p.id);
-                  }}
-                  onDelete={() => deletePedido(p.id)}
-                  onEntregado={() => solicitarEntrega(p)}
-                  onEdit={() => setEditing(p)}
-                  onVerPdf={() => setViewingPdf(p)}
-                  onNotaPendiente={() => setNotaPendienteDe(p)}
-                  atrasadoDesde={esAtrasado(p) ? fechaDe(p) : null}
-                  onMoverAHoy={() => moverAHoy(p.id)}
-                />
-              ))}
+              {modoJuntar
+                ? col.items.map((p) => {
+                    const seleccionado = seleccionJuntar.includes(p.id);
+                    const yaEnGrupo = !!p.grupoId;
+                    const bloqueado = (vehiculoSel !== null && vehiculoSel !== col.id) || yaEnGrupo;
+                    return (
+                      <button
+                        key={p.id}
+                        onClick={() => !bloqueado && toggleSeleccionJuntar(p)}
+                        disabled={bloqueado}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 8,
+                          width: "100%",
+                          textAlign: "left",
+                          marginBottom: 8,
+                          padding: "10px 12px",
+                          minHeight: 48,
+                          borderRadius: "var(--border-radius-md)",
+                          background: seleccionado ? "var(--color-background-info)" : "var(--color-background-primary)",
+                          border: seleccionado ? "2px solid var(--color-border-info)" : "0.5px solid var(--color-border-tertiary)",
+                          color: "var(--color-text-primary)",
+                          opacity: bloqueado ? 0.45 : 1,
+                          cursor: bloqueado ? "not-allowed" : "pointer",
+                        }}
+                      >
+                        <i
+                          className={seleccionado ? "ti ti-circle-check-filled" : "ti ti-circle"}
+                          style={{ fontSize: 18, color: seleccionado ? "var(--color-text-info)" : "var(--color-text-tertiary)", flexShrink: 0 }}
+                          aria-hidden="true"
+                        ></i>
+                        <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 13.5 }}>
+                          {p.cliente}
+                          {p.numeroFactura ? <span style={{ color: "var(--color-text-tertiary)" }}> · {p.numeroFactura}</span> : ""}
+                        </span>
+                        {yaEnGrupo && <span style={{ fontSize: 11, color: "var(--color-text-tertiary)", flexShrink: 0 }}>ya en un viaje</span>}
+                        {p.total ? <span style={{ fontSize: 13, fontWeight: 500, color: MARCA.azulOscuro, flexShrink: 0 }}>${formatCOP(p.total)}</span> : null}
+                      </button>
+                    );
+                  })
+                : unidades.map((u, idx) =>
+                    u.tipo === "grupo" ? (
+                      <GrupoCard
+                        key={u.grupoId}
+                        miembros={u.miembros}
+                        isDragging={dragId != null && u.miembros.some((m) => m.id === dragId)}
+                        onDragStart={() => handleDragStart(u.miembros[0].id)}
+                        onDragEnd={handleDragEnd}
+                        onDragOverItem={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setDragOverCol(col.id);
+                        }}
+                        onDropItem={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          handleDropOnColumn(col.id, u.miembros[0].id);
+                        }}
+                        onEntregarGrupo={() => solicitarEntregaGrupo(u.grupoId)}
+                        onSeparar={() => separarGrupo(u.grupoId)}
+                        onVerPdf={(m) => setViewingPdf(m)}
+                      />
+                    ) : (
+                      <PedidoCard
+                        key={u.pedido.id}
+                        pedido={u.pedido}
+                        posicion={idx + 1}
+                        esSecundario={u.pedido.vehiculo !== col.id}
+                        isDragging={dragId === u.pedido.id}
+                        onDragStart={() => handleDragStart(u.pedido.id)}
+                        onDragEnd={handleDragEnd}
+                        onDragOverItem={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setDragOverCol(col.id);
+                        }}
+                        onDropItem={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          handleDropOnColumn(col.id, u.pedido.id);
+                        }}
+                        onDelete={() => deletePedido(u.pedido.id)}
+                        onEntregado={() => solicitarEntrega(u.pedido)}
+                        onEdit={() => setEditing(u.pedido)}
+                        onVerPdf={() => setViewingPdf(u.pedido)}
+                        onNotaPendiente={() => setNotaPendienteDe(u.pedido)}
+                        atrasadoDesde={esAtrasado(u.pedido) ? fechaDe(u.pedido) : null}
+                        onMoverAHoy={() => moverAHoy(u.pedido.id)}
+                      />
+                    )
+                  )}
             </div>
-            ))}
+              );
+            })}
           </div>
+          </>
           )}
           </>
           )}
@@ -2646,6 +2890,17 @@ export default function DespachoPedidos() {
           onConfirm={(estadoPago) => {
             marcarEntregado(confirmandoEntrega.id, { estadoPago });
             setConfirmandoEntrega(null);
+          }}
+        />
+      )}
+
+      {confirmandoEntregaGrupo && (
+        <ConfirmarEntregaGrupoModal
+          info={confirmandoEntregaGrupo}
+          onClose={() => setConfirmandoEntregaGrupo(null)}
+          onConfirm={(estadoPago) => {
+            entregarGrupo(confirmandoEntregaGrupo.grupoId, estadoPago);
+            setConfirmandoEntregaGrupo(null);
           }}
         />
       )}
@@ -3729,6 +3984,164 @@ function PdfModal({ pedido, fetchPdf, onClose }) {
           </a>
         </div>
       )}
+    </ModalOverlay>
+  );
+}
+
+// Tarjeta de un "viaje juntado": varias facturas que van juntas. Se muestra
+// como una sola tarjeta con el detalle de cada factura adentro, se arrastra en
+// bloque y se entrega de una. Ver handlers de juntar/entregarGrupo arriba.
+function GrupoCard({ miembros, isDragging, onDragStart, onDragEnd, onDragOverItem, onDropItem, onEntregarGrupo, onSeparar, onVerPdf }) {
+  const [confirmSeparar, setConfirmSeparar] = useState(false);
+  const total = miembros.reduce((s, m) => s + (Number(m.total) || 0), 0);
+  const clientesUnicos = Array.from(new Set(miembros.map((m) => (m.cliente || "").trim()).filter(Boolean)));
+  const titulo = clientesUnicos.length === 1 ? clientesUnicos[0] : `${miembros.length} pedidos en un viaje`;
+
+  return (
+    <div
+      draggable
+      onDragStart={onDragStart}
+      onDragEnd={onDragEnd}
+      onDragOver={onDragOverItem}
+      onDrop={onDropItem}
+      style={{
+        background: "var(--color-background-primary)",
+        border: "0.5px solid var(--color-border-info)",
+        borderLeft: "3px solid var(--color-border-info)",
+        borderRadius: "var(--border-radius-md)",
+        padding: "10px 12px",
+        marginBottom: 8,
+        cursor: "grab",
+        opacity: isDragging ? 0.4 : 1,
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 7 }}>
+        <span
+          style={{
+            width: 28,
+            height: 28,
+            borderRadius: "50%",
+            background: "var(--color-background-info)",
+            color: "var(--color-text-info)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            flexShrink: 0,
+          }}
+        >
+          <i className="ti ti-layers-intersect" style={{ fontSize: 15 }} aria-hidden="true"></i>
+        </span>
+        <span style={{ fontWeight: 500, fontSize: 14, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {titulo}
+        </span>
+        {total ? <span style={{ fontSize: 14, fontWeight: 500, color: MARCA.azulOscuro, flexShrink: 0 }}>${formatCOP(total)}</span> : null}
+        <i className="ti ti-grip-vertical" style={{ fontSize: 14, color: "var(--color-text-tertiary)", flexShrink: 0 }} aria-hidden="true"></i>
+      </div>
+
+      <div style={{ paddingLeft: 36, marginBottom: 8 }}>
+        <span style={{ fontSize: 11.5, color: "var(--color-text-info)", fontWeight: 500 }}>
+          <i className="ti ti-layers-intersect" style={{ fontSize: 11, verticalAlign: "-1px", marginRight: 3 }} aria-hidden="true"></i>
+          Viaje juntado · {miembros.length} facturas
+        </span>
+      </div>
+
+      {/* Detalle de cada factura del viaje. */}
+      <div style={{ paddingLeft: 36, display: "flex", flexDirection: "column", gap: 8, marginBottom: 9 }}>
+        {miembros.map((m) => {
+          const prods = m.productos || [];
+          const resumen = prods.length === 0 ? "" : prods.length === 1 ? `${prods[0].cantidad} ${prods[0].unidad} — ${prods[0].descripcion}` : `${prods[0].descripcion} +${prods.length - 1} más`;
+          return (
+            <div key={m.id} style={{ borderLeft: "2px solid var(--color-border-tertiary)", paddingLeft: 8 }}>
+              <div style={{ fontSize: 12.5, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                <span style={{ fontWeight: 500 }}>{m.cliente || "Sin nombre"}</span>
+                {m.numeroFactura && <span style={{ color: "var(--color-text-tertiary)" }}>· {m.remisionDe ? `${m.numeroFactura} (rem.)` : `Fact. ${m.numeroFactura}`}</span>}
+                {(m.tienePdf || m.pdfDataUrl) && (
+                  <button
+                    onClick={() => onVerPdf(m)}
+                    style={{ fontSize: 11, padding: "3px 8px", minHeight: 30, border: "0.5px solid var(--color-border-tertiary)", background: "transparent" }}
+                  >
+                    <i className="ti ti-file-text" style={{ fontSize: 12, verticalAlign: "-1px", marginRight: 3 }} aria-hidden="true"></i>
+                    PDF
+                  </button>
+                )}
+              </div>
+              {resumen && <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginTop: 2 }}>{resumen}</div>}
+            </div>
+          );
+        })}
+      </div>
+
+      <div style={{ display: "flex", alignItems: "center", gap: 6, paddingLeft: 36, flexWrap: "wrap" }}>
+        {confirmSeparar ? (
+          <button
+            onClick={onSeparar}
+            style={{ fontSize: 12.5, padding: "9px 12px", minHeight: 40, fontWeight: 500, background: "var(--color-background-warning)", color: "var(--color-text-warning)", border: "0.5px solid var(--color-border-warning)" }}
+          >
+            <i className="ti ti-arrows-split" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
+            Toca otra vez para separar
+          </button>
+        ) : (
+          <button
+            onClick={() => setConfirmSeparar(true)}
+            style={{ fontSize: 12.5, padding: "9px 12px", minHeight: 40, background: "transparent", color: "var(--color-text-primary)", border: "0.5px solid var(--color-border-tertiary)" }}
+          >
+            <i className="ti ti-unlink" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
+            Separar
+          </button>
+        )}
+        <button
+          onClick={onEntregarGrupo}
+          style={{
+            marginLeft: "auto",
+            border: "none",
+            background: "#639922",
+            color: "white",
+            fontWeight: 500,
+            fontSize: 13,
+            borderRadius: "var(--border-radius-md)",
+            padding: "9px 14px",
+            minHeight: 40,
+          }}
+        >
+          <i className="ti ti-check" style={{ fontSize: 14, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
+          Entregar todo
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// Confirmación de pago al entregar un viaje juntado (una sola vez para todas
+// las facturas por cobrar del grupo).
+function ConfirmarEntregaGrupoModal({ info, onClose, onConfirm }) {
+  return (
+    <ModalOverlay onClose={onClose} maxWidth={380}>
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+        <span style={{ fontWeight: 500, fontSize: 15 }}>¿El cliente pagó?</span>
+        <button onClick={onClose} aria-label="Cerrar" style={{ padding: 8, minWidth: 40, minHeight: 40 }}>
+          <i className="ti ti-x" style={{ fontSize: 14 }} aria-hidden="true"></i>
+        </button>
+      </div>
+      <div style={{ fontSize: 12.5, color: "var(--color-text-tertiary)", marginBottom: 14 }}>
+        Viaje juntado · {info.count} facturas{info.total ? ` — $${formatCOP(info.total)}` : ""}. La respuesta aplica a las que estaban "paga al recibir".
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        <button
+          onClick={() => onConfirm("pagado")}
+          style={{ fontSize: 14, fontWeight: 500, padding: "11px 12px", minHeight: 46, background: "var(--color-background-success)", color: "var(--color-text-success)", border: "0.5px solid var(--color-border-success)" }}
+        >
+          <i className="ti ti-cash" style={{ fontSize: 15, verticalAlign: "-2px", marginRight: 6 }} aria-hidden="true"></i>
+          Sí, pagó completo
+        </button>
+        <button
+          onClick={() => onConfirm("pendiente")}
+          style={{ fontSize: 14, fontWeight: 500, padding: "11px 12px", minHeight: 46, background: "var(--color-background-warning)", color: "var(--color-text-warning)", border: "0.5px solid var(--color-border-warning)" }}
+        >
+          <i className="ti ti-clock-dollar" style={{ fontSize: 15, verticalAlign: "-2px", marginRight: 6 }} aria-hidden="true"></i>
+          Quedó debiendo
+        </button>
+        <button onClick={onClose} style={{ fontSize: 13, marginTop: 2 }}>Cancelar</button>
+      </div>
     </ModalOverlay>
   );
 }
