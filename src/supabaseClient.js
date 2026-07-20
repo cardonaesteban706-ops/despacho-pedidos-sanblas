@@ -21,7 +21,7 @@ export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 // saber si mostrar el botón "Ver documento", y cargamos el PDF bajo
 // demanda con cargarPdfPedido / cargarPdfCotizacion.
 const COLUMNAS_PEDIDO =
-  "id, tipo_documento, numero_factura, cliente, telefono, telefono_contacto, direccion, vendedor, total, productos, vehiculo, vehiculo_secundario, destino, entrega_pendiente, nota_pendiente, file_name, fecha, fecha_despacho, hora, orden, estado, estado_pago, entregado_en, fecha_entrega, tiene_pdf";
+  "id, tipo_documento, numero_factura, cliente, telefono, telefono_contacto, direccion, vendedor, total, productos, vehiculo, vehiculo_secundario, destino, entrega_pendiente, nota_pendiente, file_name, fecha, fecha_despacho, hora, orden, estado, estado_pago, entregado_en, fecha_entrega, tiene_pdf, remision_de";
 const COLUMNAS_COTIZACION =
   "id, numero_cotizacion, cliente, telefono, telefono_contacto, direccion, vendedor, total, productos, file_name, fecha, estado, fecha_seguimiento, fecha_vencimiento, notas, motivo_rechazo, tiene_pdf, created_at";
 
@@ -56,6 +56,9 @@ function filaAPedido(fila) {
     estadoPago: fila.estado_pago,
     entregadoEn: fila.entregado_en,
     fechaEntrega: fila.fecha_entrega,
+    // De qué factura viene esta remisión (número de la factura madre). null en
+    // pedidos normales. Ver flujo de remisiones en DespachoPedidos.jsx.
+    remisionDe: fila.remision_de,
   };
 }
 
@@ -87,6 +90,7 @@ function pedidoAFila(p, estado) {
     estado_pago: p.estadoPago || "pendiente",
     entregado_en: p.entregadoEn || null,
     fecha_entrega: p.fechaEntrega || null,
+    remision_de: p.remisionDe || null,
   };
   // Solo mandamos pdf_data_url cuando el pedido realmente lo tiene en memoria
   // (pedido nuevo recién subido). Si es undefined significa "no lo cargué" —

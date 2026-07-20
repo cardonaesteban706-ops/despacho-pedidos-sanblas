@@ -607,6 +607,8 @@ export default function DespachoPedidos() {
   const [notaPendienteDe, setNotaPendienteDe] = useState(null);
   const [confirmandoEntrega, setConfirmandoEntrega] = useState(null);
   const [materialDe, setMaterialDe] = useState(null);
+  // Factura madre sobre la que se está creando una remisión (abre RemisionModal).
+  const [remisionDeModal, setRemisionDeModal] = useState(null);
   const [dragId, setDragId] = useState(null);
   const [dragOverCol, setDragOverCol] = useState(null);
   const [toast, setToast] = useState(null);
@@ -953,6 +955,127 @@ export default function DespachoPedidos() {
     if (!pedidos.some((p) => p.id === id)) return;
     updatePedido(id, { fechaDespacho: hoyIso });
     showToast("Pedido movido a hoy");
+  }
+
+  // Cuánto queda por despachar de un producto de una factura madre: si ya se le
+  // hicieron remisiones tiene cantidadRestante; si no, es la cantidad original.
+  function disponibleDe(prod) {
+    if (prod && prod.cantidadRestante !== undefined && prod.cantidadRestante !== null) return Number(prod.cantidadRestante) || 0;
+    return cantidadNum(prod && prod.cantidad);
+  }
+
+  // Siguiente número correlativo de remisión (REM-0001, REM-0002...). Se saca
+  // del máximo que ya exista entre pedidos activos e historial. Con dos
+  // dispositivos el choque en el mismo segundo es posible pero muy improbable.
+  function siguienteNumeroRemision() {
+    let max = 0;
+    for (const p of [...pedidos, ...historial]) {
+      const m = /^REM-(\d+)$/i.exec((p.numeroFactura || "").trim());
+      if (m) max = Math.max(max, parseInt(m[1], 10));
+    }
+    return `REM-${String(max + 1).padStart(4, "0")}`;
+  }
+
+  // Crea una remisión (parte de una factura grande). cantidades es un arreglo
+  // alineado a madre.productos con cuántas unidades de cada uno van en ESTA
+  // remisión. La remisión nace como pedido activo en la fecha/vehículo elegidos;
+  // la factura madre se queda en Pendientes con el saldo rebajado, y si queda
+  // toda en cero, pasa sola al historial.
+  async function crearRemision(madre, cantidades, fechaDespacho, vehiculo) {
+    const productosMadre = madre.productos || [];
+    // Líneas de la remisión: solo los productos con cantidad > 0.
+    const childProductos = [];
+    productosMadre.forEach((p, i) => {
+      const usado = Number(cantidades[i]) || 0;
+      if (usado <= 0) return;
+      const totalLinea = parseInt(String(p.total || "0").replace(/\./g, ""), 10) || 0;
+      const cantOriginal = cantidadNum(p.cantidad);
+      const totalProrateado = cantOriginal > 0 ? Math.round((totalLinea * usado) / cantOriginal) : 0;
+      childProductos.push({
+        codigo: p.codigo,
+        descripcion: p.descripcion,
+        unidad: p.unidad,
+        cantidad: String(usado),
+        total: String(totalProrateado),
+      });
+    });
+    if (childProductos.length === 0) {
+      showToast("Marca al menos un producto para la remisión.");
+      return;
+    }
+
+    const numRemision = siguienteNumeroRemision();
+    const totalChild = childProductos.reduce((s, p) => s + (parseInt(p.total, 10) || 0), 0);
+    // Orden al final de la cola de su vehículo/fecha destino, para que no salte
+    // de posición al recargar (misma lógica que usa updatePedido).
+    const vehiculoChild = vehiculo || VEHICULOS[0].id;
+    const maxOrden = pedidos
+      .filter((p) => p.vehiculo === vehiculoChild && fechaDe(p) === fechaDespacho)
+      .reduce((max, p) => Math.max(max, p.orden || 0), 0);
+    const child = {
+      id: uid(),
+      tipoDocumento: "factura",
+      numeroFactura: numRemision,
+      remisionDe: madre.numeroFactura || "s/n",
+      cliente: madre.cliente,
+      telefono: madre.telefono,
+      telefonoContacto: madre.telefonoContacto,
+      direccion: madre.direccion,
+      vendedor: madre.vendedor,
+      total: totalChild || null,
+      productos: childProductos,
+      vehiculo: vehiculoChild,
+      destino: madre.destino || null,
+      fechaDespacho,
+      hora: "",
+      orden: maxOrden + 1,
+      estadoPago: madre.estadoPago || "pendiente",
+      tienePdf: false,
+    };
+
+    // Saldo nuevo de la madre por producto.
+    const nuevosProductosMadre = productosMadre.map((p, i) => {
+      const usado = Number(cantidades[i]) || 0;
+      return { ...p, cantidadRestante: Math.max(0, disponibleDe(p) - usado) };
+    });
+    const saldoTotal = nuevosProductosMadre.reduce((s, p) => s + (Number(p.cantidadRestante) || 0), 0);
+    const madreAgotada = saldoTotal <= 0;
+
+    const prevPedidos = pedidos;
+    const prevHistorial = historial;
+
+    if (madreAgotada) {
+      const madreCompletada = {
+        ...madre,
+        productos: nuevosProductosMadre,
+        entregaPendiente: false,
+        notaPendiente: "",
+        entregadoEn: new Date().toISOString(),
+        fechaEntrega: todayStr(),
+      };
+      setPedidos([child, ...pedidos.filter((p) => p.id !== madre.id)]);
+      setHistorial([madreCompletada, ...historial]);
+      showToast(`Remisión ${numRemision} creada. Factura ${madre.numeroFactura || ""} completada, pasó al historial.`, 4500);
+      try {
+        await guardarPedido(child, "activo");
+        await guardarPedido(madreCompletada, "entregado");
+      } catch (e) {
+        setPedidos(prevPedidos);
+        setHistorial(prevHistorial);
+        showToast("No se pudo guardar la remisión. Nada cambió.", 5000);
+      }
+    } else {
+      const nuevaMadre = { ...madre, productos: nuevosProductosMadre };
+      setPedidos([child, ...pedidos.map((p) => (p.id === madre.id ? nuevaMadre : p))]);
+      showToast(`Remisión ${numRemision} creada y enviada a despacho.`, 4000);
+      try {
+        await guardarPedido(child, "activo");
+        await actualizarPedido(nuevaMadre);
+      } catch (e) {
+        setPedidos(prevPedidos);
+        showToast("No se pudo guardar la remisión. Nada cambió.", 5000);
+      }
+    }
   }
 
   // --- Funciones del módulo de Cotizaciones (independiente de despacho) ---
@@ -1955,6 +2078,7 @@ export default function DespachoPedidos() {
                       onVerPdf={() => setViewingPdf(p)}
                       onProgramar={() => setEditing(p)}
                       onMaterialUnidades={esViaje ? undefined : () => setMaterialDe(p)}
+                      onCrearRemision={esViaje ? undefined : () => setRemisionDeModal(p)}
                     />
                   ))}
                 </div>
@@ -2510,6 +2634,18 @@ export default function DespachoPedidos() {
         />
       )}
 
+      {remisionDeModal && (
+        <RemisionModal
+          pedido={remisionDeModal}
+          hoyIso={hoyIso}
+          onClose={() => setRemisionDeModal(null)}
+          onCrear={(cantidades, fechaDespacho, vehiculo) => {
+            crearRemision(remisionDeModal, cantidades, fechaDespacho, vehiculo);
+            setRemisionDeModal(null);
+          }}
+        />
+      )}
+
       {editingCotizacion && (
         <EditCotizacionModal
           cotizacion={editingCotizacion}
@@ -2909,13 +3045,18 @@ function DestinoSelector({ value, onChange }) {
   );
 }
 
-function PedidoCard({ pedido, posicion, esSecundario, isDragging, onDragStart, onDragEnd, onDragOverItem, onDropItem, onDelete, onEntregado, onEdit, onVerPdf, onNotaPendiente, atrasadoDesde, onMoverAHoy, onProgramar, onMaterialUnidades }) {
+function PedidoCard({ pedido, posicion, esSecundario, isDragging, onDragStart, onDragEnd, onDragOverItem, onDropItem, onDelete, onEntregado, onEdit, onVerPdf, onNotaPendiente, atrasadoDesde, onMoverAHoy, onProgramar, onMaterialUnidades, onCrearRemision }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [verProductos, setVerProductos] = useState(false);
   const productos = pedido.productos || [];
   const pagado = pedido.estadoPago === "pagado";
   const pendiente = !!pedido.entregaPendiente;
   const vehiculoPrincipal = VEHICULOS.find((v) => v.id === pedido.vehiculo);
+  // Es una factura madre que ya generó remisiones (sus productos llevan saldo
+  // restante). Mientras tenga saldo no se entrega entera: solo genera remisiones.
+  const esMadreConSaldo = productos.some((p) => p.cantidadRestante !== undefined && p.cantidadRestante !== null);
+  // Es una remisión (parte de una factura grande).
+  const esRemision = !!pedido.remisionDe;
 
   return (
     <div
@@ -2998,8 +3139,21 @@ function PedidoCard({ pedido, posicion, esSecundario, isDragging, onDragStart, o
           </span>
         )}
         {pedido.numeroFactura && (
-          <span style={{ fontSize: 12, background: "var(--color-background-secondary)", color: "var(--color-text-secondary)", borderRadius: "var(--border-radius-sm)", padding: "2px 7px" }}>
-            {pedido.tipoDocumento === "cotizacion" ? "Cotización" : "Factura"} {pedido.numeroFactura}
+          <span style={{ fontSize: 12, background: esRemision ? "var(--color-background-info)" : "var(--color-background-secondary)", color: esRemision ? "var(--color-text-info)" : "var(--color-text-secondary)", borderRadius: "var(--border-radius-sm)", padding: "2px 7px" }}>
+            {esRemision ? (
+              <>
+                <i className="ti ti-arrows-split" style={{ fontSize: 11, verticalAlign: "-1px", marginRight: 3 }} aria-hidden="true"></i>
+                {pedido.numeroFactura} · de Factura {pedido.remisionDe}
+              </>
+            ) : (
+              `${pedido.tipoDocumento === "cotizacion" ? "Cotización" : "Factura"} ${pedido.numeroFactura}`
+            )}
+          </span>
+        )}
+        {esMadreConSaldo && (
+          <span style={{ fontSize: 12, fontWeight: 500, background: "var(--color-background-warning)", color: "var(--color-text-warning)", borderRadius: "var(--border-radius-sm)", padding: "2px 7px" }}>
+            <i className="ti ti-package" style={{ fontSize: 11, verticalAlign: "-1px", marginRight: 3 }} aria-hidden="true"></i>
+            Factura con remisiones
           </span>
         )}
         {pedido.destino && pedido.destino.trim() && (
@@ -3031,6 +3185,11 @@ function PedidoCard({ pedido, posicion, esSecundario, isDragging, onDragStart, o
                 {productos[0].cantidad} {productos[0].unidad}
               </b>{" "}
               — {productos[0].descripcion}
+              {productos[0].cantidadRestante !== undefined && productos[0].cantidadRestante !== null && (
+                <span style={{ color: "var(--color-text-warning)", fontWeight: 500 }}>
+                  {" "}· quedan {formatCantidad(productos[0].cantidadRestante)} de {formatCantidad(cantidadNum(productos[0].cantidad))}
+                </span>
+              )}
             </div>
           ) : (
             <>
@@ -3069,7 +3228,14 @@ function PedidoCard({ pedido, posicion, esSecundario, isDragging, onDragStart, o
                       >
                         {p.cantidad} {p.unidad}
                       </span>
-                      <span style={{ color: "var(--color-text-secondary)" }}>{p.descripcion}</span>
+                      <span style={{ color: "var(--color-text-secondary)" }}>
+                        {p.descripcion}
+                        {p.cantidadRestante !== undefined && p.cantidadRestante !== null && (
+                          <span style={{ color: "var(--color-text-warning)", fontWeight: 500 }}>
+                            {" "}· quedan {formatCantidad(p.cantidadRestante)} de {formatCantidad(cantidadNum(p.cantidad))}
+                          </span>
+                        )}
+                      </span>
                     </div>
                   ))}
                 </div>
@@ -3098,6 +3264,23 @@ function PedidoCard({ pedido, posicion, esSecundario, isDragging, onDragStart, o
       )}
 
       <div style={{ display: "flex", alignItems: "center", gap: 6, paddingLeft: 36, flexWrap: "wrap" }}>
+        {onCrearRemision && (
+          <button
+            onClick={onCrearRemision}
+            style={{
+              fontSize: 12.5,
+              padding: "9px 12px",
+              minHeight: 40,
+              fontWeight: 500,
+              background: "var(--color-background-warning)",
+              color: "var(--color-text-warning)",
+              border: "0.5px solid var(--color-border-warning)",
+            }}
+          >
+            <i className="ti ti-arrows-split" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
+            Crear remisión
+          </button>
+        )}
         {onProgramar && (
           <button
             onClick={onProgramar}
@@ -3222,7 +3405,7 @@ function PedidoCard({ pedido, posicion, esSecundario, isDragging, onDragStart, o
               Eliminar
             </button>
           ))}
-        {!esSecundario && (
+        {!esSecundario && !esMadreConSaldo && (
         <button
           onClick={onEntregado}
           style={{
@@ -3792,6 +3975,191 @@ function MaterialPorUnidadesModal({ pedido, onClose, onGuardar }) {
           style={{ fontSize: 13, fontWeight: 500, background: "var(--color-background-info)", color: "var(--color-text-info)", border: "0.5px solid var(--color-border-info)" }}
         >
           Guardar
+        </button>
+      </div>
+    </ModalOverlay>
+  );
+}
+
+// Modal para crear una remisión: elegir cuántas unidades de cada producto de
+// una factura grande se despachan esta vez, y a qué fecha/vehículo van. Lo que
+// se elige sale de la factura madre (se le rebaja el saldo); la remisión nace
+// como pedido activo en la fecha elegida. Ver crearRemision() en el componente.
+function RemisionModal({ pedido, hoyIso, onClose, onCrear }) {
+  const productos = pedido.productos || [];
+  const dispo = (p) => (p.cantidadRestante !== undefined && p.cantidadRestante !== null ? Number(p.cantidadRestante) : cantidadNum(p.cantidad));
+
+  const [cantidades, setCantidades] = useState(() => productos.map(() => 0));
+  const [fechaOpcion, setFechaOpcion] = useState("hoy");
+  const [fechaOtro, setFechaOtro] = useState(hoyIso);
+  const [vehiculo, setVehiculo] = useState(pedido.vehiculo || VEHICULOS[0].id);
+
+  // Mañana calculado desde hoyIso en UTC, para no correrse por zona horaria.
+  const manana = (() => {
+    const [y, m, d] = hoyIso.split("-").map(Number);
+    return new Date(Date.UTC(y, m - 1, d + 1)).toISOString().slice(0, 10);
+  })();
+
+  const setCantidad = (idx, valor) => {
+    setCantidades((prev) =>
+      prev.map((c, i) => {
+        if (i !== idx) return c;
+        const max = dispo(productos[idx]);
+        let n = valor;
+        if (isNaN(n) || n < 0) n = 0;
+        if (n > max) n = max;
+        return n;
+      })
+    );
+  };
+
+  const totalUnidades = cantidades.reduce((s, c) => s + (Number(c) || 0), 0);
+  const fechaResuelta = fechaOpcion === "hoy" ? hoyIso : fechaOpcion === "manana" ? manana : fechaOpcion === "viaje" ? "viaje" : fechaOtro;
+  const puedeCrear = totalUnidades > 0 && (fechaOpcion !== "otro" || !!fechaOtro);
+
+  const opcionesFecha = [
+    { id: "hoy", label: "Hoy" },
+    { id: "manana", label: "Mañana" },
+    { id: "viaje", label: "Por viaje" },
+    { id: "otro", label: "Otro día" },
+  ];
+
+  return (
+    <ModalOverlay onClose={onClose} maxWidth={480}>
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+        <span style={{ fontWeight: 500, fontSize: 15 }}>Crear remisión</span>
+        <button onClick={onClose} aria-label="Cerrar" style={{ padding: 8, minWidth: 40, minHeight: 40 }}>
+          <i className="ti ti-x" style={{ fontSize: 14 }} aria-hidden="true"></i>
+        </button>
+      </div>
+      <div style={{ fontSize: 12.5, color: "var(--color-text-tertiary)", marginBottom: 12 }}>
+        {pedido.cliente}
+        {pedido.numeroFactura ? ` · Factura ${pedido.numeroFactura}` : ""} — marca cuántas unidades se lleva el cliente esta vez.
+      </div>
+
+      {productos.length === 0 && (
+        <div style={{ fontSize: 13, color: "var(--color-text-tertiary)", padding: "8px 4px" }}>
+          Esta factura no tiene productos detallados, no se puede remisionar por unidades.
+        </div>
+      )}
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 14 }}>
+        {productos.map((p, idx) => {
+          const disponible = dispo(p);
+          const va = cantidades[idx];
+          const agotado = disponible <= 0;
+          return (
+            <div
+              key={idx}
+              style={{
+                border: "0.5px solid var(--color-border-tertiary)",
+                borderRadius: "var(--border-radius-md)",
+                padding: "8px 10px",
+                opacity: agotado ? 0.5 : 1,
+              }}
+            >
+              <div style={{ fontSize: 13, marginBottom: 6 }}>
+                <b style={{ fontWeight: 500 }}>{p.descripcion}</b>
+                <span style={{ color: "var(--color-text-tertiary)" }}> · disponible {formatCantidad(disponible)} {p.unidad}</span>
+              </div>
+              {!agotado && (
+                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                  <span style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>Se lleva:</span>
+                  <input
+                    type="number"
+                    inputMode="decimal"
+                    min={0}
+                    max={disponible}
+                    value={va}
+                    onChange={(e) => setCantidad(idx, parseCantidad(e.target.value))}
+                    style={{ width: 90 }}
+                  />
+                  <button onClick={() => setCantidad(idx, disponible)} style={{ fontSize: 12, padding: "6px 10px", minHeight: 36 }}>
+                    Todo
+                  </button>
+                  <button onClick={() => setCantidad(idx, 0)} style={{ fontSize: 12, padding: "6px 10px", minHeight: 36 }}>
+                    Nada
+                  </button>
+                </div>
+              )}
+              {agotado && <div style={{ fontSize: 12, color: "var(--color-text-tertiary)" }}>Ya se despachó completo.</div>}
+            </div>
+          );
+        })}
+      </div>
+
+      <div style={{ fontSize: 12.5, fontWeight: 500, marginBottom: 6 }}>¿Para cuándo?</div>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: fechaOpcion === "otro" ? 8 : 14 }}>
+        {opcionesFecha.map((o) => (
+          <button
+            key={o.id}
+            onClick={() => setFechaOpcion(o.id)}
+            aria-pressed={fechaOpcion === o.id}
+            style={{
+              fontSize: 12.5,
+              padding: "8px 12px",
+              minHeight: 40,
+              fontWeight: fechaOpcion === o.id ? 600 : 400,
+              background: fechaOpcion === o.id ? "var(--color-background-info)" : "var(--color-background-primary)",
+              color: fechaOpcion === o.id ? "var(--color-text-info)" : "var(--color-text-primary)",
+              border: fechaOpcion === o.id ? "2px solid var(--color-border-info)" : "0.5px solid var(--color-border-tertiary)",
+            }}
+          >
+            {o.label}
+          </button>
+        ))}
+      </div>
+      {fechaOpcion === "otro" && (
+        <div style={{ marginBottom: 14 }}>
+          <input type="date" value={fechaOtro} min={hoyIso} onChange={(e) => setFechaOtro(e.target.value)} style={{ width: "100%" }} />
+        </div>
+      )}
+
+      <div style={{ fontSize: 12.5, fontWeight: 500, marginBottom: 6 }}>¿En qué vehículo?</div>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 16 }}>
+        {VEHICULOS.map((v) => (
+          <button
+            key={v.id}
+            onClick={() => setVehiculo(v.id)}
+            aria-pressed={vehiculo === v.id}
+            style={{
+              fontSize: 12.5,
+              padding: "8px 12px",
+              minHeight: 40,
+              fontWeight: vehiculo === v.id ? 600 : 400,
+              background: vehiculo === v.id ? v.bg : "var(--color-background-primary)",
+              color: vehiculo === v.id ? v.text : "var(--color-text-primary)",
+              border: vehiculo === v.id ? `2px solid ${v.border}` : "0.5px solid var(--color-border-tertiary)",
+            }}
+          >
+            <i className={`ti ${v.icon}`} style={{ fontSize: 14, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
+            {v.label}
+          </button>
+        ))}
+      </div>
+
+      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", alignItems: "center" }}>
+        <span style={{ fontSize: 12, color: "var(--color-text-tertiary)", marginRight: "auto" }}>
+          {totalUnidades > 0 ? `${formatCantidad(totalUnidades)} unidades en esta remisión` : "Nada marcado aún"}
+        </span>
+        <button onClick={onClose} style={{ fontSize: 13 }}>Cancelar</button>
+        <button
+          onClick={() => puedeCrear && onCrear(cantidades, fechaResuelta, vehiculo)}
+          disabled={!puedeCrear}
+          style={{
+            fontSize: 13,
+            fontWeight: 500,
+            background: puedeCrear ? "#639922" : "var(--color-background-secondary)",
+            color: puedeCrear ? "white" : "var(--color-text-tertiary)",
+            border: "none",
+            borderRadius: "var(--border-radius-md)",
+            padding: "9px 14px",
+            minHeight: 40,
+            cursor: puedeCrear ? "pointer" : "not-allowed",
+          }}
+        >
+          <i className="ti ti-arrows-split" style={{ fontSize: 14, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
+          Crear remisión
         </button>
       </div>
     </ModalOverlay>
