@@ -2721,21 +2721,53 @@ export default function DespachoPedidos() {
                   );
                 })()}
 
-                <div style={{ background: "var(--color-background-secondary)", borderRadius: 12, padding: "12px 14px", marginBottom: 14 }}>
-                  <div style={{ fontSize: 12, color: "var(--color-text-tertiary)", marginBottom: 8 }}>Carga de los últimos 14 días</div>
-                  <div style={{ display: "flex", alignItems: "flex-end", gap: 4, height: 48 }}>
-                    {tendenciaPanel.dias.map((d) => {
-                      const alto = tendenciaPanel.max > 0 ? Math.round((d.kg / tendenciaPanel.max) * 44) + 2 : 2;
-                      return (
-                        <div
-                          key={d.iso}
-                          title={`${formatFechaCorta(d.iso)}: ${formatCOP(Math.round(d.kg))} kg`}
-                          style={{ flex: 1, height: alto, background: d.esActual ? MARCA.azulMedio : "var(--color-border-secondary)", borderRadius: 2 }}
-                        ></div>
-                      );
-                    })}
+                <div style={{ background: "var(--color-background-secondary)", borderRadius: 12, padding: "14px 14px 10px", marginBottom: 14 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8 }}>
+                    <span style={{ fontSize: 12, fontWeight: 500, color: MARCA.azulMuyOscuro }}>Carga de los últimos 14 días</span>
+                    <span style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}>kg por día</span>
                   </div>
-                  <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", marginTop: 6, textAlign: "right" }}>Día mostrado resaltado en azul</div>
+                  {(() => {
+                    const W = 340, H = 118, padT = 20, padB = 18, padX = 2;
+                    const plotH = H - padT - padB;
+                    const n = tendenciaPanel.dias.length;
+                    const slot = (W - padX * 2) / n;
+                    const barW = slot * 0.64;
+                    const max = tendenciaPanel.max || 1;
+                    const yDe = (kg) => padT + plotH - (kg / max) * plotH;
+                    const promY = promedioKilos30d > 0 && promedioKilos30d <= max ? yDe(promedioKilos30d) : null;
+                    return (
+                      <svg viewBox={`0 0 ${W} ${H}`} width="100%" style={{ display: "block", overflow: "visible" }} role="img" aria-label="Gráfica de carga de los últimos 14 días">
+                        {/* Línea de promedio (referencia de un día normal). */}
+                        {promY !== null && (
+                          <>
+                            <line x1={padX} y1={promY} x2={W - padX} y2={promY} stroke={MARCA.azulMedio} strokeWidth="1" strokeDasharray="4 3" opacity="0.6" />
+                            <text x={W - padX} y={promY - 3} textAnchor="end" fontSize="8.5" fill={MARCA.azulMedio} opacity="0.9">prom {formatCOP(Math.round(promedioKilos30d))}</text>
+                          </>
+                        )}
+                        {tendenciaPanel.dias.map((d, i) => {
+                          const x = padX + i * slot + (slot - barW) / 2;
+                          const h = Math.max(d.kg > 0 ? 2 : 0, (d.kg / max) * plotH);
+                          const y = padT + plotH - h;
+                          const [yy, mm, dd] = d.iso.split("-").map(Number);
+                          const fechaObj = new Date(yy, mm - 1, dd);
+                          const inicial = fechaObj.toLocaleDateString("es-CO", { weekday: "narrow" });
+                          const finde = fechaObj.getDay() === 0 || fechaObj.getDay() === 6;
+                          return (
+                            <g key={d.iso}>
+                              <rect x={x} y={y} width={barW} height={h} rx="2" fill={d.esActual ? MARCA.azulMedio : d.kg === 0 ? "var(--color-border-secondary)" : "var(--color-border-primary)"} opacity={d.kg === 0 ? 0.4 : 1}>
+                                <title>{`${formatFechaCorta(d.iso)}: ${formatCOP(Math.round(d.kg))} kg`}</title>
+                              </rect>
+                              {d.esActual && d.kg > 0 && (
+                                <text x={x + barW / 2} y={y - 4} textAnchor="middle" fontSize="9" fontWeight="600" fill={MARCA.azulOscuro}>{formatCOP(Math.round(d.kg))}</text>
+                              )}
+                              <text x={x + barW / 2} y={H - 5} textAnchor="middle" fontSize="8.5" fill={d.esActual ? MARCA.azulOscuro : finde ? "var(--color-text-tertiary)" : "var(--color-text-secondary)"} fontWeight={d.esActual ? "600" : "400"} style={{ textTransform: "uppercase" }}>{inicial}</text>
+                            </g>
+                          );
+                        })}
+                      </svg>
+                    );
+                  })()}
+                  <div style={{ fontSize: 10.5, color: "var(--color-text-tertiary)", marginTop: 4, textAlign: "right" }}>Día mostrado en azul · línea = día normal</div>
                 </div>
 
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 10, marginBottom: 16 }}>
@@ -2755,26 +2787,67 @@ export default function DespachoPedidos() {
                 </div>
 
                 <div style={{ fontSize: 13, fontWeight: 600, color: MARCA.azulMuyOscuro, marginBottom: 2 }}>Por vehículo</div>
-                <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", marginBottom: 8 }}>Cuánto movió cada carro.</div>
+                <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", marginBottom: 8 }}>Cómo se repartió la carga entre los carros.</div>
                 <div style={{ marginBottom: 16 }}>
                   {(() => {
-                    const maxVeh = (resumenPanel.porVehiculo[0] && resumenPanel.porVehiculo[0][1].kilos) || 1;
-                    return resumenPanel.porVehiculo.map(([veh, d]) => (
-                      <div key={veh} style={{ padding: "8px 0", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>
-                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 5 }}>
-                          <span style={{ fontSize: 14 }}>
-                            <i className="ti ti-truck" style={{ fontSize: 15, verticalAlign: "-2px", marginRight: 6, color: MARCA.azulMedio }} aria-hidden="true"></i>
-                            {veh}
-                          </span>
-                          <span style={{ color: "var(--color-text-tertiary)", fontSize: 13, fontVariantNumeric: "tabular-nums" }}>
-                            {d.pedidos} {d.pedidos === 1 ? "pedido" : "pedidos"} · {formatCOP(Math.round(d.kilos))} kg
-                          </span>
-                        </div>
-                        <div style={{ height: 5, background: "var(--color-background-secondary)", borderRadius: 3 }}>
-                          <div style={{ width: `${Math.round((d.kilos / maxVeh) * 100)}%`, height: 5, background: MARCA.azulMedio, borderRadius: 3 }}></div>
+                    const datos = resumenPanel.porVehiculo.map(([veh, d]) => {
+                      const info = VEHICULOS.find((v) => v.id === veh || v.label === veh);
+                      return { veh, d, label: info ? info.label : veh, color: info ? info.border : "#9AA0A6", icon: info ? info.icon : "ti-package" };
+                    });
+                    const totalKg = datos.reduce((s, x) => s + x.d.kilos, 0) || 1;
+                    const maxVeh = Math.max(...datos.map((x) => x.d.kilos), 1);
+                    // Dona: cada carro un segmento del anillo, proporcional a sus kg.
+                    const R = 46, SW = 20, C = 2 * Math.PI * R;
+                    let acumulado = 0;
+                    return (
+                      <div style={{ display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
+                        <svg viewBox="0 0 120 120" width="118" height="118" style={{ flexShrink: 0 }} role="img" aria-label="Reparto de carga por vehículo">
+                          <circle cx="60" cy="60" r={R} fill="none" stroke="var(--color-background-secondary)" strokeWidth={SW} />
+                          {datos.map((x) => {
+                            const frac = x.d.kilos / totalKg;
+                            const dash = frac * C;
+                            const seg = (
+                              <circle
+                                key={x.veh}
+                                cx="60"
+                                cy="60"
+                                r={R}
+                                fill="none"
+                                stroke={x.color}
+                                strokeWidth={SW}
+                                strokeDasharray={`${dash} ${C - dash}`}
+                                strokeDashoffset={-acumulado}
+                                transform="rotate(-90 60 60)"
+                              >
+                                <title>{`${x.label}: ${formatCOP(Math.round(x.d.kilos))} kg (${Math.round(frac * 100)}%)`}</title>
+                              </circle>
+                            );
+                            acumulado += dash;
+                            return seg;
+                          })}
+                          <text x="60" y="56" textAnchor="middle" fontSize="16" fontWeight="600" fill={MARCA.azulMuyOscuro}>{formatCOP(Math.round(totalKg))}</text>
+                          <text x="60" y="70" textAnchor="middle" fontSize="9" fill="var(--color-text-tertiary)">kg total</text>
+                        </svg>
+                        <div style={{ flex: 1, minWidth: 180 }}>
+                          {datos.map((x) => (
+                            <div key={x.veh} style={{ padding: "6px 0", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>
+                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4, gap: 8 }}>
+                                <span style={{ fontSize: 13.5, display: "inline-flex", alignItems: "center", gap: 6 }}>
+                                  <span style={{ width: 10, height: 10, borderRadius: 3, background: x.color, flexShrink: 0 }}></span>
+                                  {x.label}
+                                </span>
+                                <span style={{ color: "var(--color-text-tertiary)", fontSize: 12.5, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>
+                                  {x.d.pedidos} {x.d.pedidos === 1 ? "pedido" : "pedidos"} · {formatCOP(Math.round(x.d.kilos))} kg
+                                </span>
+                              </div>
+                              <div style={{ height: 5, background: "var(--color-background-secondary)", borderRadius: 3 }}>
+                                <div style={{ width: `${Math.round((x.d.kilos / maxVeh) * 100)}%`, height: 5, background: x.color, borderRadius: 3 }}></div>
+                              </div>
+                            </div>
+                          ))}
                         </div>
                       </div>
-                    ));
+                    );
                   })()}
                 </div>
 
@@ -2798,8 +2871,11 @@ export default function DespachoPedidos() {
                 <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", marginBottom: 8 }}>Material que salió ese día, por tipo (unidades tal como vienen en la factura).</div>
                 <div style={{ marginBottom: 4 }}>
                   {(() => {
+                    const totalKgCat = resumenPanel.porCategoria.reduce((s, [, d]) => s + d.kilos, 0) || 1;
                     const maxCat = (resumenPanel.porCategoria[0] && resumenPanel.porCategoria[0][1].kilos) || 1;
-                    return resumenPanel.porCategoria.map(([cat, d]) => (
+                    return resumenPanel.porCategoria.map(([cat, d]) => {
+                      const pct = Math.round((d.kilos / totalKgCat) * 100);
+                      return (
                       <div key={cat} style={{ padding: "8px 0", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>
                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 5, gap: 10 }}>
                           <span style={{ fontSize: 14 }}>
@@ -2807,14 +2883,15 @@ export default function DespachoPedidos() {
                             {cat}
                           </span>
                           <span style={{ color: "var(--color-text-tertiary)", fontSize: 13, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>
-                            {formatCantidad(d.unidades)} u · {formatCOP(Math.round(d.kilos))} kg
+                            {formatCantidad(d.unidades)} u · {formatCOP(Math.round(d.kilos))} kg · {pct}%
                           </span>
                         </div>
                         <div style={{ height: 5, background: "var(--color-background-secondary)", borderRadius: 3 }}>
                           <div style={{ width: `${Math.round((d.kilos / maxCat) * 100)}%`, height: 5, background: MARCA.azulMedio, borderRadius: 3 }}></div>
                         </div>
                       </div>
-                    ));
+                      );
+                    });
                   })()}
                 </div>
 
