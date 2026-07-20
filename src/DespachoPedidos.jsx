@@ -1649,6 +1649,108 @@ export default function DespachoPedidos() {
 
       {view === "despacho" ? (
         <>
+          {/* Buscador del tablero. Va ARRIBA de los avisos y pestañas: mientras
+              se escribe, abajo solo se ven los resultados (filas compactas y
+              estables), sin que los banners/pestañas/tarjetas brinquen. Tocar
+              un resultado lleva a la pestaña donde vive ese pedido. */}
+          <div style={{ position: "relative", marginBottom: 12 }}>
+            <i
+              className="ti ti-search"
+              style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", fontSize: 15, color: "var(--color-text-tertiary)" }}
+              aria-hidden="true"
+            ></i>
+            <input
+              type="text"
+              placeholder="Buscar pedido por cliente, factura, dirección..."
+              value={busquedaDespacho}
+              onChange={(e) => setBusquedaDespacho(e.target.value)}
+              aria-label="Buscar pedidos en despacho"
+              style={{ width: "100%", paddingLeft: 34, paddingRight: busquedaDespacho ? 40 : 12 }}
+            />
+            {busquedaDespacho && (
+              <button
+                onClick={() => setBusquedaDespacho("")}
+                aria-label="Borrar búsqueda"
+                style={{ position: "absolute", right: 6, top: "50%", transform: "translateY(-50%)", minWidth: 32, minHeight: 32, padding: 0, border: "none", background: "transparent", color: "var(--color-text-tertiary)" }}
+              >
+                <i className="ti ti-x" style={{ fontSize: 14 }} aria-hidden="true"></i>
+              </button>
+            )}
+          </div>
+
+          {busquedaNorm ? (
+            <div>
+              <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 8, minHeight: 18 }}>
+                {resultadosBusqueda.length === 0
+                  ? `No se encontró ningún pedido con "${busquedaDespacho.trim()}".`
+                  : `${resultadosBusqueda.length} ${resultadosBusqueda.length === 1 ? "coincidencia" : "coincidencias"} — toca una para ir a su pestaña.`}
+              </div>
+              <div>
+                {resultadosBusqueda.map((p) => {
+                  const f = fechaDe(p);
+                  const esAtras = f !== "pendiente" && f !== "viaje" && f < hoyIso;
+                  const etiqueta =
+                    f === "pendiente" ? "Pendientes" : f === "viaje" ? "Por viaje" : esAtras ? `Atrasado (${formatFechaCorta(f)})` : etiquetaFecha(f, hoyIso);
+                  // Los atrasados no tienen pestaña propia: se muestran en "Hoy".
+                  const tabDestino = f === "pendiente" || f === "viaje" ? f : esAtras ? hoyIso : f;
+                  const veh = (VEHICULOS.find((v) => v.id === p.vehiculo) || {}).label || "Sin vehículo";
+                  return (
+                    <div
+                      key={p.id}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 6,
+                        background: "var(--color-background-primary)",
+                        border: "0.5px solid var(--color-border-tertiary)",
+                        borderRadius: "var(--border-radius-md)",
+                        padding: "8px 10px",
+                        marginBottom: 8,
+                      }}
+                    >
+                      <button
+                        onClick={() => {
+                          setSelectedDate(tabDestino);
+                          setBusquedaDespacho("");
+                          showToast(`Mostrando ${f === "pendiente" ? "Pendientes" : f === "viaje" ? "Por viaje" : etiquetaFecha(tabDestino, hoyIso)}`);
+                        }}
+                        style={{ flex: 1, minWidth: 0, textAlign: "left", border: "none", background: "transparent", padding: "4px 0", minHeight: 44, cursor: "pointer" }}
+                      >
+                        <div style={{ fontSize: 14, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {p.cliente || "Sin nombre"}
+                          {p.numeroFactura ? <span style={{ fontWeight: 400, color: "var(--color-text-tertiary)" }}> · {p.numeroFactura}</span> : ""}
+                        </div>
+                        <div style={{ fontSize: 12, color: esAtras ? "var(--color-text-danger)" : "var(--color-text-tertiary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginTop: 2 }}>
+                          {etiqueta} · {veh}
+                          {p.destino && p.destino.trim() ? ` · ${p.destino}` : ""}
+                          {p.entregaPendiente ? " · debe material" : ""}
+                        </div>
+                      </button>
+                      {p.tienePdf && (
+                        <button
+                          onClick={() => setViewingPdf(p)}
+                          aria-label="Ver documento"
+                          title="Ver documento"
+                          style={{ minWidth: 40, minHeight: 40, padding: 0, border: "0.5px solid var(--color-border-tertiary)", background: "transparent", borderRadius: "var(--border-radius-md)", color: "var(--color-text-secondary)" }}
+                        >
+                          <i className="ti ti-file-text" style={{ fontSize: 16 }} aria-hidden="true"></i>
+                        </button>
+                      )}
+                      <button
+                        onClick={() => setEditing(p)}
+                        aria-label="Editar pedido"
+                        title="Editar"
+                        style={{ minWidth: 40, minHeight: 40, padding: 0, border: "0.5px solid var(--color-border-tertiary)", background: "transparent", borderRadius: "var(--border-radius-md)", color: "var(--color-text-secondary)" }}
+                      >
+                        <i className="ti ti-pencil" style={{ fontSize: 16 }} aria-hidden="true"></i>
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ) : (
+          <>
           {pedidosConEntregaPendiente.length > 0 && (
             <div
               style={{
@@ -1709,60 +1811,6 @@ export default function DespachoPedidos() {
               })}
             </button>
           )}
-          {/* Buscador del tablero: cuando hay texto, se ocultan las pestañas de
-              fecha y se muestra una lista plana con las coincidencias (§resultadosBusqueda). */}
-          <div style={{ position: "relative", marginBottom: 12 }}>
-            <i
-              className="ti ti-search"
-              style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", fontSize: 15, color: "var(--color-text-tertiary)" }}
-              aria-hidden="true"
-            ></i>
-            <input
-              type="text"
-              placeholder="Buscar pedido por cliente, factura, dirección..."
-              value={busquedaDespacho}
-              onChange={(e) => setBusquedaDespacho(e.target.value)}
-              aria-label="Buscar pedidos en despacho"
-              style={{ width: "100%", paddingLeft: 34, paddingRight: busquedaDespacho ? 40 : 12 }}
-            />
-            {busquedaDespacho && (
-              <button
-                onClick={() => setBusquedaDespacho("")}
-                aria-label="Borrar búsqueda"
-                style={{ position: "absolute", right: 6, top: "50%", transform: "translateY(-50%)", minWidth: 32, minHeight: 32, padding: 0, border: "none", background: "transparent", color: "var(--color-text-tertiary)" }}
-              >
-                <i className="ti ti-x" style={{ fontSize: 14 }} aria-hidden="true"></i>
-              </button>
-            )}
-          </div>
-
-          {busquedaNorm ? (
-            <div>
-              <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 10 }}>
-                {resultadosBusqueda.length === 0
-                  ? `No se encontró ningún pedido con "${busquedaDespacho.trim()}".`
-                  : `${resultadosBusqueda.length} ${resultadosBusqueda.length === 1 ? "pedido encontrado" : "pedidos encontrados"} (en todas las fechas).`}
-              </div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12 }}>
-                {resultadosBusqueda.map((p) => (
-                  <PedidoCard
-                    key={p.id}
-                    pedido={p}
-                    posicion={null}
-                    isDragging={false}
-                    onDragStart={() => {}}
-                    onDragOverItem={() => {}}
-                    onDropItem={() => {}}
-                    onDelete={() => deletePedido(p.id)}
-                    onEntregado={() => solicitarEntrega(p)}
-                    onEdit={() => setEditing(p)}
-                    onVerPdf={() => setViewingPdf(p)}
-                  />
-                ))}
-              </div>
-            </div>
-          ) : (
-          <>
           <div
             style={{
               display: "flex",
