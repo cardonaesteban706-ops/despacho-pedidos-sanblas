@@ -120,6 +120,15 @@ function categoriaDeProducto(descripcion) {
   return null;
 }
 
+// Detecta la línea de "Transporte de carga de cliente" (el flete que se cobra
+// aparte en la factura, agregado a mano desde World Office). No es material —
+// no tiene peso — así que se excluye del sistema de categorías de peso y del
+// "Sin categorizar", y se cuenta aparte en pesos ($), no en kilos.
+function esLineaFlete(descripcion) {
+  const d = normalizarTexto(descripcion);
+  return d.includes("transporte de carga") || d.includes("transporte carga") || /\bflete\b/.test(d);
+}
+
 // Cantidad que de verdad se entregó de una línea: si el despachador marcó
 // "Material entregado" (cantidadEntregada), esa es la verdad; si no, se asume
 // que se entregó todo lo facturado. El Panel usa SIEMPRE esta cantidad — contar
@@ -1484,6 +1493,7 @@ export default function DespachoPedidos() {
       const dest = p.destino || "Sin destino";
       porDestino.set(dest, (porDestino.get(dest) || 0) + 1);
       for (const prod of p.productos || []) {
+        if (esLineaFlete(prod && prod.descripcion)) continue; // se cuenta aparte, en $ no en kg
         const cat = categoriaDeProducto(prod && prod.descripcion);
         const nombre = cat ? cat.nombre : "Otros";
         if (!porCategoria.has(nombre)) porCategoria.set(nombre, { unidades: 0, kilos: 0 });
@@ -1519,6 +1529,7 @@ export default function DespachoPedidos() {
     const mapa = new Map();
     for (const p of historial) {
       for (const prod of p.productos || []) {
+        if (esLineaFlete(prod && prod.descripcion)) continue; // no es material, se reporta aparte
         const cat = categoriaDeProducto(prod && prod.descripcion);
         if (cat) continue; // ya tiene categoría, no nos interesa aquí
         const desc = (prod && prod.descripcion ? prod.descripcion.trim() : "") || "(sin descripción)";
@@ -2608,6 +2619,7 @@ export default function DespachoPedidos() {
             puedeSiguiente={!!panelDiaSiguiente}
             onAnterior={() => panelDiaAnterior && setPanelDia(panelDiaAnterior)}
             onSiguiente={() => panelDiaSiguiente && setPanelDia(panelDiaSiguiente)}
+            historial={historial}
           />
         ))}
 
@@ -4926,6 +4938,18 @@ function EditModal({ pedido, onClose, onSave }) {
             </button>
           </div>
         </div>
+
+        <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+          <input
+            type="checkbox"
+            checked={!!form.fleteExterno}
+            onChange={(e) => setForm({ ...form, fleteExterno: e.target.checked })}
+            style={{ width: 18, height: 18 }}
+          />
+          <span style={{ fontSize: 12.5, color: "var(--color-text-secondary)" }}>
+            El flete de este pedido lo cobró un tercero (no entra a la ferretería)
+          </span>
+        </label>
 
         {!sinFecha && (
           <div>

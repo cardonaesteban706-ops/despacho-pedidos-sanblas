@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useMemo, useState } from "react";
 
 // ---------------------------------------------------------------------
 // PanelResumen — vista del "Resumen del día" rediseñada.
@@ -49,6 +49,36 @@ function formatFechaLarga(iso) {
 function diaCorto(iso) {
   const [, , d] = iso.split("-");
   return d;
+}
+
+// --- Reporte de fletes ("Transporte de carga de cliente") ---
+// El flete se agrega a mano en la factura desde World Office como una línea
+// más, pero no es material (no pesa) — se cuenta en pesos ($), no en kilos.
+function normalizarTexto(s) {
+  return (s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+}
+function esLineaFlete(descripcion) {
+  const d = normalizarTexto(descripcion);
+  return d.includes("transporte de carga") || d.includes("transporte carga") || /\bflete\b/.test(d);
+}
+// Día ISO (YYYY-MM-DD) en que se entregó un pedido, igual que en DespachoPedidos.
+function fechaEntregaISO(pedido) {
+  if (pedido && pedido.entregadoEn) {
+    const dt = new Date(pedido.entregadoEn);
+    if (!isNaN(dt.getTime())) return dt.toLocaleDateString("en-CA", { timeZone: "America/Bogota" });
+  }
+  if (pedido && pedido.fechaEntrega && pedido.fechaEntrega.includes("/")) {
+    const [d, m, y] = pedido.fechaEntrega.split("/");
+    if (d && m && y) return `${y}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`;
+  }
+  return null;
+}
+function primerDiaMesISO() {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`;
+}
+function hoyISO() {
+  return new Date().toLocaleDateString("en-CA", { timeZone: "America/Bogota" });
 }
 
 // Veredicto del día (misma lógica que DespachoPedidos.jsx). Devuelve además un
@@ -102,8 +132,39 @@ export default function PanelResumen({
   onSiguiente,
   onCompartir,             // opcional; si falta, usa navigator.share / portapapeles
   maxCategorias = 6,       // top N categorías; el resto se agrupa en "Otros"
+  historial = [],          // TODOS los pedidos entregados (para el reporte de fletes por rango)
 }) {
   const [sinCatAbierto, setSinCatAbierto] = useState(false);
+  const [fleteDesde, setFleteDesde] = useState(primerDiaMesISO);
+  const [fleteHasta, setFleteHasta] = useState(hoyISO);
+
+  // Fletes cobrados por vehículo en el rango [fleteDesde, fleteHasta], separados
+  // entre lo que es ingreso de la ferretería y lo que le corresponde a un
+  // tercero (motero externo, etc. — marcado con fleteExterno en el pedido).
+  const reporteFletes = useMemo(() => {
+    const porVeh = new Map();
+    for (const p of historial) {
+      const iso = fechaEntregaISO(p);
+      if (!iso || iso < fleteDesde || iso > fleteHasta) continue;
+      let valorFlete = 0;
+      for (const prod of p.productos || []) {
+        if (esLineaFlete(prod && prod.descripcion)) valorFlete += parseInt(String(prod.total || "0").replace(/\./g, ""), 10) || 0;
+      }
+      if (valorFlete <= 0) continue;
+      const veh = p.vehiculo || "Sin vehículo";
+      if (!porVeh.has(veh)) porVeh.set(veh, { propio: 0, externo: 0 });
+      const bucket = porVeh.get(veh);
+      if (p.fleteExterno) bucket.externo += valorFlete;
+      else bucket.propio += valorFlete;
+    }
+    const filas = [...porVeh.entries()].map(([veh, d]) => {
+      const info = VEHICULOS.find((x) => x.id === veh) || { label: veh, bg: "var(--color-background-tertiary, #eef0f3)", border: "#9AA0A6", text: MARCA.azulMuyOscuro, icon: "ti-package" };
+      return { veh, label: info.label, icon: info.icon, bg: info.bg, border: info.border, text: info.text, propio: d.propio, externo: d.externo, total: d.propio + d.externo };
+    }).sort((a, b) => b.total - a.total);
+    const totalPropio = filas.reduce((s, f) => s + f.propio, 0);
+    const totalExterno = filas.reduce((s, f) => s + f.externo, 0);
+    return { filas, totalPropio, totalExterno };
+  }, [historial, fleteDesde, fleteHasta]);
 
   const r = resumen || { totalPedidos: 0, kilos: 0, porVehiculo: [], porDestino: [], porCategoria: [], pedidosDia: [] };
   const v = veredictoDia(r.kilos, promedio);
@@ -327,6 +388,82 @@ export default function PanelResumen({
                 </tbody>
               </table>
             </div>
+          </div>
+
+          {/* Fletes por vehículo — rango de fechas elegido por el usuario,
+              independiente del día que se esté mirando arriba. */}
+          <div className="pr-span3" style={card}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4, flexWrap: "wrap", gap: 10 }}>
+              <div style={cardTitle}>Fletes cobrados por vehículo</div>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                <input
+                  type="date"
+                  value={fleteDesde}
+                  max={fleteHasta}
+                  onChange={(e) => setFleteDesde(e.target.value)}
+                  aria-label="Desde"
+                  style={{ fontSize: 12.5, padding: "6px 8px", border: "0.5px solid var(--color-border-tertiary, #e6e8ec)", borderRadius: 8 }}
+                />
+                <span style={{ fontSize: 12, color: "var(--color-text-tertiary, #9aa0a6)" }}>a</span>
+                <input
+                  type="date"
+                  value={fleteHasta}
+                  min={fleteDesde}
+                  max={hoyISO()}
+                  onChange={(e) => setFleteHasta(e.target.value)}
+                  aria-label="Hasta"
+                  style={{ fontSize: 12.5, padding: "6px 8px", border: "0.5px solid var(--color-border-tertiary, #e6e8ec)", borderRadius: 8 }}
+                />
+              </div>
+            </div>
+            <div style={{ fontSize: 11.5, color: "var(--color-text-tertiary, #9aa0a6)", marginBottom: 14 }}>
+              Solo cuenta la línea "Transporte de carga de cliente" de las facturas. Los fletes marcados como cobrados por un tercero no se suman como ingreso tuyo.
+            </div>
+            {reporteFletes.filas.length === 0 ? (
+              <div style={{ fontSize: 13, color: "var(--color-text-tertiary, #9aa0a6)", padding: "8px 0" }}>No hay fletes registrados en ese rango de fechas.</div>
+            ) : (
+              <>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                  <thead>
+                    <tr>
+                      <th style={{ textAlign: "left", fontWeight: 500, color: "var(--color-text-tertiary, #9aa0a6)", fontSize: 11, textTransform: "uppercase", letterSpacing: "0.03em", padding: "0 0 8px", borderBottom: "0.5px solid var(--color-border-tertiary, #e6e8ec)" }}>Vehículo</th>
+                      <th style={{ textAlign: "right", fontWeight: 500, color: "var(--color-text-tertiary, #9aa0a6)", fontSize: 11, textTransform: "uppercase", letterSpacing: "0.03em", padding: "0 0 8px", borderBottom: "0.5px solid var(--color-border-tertiary, #e6e8ec)" }}>Fletes propios</th>
+                      <th style={{ textAlign: "right", fontWeight: 500, color: "var(--color-text-tertiary, #9aa0a6)", fontSize: 11, textTransform: "uppercase", letterSpacing: "0.03em", padding: "0 0 8px", borderBottom: "0.5px solid var(--color-border-tertiary, #e6e8ec)" }}>De terceros</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {reporteFletes.filas.map((f) => (
+                      <tr key={f.veh}>
+                        <td style={{ padding: "9px 0", borderBottom: "0.5px solid var(--color-border-tertiary, #e6e8ec)" }}>
+                          <span style={{ fontSize: 11, fontWeight: 600, padding: "3px 9px", borderRadius: 20, background: f.bg || "var(--color-background-tertiary, #eef0f3)", color: f.text }}>
+                            <i className={`ti ${f.icon}`} style={{ fontSize: 12, verticalAlign: "-1px", marginRight: 4 }} />
+                            {f.label}
+                          </span>
+                        </td>
+                        <td style={{ padding: "9px 0", borderBottom: "0.5px solid var(--color-border-tertiary, #e6e8ec)", textAlign: "right", fontWeight: 700, color: MARCA.azulMuyOscuro, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>
+                          {f.propio > 0 ? `$${formatCOP(f.propio)}` : "—"}
+                        </td>
+                        <td style={{ padding: "9px 0", borderBottom: "0.5px solid var(--color-border-tertiary, #e6e8ec)", textAlign: "right", color: "var(--color-text-tertiary, #9aa0a6)", fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>
+                          {f.externo > 0 ? `$${formatCOP(f.externo)}` : "—"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot>
+                    <tr>
+                      <td style={{ padding: "9px 0 0", fontWeight: 700, fontSize: 12.5 }}>Total</td>
+                      <td style={{ padding: "9px 0 0", textAlign: "right", fontWeight: 700, color: MARCA.azulMuyOscuro, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>${formatCOP(reporteFletes.totalPropio)}</td>
+                      <td style={{ padding: "9px 0 0", textAlign: "right", color: "var(--color-text-tertiary, #9aa0a6)", fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>{reporteFletes.totalExterno > 0 ? `$${formatCOP(reporteFletes.totalExterno)}` : "—"}</td>
+                    </tr>
+                  </tfoot>
+                </table>
+                {reporteFletes.totalExterno > 0 && (
+                  <div style={{ fontSize: 11, color: "var(--color-text-tertiary, #9aa0a6)", marginTop: 8 }}>
+                    Los ${formatCOP(reporteFletes.totalExterno)} de fletes de terceros no son ingreso tuyo — quedan aquí solo de registro.
+                  </div>
+                )}
+              </>
+            )}
           </div>
 
           {/* Sin categorizar — plegable */}
