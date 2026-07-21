@@ -95,14 +95,45 @@ const CATEGORIAS_PESO = [
   { nombre: "Metaldeck / steel deck", kg: 20, claves: ["metaldeck", "metal deck", "steeldeck", "steel deck"] },
   { nombre: "Teja (otra)", kg: 10, claves: ["teja"] },
   { nombre: "Varilla / hierro", kg: 5, claves: ["varilla", "hierro", "figurado", "estribo", "fleje", "corrugad"] },
+  // Alambre negro es para amarre (no es varilla), clave específica para no
+  // mezclarlo con alambre galvanizado u otros que pesan distinto.
+  { nombre: "Alambre negro (amarre)", kg: 1, claves: ["alambre negro"] },
+  // Malla electrosoldada: dos calibres/cuadrículas distintas, cada una con su
+  // propio peso por lámina. Claves con varias variantes de escritura por si
+  // la factura no dice "elect" completo.
+  { nombre: "Malla electrosoldada 15x15", kg: 45, claves: ["malla elect 4mm 15x15", "malla electrosoldada 4mm 15x15", "malla 15x15"] },
+  { nombre: "Malla electrosoldada 25x25", kg: 28, claves: ["malla elect 4mm 25x25", "malla electrosoldada 4mm 25x25", "malla 25x25"] },
   { nombre: "Cerámica / piso", kg: 20, claves: ["ceramica", "porcelanato", "baldosa", "enchape"] },
+  // Estas dos son de línea SANTA MARTA / MANAURE, que se venden por M² (no por
+  // caja) — por eso llevan su propio peso por m², distinto del genérico de
+  // arriba. Van con nombre propio para que el Panel diga cuál es cuál.
+  { nombre: "Cerámica Santa Marta (por m²)", kg: 18, claves: ["santa marta"] },
+  { nombre: "Piso Manaure (por m²)", kg: 18, claves: ["manaure"] },
+  { nombre: "Placa yesocartón (drywall)", kg: 22, claves: ["yesocarton", "yeso carton", "drywall", "dry wall"] },
   { nombre: "Arena / gravilla / áridos", kg: 40, claves: ["arena", "gravilla", "triturado", "recebo", "balastro", "arenilla"] },
   // Tubo galvanizado ANTES de "Tubería PVC" para que "tubería galvanizada" no
   // caiga como PVC. Claves específicas ("tubo/tubería galvaniz") para no atrapar
   // otros galvanizados (puntilla, malla, alambre) que no pesan lo mismo.
   { nombre: "Tubo galvanizado", kg: 8, claves: ["tubo galvaniz", "tuberia galvaniz"] },
+  // Tubo estructural rectangular (cerrajería/estructuras), NEGRO — no es el
+  // mismo producto que "tubo galvanizado". Se diferencia por calibre: el
+  // calibre 16 es más grueso (más pesado) que el calibre 18.
+  { nombre: "Tubo rectangular estructural (cal. 16)", kg: 19, claves: ["cal16"] },
+  { nombre: "Tubo rectangular estructural (cal. 18)", kg: 13, claves: ["cal18"] },
+  // Tubo presión y sanitario son PVC pero de línea distinta a "Tubería PVC"
+  // genérica de abajo — claves específicas para que no se mezclen entre sí.
+  { nombre: "Tubo PVC presión", kg: 2, claves: ["tubo presion"] },
+  { nombre: "Tubo sanitario PVC", kg: 8, claves: ["tubo sanitario"] },
   { nombre: "Tubería PVC", kg: 3, claves: ["tuberia", "novafort"] },
+  // Tanques de agua, por capacidad — el peso es del tanque VACÍO.
+  { nombre: "Tanque de agua 500L", kg: 16, claves: ["tanque 500"] },
+  { nombre: "Tanque de agua 1000L", kg: 28, claves: ["tanque 1000", "tanque 1.000", "tanque 1,000"] },
+  { nombre: "Tanque de agua 2000L", kg: 48, claves: ["tanque 2000", "tanque 2.000", "tanque 2,000"] },
   { nombre: "Accesorios / menores", kg: 0.2, claves: ["codo", "adaptador", "registro", "tornillo", "puntilla", "silicona", "sifon", "abrazadera", "reduccion"] },
+  // Boquilla (lechada de cerámica) siempre viene por bulto de 2kg, y acronal
+  // (adhesivo acrílico para pintura/impermeabilización) por kg.
+  { nombre: "Boquilla (lechada cerámica)", kg: 2, claves: ["boquilla"] },
+  { nombre: "Acronal (adhesivo acrílico)", kg: 1, claves: ["acronal"] },
   { nombre: "Cemento", kg: 50, claves: ["cemento"] },
 ];
 
