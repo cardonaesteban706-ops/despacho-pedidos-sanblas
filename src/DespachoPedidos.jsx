@@ -213,8 +213,20 @@ function fechaEntregaISO(pedido) {
 // tocado devuelve lista vacía y se comporta como siempre.
 function faltantesDeProductos(productos) {
   return (productos || [])
-    .filter((p) => p.cantidadEntregada !== undefined && p.cantidadEntregada !== null)
-    .map((p) => ({ ...p, faltan: cantidadNum(p.cantidad) - cantidadNum(p.cantidadEntregada) }))
+    .map((p) => {
+      // UNA sola fuente de verdad por línea:
+      // - si la factura ya tiene remisiones, manda el saldo (cantidadRestante);
+      // - si no, es lo facturado menos lo marcado a mano como entregado.
+      // Antes esto solo miraba cantidadEntregada e ignoraba las remisiones, así
+      // que el mensaje rojo seguía mostrando material que YA había salido.
+      if (p.cantidadRestante !== undefined && p.cantidadRestante !== null) {
+        return { ...p, faltan: Number(p.cantidadRestante) || 0 };
+      }
+      if (p.cantidadEntregada !== undefined && p.cantidadEntregada !== null) {
+        return { ...p, faltan: cantidadNum(p.cantidad) - cantidadNum(p.cantidadEntregada) };
+      }
+      return { ...p, faltan: 0 };
+    })
     .filter((p) => p.faltan > 0);
 }
 
@@ -343,6 +355,9 @@ function parseFactura(lines) {
     vendedor: null,
     total: null,
     productos: [],
+    // Líneas que parecían producto pero el lector no pudo interpretar. Se le
+    // muestran al usuario para que no confíe en una lista incompleta.
+    lineasIgnoradas: [],
   };
 
   const fecvMatch = text.match(/FECV\s*No\.?\s*(\d+)/i);
@@ -408,7 +423,11 @@ function parseFactura(lines) {
     // La cantidad acepta separador de miles ("1.500", "1.500,00"): un pedido
     // de 1.500 ladrillos es normal en ferretería, y sin esa alternativa el
     // regex no matcheaba y la línea del producto se descartaba en silencio.
-    const productLineRegex = /^(\d{1,2})\s+([A-Z0-9]{2,12})\s+(.+?)\s+(\d{1,3}(?:\.\d{3})+(?:,\d{1,2})?|\d{1,4}(?:[.,]\d{1,2})?)\s+(Und\.?|Bulto|Caja|Mt\.?|Kg\.?|kg|Gal\.?|Lb\.?|Mts\.?|Paq\.?|Paquete|Rollo|Glb\.?|m2)\s+([\d.,]+)\s+(\d{1,2}%)\s+([\d.,]+)\s+([\d.,]+)\s*$/i;
+    // El N° de ítem acepta hasta 3 dígitos (antes 2: una factura de 100+ líneas
+    // perdía todo de la 100 en adelante). La UNIDAD se lee genérica (cualquier
+    // palabra corta + dígito opcional para m2/m3) en vez de una lista fija:
+    // cualquier unidad no listada descartaba la línea COMPLETA en silencio.
+    const productLineRegex = /^(\d{1,3})\s+([A-Z0-9]{2,12})\s+(.+?)\s+(\d{1,3}(?:\.\d{3})+(?:,\d{1,2})?|\d{1,5}(?:[.,]\d{1,2})?)\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ]{1,12}\d?\.?)\s+([\d.,]+)\s+(\d{1,2}%)\s+([\d.,]+)\s+([\d.,]+)\s*$/i;
     let pending = null;
     for (let i = tableHeaderIdx + 1; i < tableEndIdx; i++) {
       const line = lines[i].trim();
@@ -443,6 +462,9 @@ function parseFactura(lines) {
       ) {
         // Continuación de una descripción larga partida en 2 líneas (ej: "3H", "ATLANTIS")
         pending.descripcion = pending.descripcion + " " + line;
+      } else if (/^\d{1,3}\s+[A-Z0-9]{2,12}\s+\S/i.test(line)) {
+        // Parece línea de producto (N° ítem + código) pero no se pudo leer.
+        result.lineasIgnoradas.push(line);
       }
     }
   }
@@ -465,6 +487,9 @@ function parseCotizacion(lines) {
     vendedor: null,
     total: null,
     productos: [],
+    // Líneas que parecían producto pero el lector no pudo interpretar. Se le
+    // muestran al usuario para que no confíe en una lista incompleta.
+    lineasIgnoradas: [],
   };
 
   const numMatch = text.match(/COTIZACION No\.?\s*(\d+)/i);
@@ -537,9 +562,15 @@ function parseCotizacion(lines) {
   const tableEndIdx = lines.findIndex((l) => /^CANT SUBTOTAL/i.test(l));
   if (tableHeaderIdx !== -1 && tableEndIdx !== -1) {
     // Igual que en la factura: la cantidad acepta separador de miles.
-    const productLineRegex = /^([A-Z0-9]{2,12})\s+(.+?)\s+(\d{1,3}(?:\.\d{3})+(?:,\d{1,2})?|\d{1,5}(?:[.,]\d{1,2})?)\s*(Und\.?|Bulto|Caja|Mt\.?|Kg\.?|kg|Gal\.?|Lb\.?|Mts\.?|Paq\.?|Paquete|Rollo|Glb\.?|m2)\s+([\d.,]+)\s+(\d{1,2}%)\s+([\d.,]+)\s*$/i;
+    // La UNIDAD se lee genérica (cualquier palabra corta, con dígito opcional
+    // para m2/m3). Antes era una lista fija y cualquier unidad que no estuviera
+    // ahí hacía que la línea COMPLETA se descartara en silencio: "galon" fue el
+    // caso real (la lista tenía "Gal." y se atoraba con el "on"). Perder una
+    // línea sin avisar es peligroso — por eso además contamos las descartadas.
+    const productLineRegex = /^([A-Z0-9]{2,12})\s+(.+?)\s+(\d{1,3}(?:\.\d{3})+(?:,\d{1,2})?|\d{1,5}(?:[.,]\d{1,2})?)\s*([A-Za-zÁÉÍÓÚÜÑáéíóúüñ]{1,12}\d?\.?)\s+([\d.,]+)\s+(\d{1,2}%)\s+([\d.,]+)\s*$/i;
     for (let i = tableHeaderIdx + 1; i < tableEndIdx; i++) {
       const line = lines[i].trim();
+      if (!line) continue;
       const m = line.match(productLineRegex);
       if (m) {
         result.productos.push({
@@ -549,6 +580,12 @@ function parseCotizacion(lines) {
           unidad: m[4],
           total: m[7].replace(/\./g, ""),
         });
+      } else if (/^[A-Z0-9]{2,12}\s+\S.*\d[\d.,]*\s*$/i.test(line) && /\d{1,2}%/.test(line)) {
+        // Parece una línea de producto (empieza con código, termina en número y
+        // trae el % de IVA) pero no se pudo leer: la registramos para avisarle
+        // al usuario en vez de perderla en silencio. El filtro es estricto a
+        // propósito para no marcar encabezados o pies de página.
+        result.lineasIgnoradas.push(line);
       }
     }
   }
@@ -559,6 +596,56 @@ function parseCotizacion(lines) {
 function parseDocumento(lines) {
   const tipo = detectTipoDocumento(lines);
   return tipo === "cotizacion" ? parseCotizacion(lines) : parseFactura(lines);
+}
+
+// Convierte la URL "data:" del PDF guardado en un Blob (archivo real). Los
+// navegadores de celular bloquean descargar/abrir directamente desde "data:",
+// así que todo lo que sea abrir, descargar o compartir pasa por aquí.
+function dataUrlABlob(dataUrl) {
+  const [cabecera, base64] = String(dataUrl).split(",");
+  const mime = (cabecera.match(/data:([^;]+)/) || [])[1] || "application/pdf";
+  const binario = atob(base64 || "");
+  const bytes = new Uint8Array(binario.length);
+  for (let i = 0; i < binario.length; i++) bytes[i] = binario.charCodeAt(i);
+  return new Blob([bytes], { type: mime });
+}
+
+function abrirPdf(dataUrl) {
+  try {
+    const url = URL.createObjectURL(dataUrlABlob(dataUrl));
+    window.open(url, "_blank", "noopener");
+    // No se revoca de inmediato: la pestaña nueva todavía lo está cargando.
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  } catch (e) {
+    window.open(dataUrl, "_blank", "noopener");
+  }
+}
+
+// Descarga el PDF. En celular usa el menú nativo de compartir (permite
+// "Guardar en Archivos", mandarlo por WhatsApp, etc.); en computador hace la
+// descarga normal.
+async function descargarPdf(dataUrl, fileName) {
+  const nombre = fileName || "documento.pdf";
+  try {
+    const blob = dataUrlABlob(dataUrl);
+    const archivo = new File([blob], nombre, { type: blob.type });
+    if (navigator.canShare && navigator.canShare({ files: [archivo] }) && navigator.share) {
+      await navigator.share({ files: [archivo], title: nombre });
+      return;
+    }
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = nombre;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+  } catch (e) {
+    // Si el usuario cancela el menú de compartir no es un error real.
+    if (e && e.name === "AbortError") return;
+    abrirPdf(dataUrl);
+  }
 }
 
 function fileToDataUrl(file) {
@@ -588,6 +675,9 @@ export default function DespachoPedidos() {
   const [remisionDeModal, setRemisionDeModal] = useState(null);
   // Abre el formulario de remisión manual (pedido escrito a mano, sin PDF).
   const [remisionManualAbierta, setRemisionManualAbierta] = useState(false);
+  // Factura madre a la que se le va a descontar material que el cliente ya se
+  // llevó directo (sin remisión).
+  const [descontarDe, setDescontarDe] = useState(null);
   const [dragId, setDragId] = useState(null);
   const [dragOverCol, setDragOverCol] = useState(null);
   // Modo "juntar pedidos": al activarlo, las tarjetas del tablero se vuelven
@@ -984,6 +1074,68 @@ export default function DespachoPedidos() {
   // Crea una remisión manual (pedido escrito a mano, sin PDF ni factura de
   // origen). Materiales tipo arena/bloque que a veces se piden en una hoja
   // aparte de remisiones. Nace como pedido activo con número REM correlativo.
+  // Descuenta material del saldo de una factura madre SIN crear una remisión:
+  // para cuando el cliente ya se llevó algo directo (ej. un bulto de cemento en
+  // el mostrador) y no tiene sentido remisionarlo. Si el saldo queda en cero,
+  // la factura se archiva sola, igual que con las remisiones.
+  async function descontarMaterialMadre(madre, cantidades) {
+    const productosMadre = madre.productos || [];
+    const totalDescontado = cantidades.reduce((s, c) => s + (Number(c) || 0), 0);
+    if (totalDescontado <= 0) {
+      showToast("Marca cuánto material se llevó el cliente.");
+      return;
+    }
+    const nuevosProductos = productosMadre.map((p, i) => {
+      const usado = Number(cantidades[i]) || 0;
+      return { ...p, cantidadRestante: Math.max(0, disponibleDe(p) - usado) };
+    });
+    const saldoTotal = nuevosProductos.reduce((s, p) => s + (Number(p.cantidadRestante) || 0), 0);
+    const prevPedidos = pedidos;
+    const prevHistorial = historial;
+
+    if (saldoTotal <= 0) {
+      const completada = {
+        ...madre,
+        // cantidadEntregada fija para que el Panel no vuelva a sumarle el peso
+        // completo el día del archivo (ya se contó al salir cada remisión).
+        productos: nuevosProductos.map((p) => ({
+          ...p,
+          cantidadEntregada: p.cantidadEntregada !== undefined && p.cantidadEntregada !== null ? p.cantidadEntregada : 0,
+        })),
+        entregaPendiente: false,
+        notaPendiente: "",
+        entregadoEn: new Date().toISOString(),
+        fechaEntrega: todayStr(),
+      };
+      setPedidos(pedidos.filter((p) => p.id !== madre.id));
+      setHistorial([completada, ...historial]);
+      showToast(`Material descontado. Factura ${madre.numeroFactura || ""} completada, pasó al historial.`, 4500);
+      try {
+        await guardarPedido(completada, "entregado");
+      } catch (e) {
+        setPedidos(prevPedidos);
+        setHistorial(prevHistorial);
+        showToast("No se pudo guardar. Nada cambió.", 5000);
+      }
+    } else {
+      const notaNueva = madre.entregaPendiente ? notaDesdeFaltantes(nuevosProductos) : "";
+      const actualizada = {
+        ...madre,
+        productos: nuevosProductos,
+        entregaPendiente: !!notaNueva,
+        notaPendiente: notaNueva,
+      };
+      setPedidos(pedidos.map((p) => (p.id === madre.id ? actualizada : p)));
+      showToast("Material descontado del saldo.");
+      try {
+        await actualizarPedido(actualizada);
+      } catch (e) {
+        setPedidos(prevPedidos);
+        showToast("No se pudo guardar. Nada cambió.", 5000);
+      }
+    }
+  }
+
   function crearRemisionManual(data) {
     const productos = (data.productos || [])
       .filter((p) => (p.descripcion || "").trim() && cantidadNum(p.cantidad) > 0)
@@ -1207,7 +1359,16 @@ export default function DespachoPedidos() {
         showToast("No se pudo guardar la remisión. Nada cambió.", 5000);
       }
     } else {
-      const nuevaMadre = { ...madre, productos: nuevosProductosMadre };
+      // El mensaje rojo de "debe material" se RECALCULA con el saldo nuevo: si
+      // no se hace, sigue mostrando material que ya salió en esta remisión.
+      // Solo se mantiene encendido si la factura ya venía marcada así.
+      const notaNueva = madre.entregaPendiente ? notaDesdeFaltantes(nuevosProductosMadre) : "";
+      const nuevaMadre = {
+        ...madre,
+        productos: nuevosProductosMadre,
+        entregaPendiente: !!notaNueva,
+        notaPendiente: notaNueva,
+      };
       setPedidos([child, ...pedidos.map((p) => (p.id === madre.id ? nuevaMadre : p))]);
       showToast(`Remisión ${numRemision} creada y enviada a despacho.`, 4000);
       try {
@@ -2259,6 +2420,7 @@ export default function DespachoPedidos() {
                       onProgramar={() => setEditing(p)}
                       onMaterialUnidades={esViaje ? undefined : () => setMaterialDe(p)}
                       onCrearRemision={esViaje ? undefined : () => setRemisionDeModal(p)}
+                      onDescontarMaterial={() => setDescontarDe(p)}
                     />
                   ))}
                 </div>
@@ -2454,6 +2616,7 @@ export default function DespachoPedidos() {
                         onEdit={() => setEditing(u.pedido)}
                         onVerPdf={() => setViewingPdf(u.pedido)}
                         onMaterialUnidades={() => setMaterialDe(u.pedido)}
+                        onDescontarMaterial={() => setDescontarDe(u.pedido)}
                         atrasadoDesde={esAtrasado(u.pedido) ? fechaDe(u.pedido) : null}
                         onMoverAHoy={() => moverAHoy(u.pedido.id)}
                       />
@@ -2790,6 +2953,17 @@ export default function DespachoPedidos() {
         />
       )}
 
+      {descontarDe && (
+        <DescontarMaterialModal
+          pedido={descontarDe}
+          onClose={() => setDescontarDe(null)}
+          onDescontar={(cantidades) => {
+            descontarMaterialMadre(descontarDe, cantidades);
+            setDescontarDe(null);
+          }}
+        />
+      )}
+
       {editingCotizacion && (
         <EditCotizacionModal
           cotizacion={editingCotizacion}
@@ -2817,6 +2991,38 @@ export default function DespachoPedidos() {
           }}
         />
       )}
+    </div>
+  );
+}
+
+// Aviso cuando el lector de PDF encontró líneas que parecían producto pero no
+// pudo interpretar. Antes se descartaban en silencio y el usuario terminaba
+// confiando en una lista incompleta al despachar — el peor error posible.
+function AvisoLineasIgnoradas({ lineas }) {
+  if (!lineas || lineas.length === 0) return null;
+  return (
+    <div
+      style={{
+        fontSize: 12,
+        color: "var(--color-text-danger)",
+        background: "var(--color-background-danger)",
+        border: "0.5px solid var(--color-border-danger)",
+        borderRadius: "var(--border-radius-md)",
+        padding: "8px 10px",
+        marginBottom: 10,
+      }}
+    >
+      <div style={{ fontWeight: 600, marginBottom: 4 }}>
+        <i className="ti ti-alert-triangle" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
+        Ojo: {lineas.length} {lineas.length === 1 ? "línea no se pudo leer" : "líneas no se pudieron leer"}
+      </div>
+      <div style={{ marginBottom: 6 }}>Estos materiales NO quedarán en el pedido. Agrégalos a mano o revisa el PDF antes de despachar:</div>
+      {lineas.slice(0, 6).map((l, i) => (
+        <div key={i} style={{ fontFamily: "monospace", fontSize: 11, opacity: 0.9, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {l}
+        </div>
+      ))}
+      {lineas.length > 6 && <div style={{ fontSize: 11, marginTop: 4 }}>…y {lineas.length - 6} más.</div>}
     </div>
   );
 }
@@ -2863,6 +3069,8 @@ function ExtractReviewCard({ data, onChange, onConfirm, onCancel }) {
           No se detectó: {missing.join(", ")}. Complétalo a mano.
         </div>
       )}
+
+      <AvisoLineasIgnoradas lineas={data.lineasIgnoradas} />
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 12 }}>
         <Field label="N° documento" inputMode="numeric" spellCheck={false} value={data.numeroFactura || ""} onChange={(v) => onChange({ ...data, numeroFactura: v })} />
@@ -3225,7 +3433,7 @@ function DestinoSelector({ value, onChange }) {
   );
 }
 
-function PedidoCard({ pedido, posicion, esSecundario, isDragging, onDragStart, onDragEnd, onDragOverItem, onDropItem, onDelete, onEntregado, onEdit, onVerPdf, onNotaPendiente, atrasadoDesde, onMoverAHoy, onProgramar, onMaterialUnidades, onCrearRemision }) {
+function PedidoCard({ pedido, posicion, esSecundario, isDragging, onDragStart, onDragEnd, onDragOverItem, onDropItem, onDelete, onEntregado, onEdit, onVerPdf, onNotaPendiente, atrasadoDesde, onMoverAHoy, onProgramar, onMaterialUnidades, onCrearRemision, onDescontarMaterial }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [verProductos, setVerProductos] = useState(false);
   const productos = pedido.productos || [];
@@ -3477,6 +3685,26 @@ function PedidoCard({ pedido, posicion, esSecundario, isDragging, onDragStart, o
           >
             <i className="ti ti-truck-delivery" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
             Mover a despacho
+          </button>
+        )}
+        {/* En una factura madre el saldo lo llevan las remisiones, así que el
+            botón cambia a "Descontar material": sirve para lo que el cliente ya
+            se llevó directo y no se va a remisionar. Antes este botón se
+            escondía y no había forma de bajar ese material del saldo. */}
+        {esMadreConSaldo && onDescontarMaterial && (
+          <button
+            onClick={onDescontarMaterial}
+            style={{
+              fontSize: 12.5,
+              padding: "9px 12px",
+              minHeight: 40,
+              background: "transparent",
+              color: "var(--color-text-primary)",
+              border: "0.5px solid var(--color-border-tertiary)",
+            }}
+          >
+            <i className="ti ti-checklist" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
+            Descontar material
           </button>
         )}
         {onMaterialUnidades &&
@@ -3875,11 +4103,18 @@ function PdfModal({ pedido, fetchPdf, onClose }) {
         </div>
       )}
       {estado === "listo" && dataUrl && (
-        <div style={{ marginTop: 8, textAlign: "right" }}>
-          <a href={dataUrl} download={pedido.fileName || "documento.pdf"} style={{ fontSize: 12 }}>
+        <div style={{ marginTop: 8, display: "flex", gap: 8, justifyContent: "flex-end", flexWrap: "wrap" }}>
+          {/* En celular NO se puede descargar desde una URL "data:" (Chrome y
+              Safari lo bloquean por seguridad): por eso el PDF se convierte a
+              un archivo real (blob) antes de abrirlo o compartirlo. */}
+          <button onClick={() => abrirPdf(dataUrl)} style={{ fontSize: 12.5, padding: "9px 12px", minHeight: 40 }}>
+            <i className="ti ti-external-link" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
+            Abrir en otra pestaña
+          </button>
+          <button onClick={() => descargarPdf(dataUrl, pedido.fileName)} style={{ fontSize: 12.5, padding: "9px 12px", minHeight: 40, fontWeight: 500 }}>
             <i className="ti ti-download" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
-            Descargar PDF
-          </a>
+            Descargar / compartir
+          </button>
         </div>
       )}
     </ModalOverlay>
@@ -3894,6 +4129,7 @@ function GrupoCard({ miembros, isDragging, onDragStart, onDragEnd, onDragOverIte
   const total = miembros.reduce((s, m) => s + (Number(m.total) || 0), 0);
   const clientesUnicos = Array.from(new Set(miembros.map((m) => (m.cliente || "").trim()).filter(Boolean)));
   const titulo = clientesUnicos.length === 1 ? clientesUnicos[0] : `${miembros.length} pedidos en un viaje`;
+  const conPendiente = miembros.filter((m) => m.entregaPendiente);
 
   return (
     <div
@@ -3943,6 +4179,28 @@ function GrupoCard({ miembros, isDragging, onDragStart, onDragEnd, onDragOverIte
         </span>
       </div>
 
+      {/* Al juntar pedidos se perdía de vista el material pendiente de cada
+          factura: aquí se avisa arriba y además en cada línea de abajo. */}
+      {conPendiente.length > 0 && (
+        <div
+          style={{
+            marginLeft: 36,
+            marginBottom: 9,
+            padding: "7px 10px",
+            borderRadius: "var(--border-radius-md)",
+            background: "var(--color-background-danger)",
+            border: "0.5px solid var(--color-border-danger)",
+            color: "var(--color-text-danger)",
+            fontSize: 12,
+          }}
+        >
+          <i className="ti ti-alert-triangle" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
+          {conPendiente.length === 1
+            ? "1 factura de este viaje debe material"
+            : `${conPendiente.length} facturas de este viaje deben material`}
+        </div>
+      )}
+
       {/* Detalle de cada factura del viaje. */}
       <div style={{ paddingLeft: 36, display: "flex", flexDirection: "column", gap: 8, marginBottom: 9 }}>
         {miembros.map((m) => {
@@ -3964,6 +4222,12 @@ function GrupoCard({ miembros, isDragging, onDragStart, onDragEnd, onDragOverIte
                 )}
               </div>
               {resumen && <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginTop: 2 }}>{resumen}</div>}
+              {m.entregaPendiente && (
+                <div style={{ fontSize: 11.5, color: "var(--color-text-danger)", marginTop: 3, fontWeight: 500 }}>
+                  <i className="ti ti-alert-triangle" style={{ fontSize: 12, verticalAlign: "-2px", marginRight: 3 }} aria-hidden="true"></i>
+                  Debe material{m.notaPendiente && m.notaPendiente.trim() ? `: ${m.notaPendiente}` : ""}
+                </div>
+              )}
             </div>
           );
         })}
@@ -4518,6 +4782,107 @@ function RemisionModal({ pedido, hoyIso, onClose, onCrear }) {
 // Al entregar un pedido "paga al recibir" preguntamos si el cliente pagó, para
 // dejar el registro correcto en el historial. Los pedidos que ya venían
 // "pagado" NO pasan por aquí: se entregan de un solo toque, como siempre.
+// Descontar del saldo de una factura madre el material que el cliente ya se
+// llevó directo (mostrador), sin generar una remisión. Mismo estilo que
+// RemisionModal pero sin fecha ni vehículo: aquí nada sale a despacho.
+function DescontarMaterialModal({ pedido, onClose, onDescontar }) {
+  const productos = pedido.productos || [];
+  const dispo = (p) => {
+    if (p.cantidadRestante !== undefined && p.cantidadRestante !== null) return Number(p.cantidadRestante) || 0;
+    const entregado = p.cantidadEntregada !== undefined && p.cantidadEntregada !== null ? cantidadNum(p.cantidadEntregada) : 0;
+    return Math.max(0, cantidadNum(p.cantidad) - entregado);
+  };
+  const [cantidades, setCantidades] = useState(() => productos.map(() => 0));
+
+  const setCantidad = (idx, valor) => {
+    setCantidades((prev) =>
+      prev.map((c, i) => {
+        if (i !== idx) return c;
+        const max = dispo(productos[idx]);
+        let n = valor;
+        if (isNaN(n) || n < 0) n = 0;
+        if (n > max) n = max;
+        return n;
+      })
+    );
+  };
+
+  const total = cantidades.reduce((s, c) => s + (Number(c) || 0), 0);
+
+  return (
+    <ModalOverlay onClose={onClose} maxWidth={460}>
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+        <span style={{ fontWeight: 500, fontSize: 15 }}>Descontar material entregado</span>
+        <button onClick={onClose} aria-label="Cerrar" style={{ padding: 8, minWidth: 40, minHeight: 40 }}>
+          <i className="ti ti-x" style={{ fontSize: 14 }} aria-hidden="true"></i>
+        </button>
+      </div>
+      <div style={{ fontSize: 12.5, color: "var(--color-text-tertiary)", marginBottom: 12 }}>
+        {pedido.cliente}
+        {pedido.numeroFactura ? ` · Factura ${pedido.numeroFactura}` : ""} — marca lo que el cliente ya se llevó directo. Baja del saldo sin crear remisión.
+      </div>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 14 }}>
+        {productos.map((p, idx) => {
+          const disponible = dispo(p);
+          const agotado = disponible <= 0;
+          return (
+            <div key={idx} style={{ border: "0.5px solid var(--color-border-tertiary)", borderRadius: "var(--border-radius-md)", padding: "8px 10px", opacity: agotado ? 0.5 : 1 }}>
+              <div style={{ fontSize: 13, marginBottom: 6 }}>
+                <b style={{ fontWeight: 500 }}>{p.descripcion}</b>
+                <span style={{ color: "var(--color-text-tertiary)" }}> · quedan {formatCantidad(disponible)} {p.unidad}</span>
+              </div>
+              {agotado ? (
+                <div style={{ fontSize: 12, color: "var(--color-text-tertiary)" }}>Ya se entregó completo.</div>
+              ) : (
+                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                  <span style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>Ya se llevó:</span>
+                  <input
+                    type="number"
+                    inputMode="decimal"
+                    min={0}
+                    max={disponible}
+                    value={cantidades[idx]}
+                    onChange={(e) => setCantidad(idx, parseCantidad(e.target.value))}
+                    style={{ width: 90 }}
+                  />
+                  <button onClick={() => setCantidad(idx, disponible)} style={{ fontSize: 12, padding: "6px 10px", minHeight: 36 }}>Todo</button>
+                  <button onClick={() => setCantidad(idx, 0)} style={{ fontSize: 12, padding: "6px 10px", minHeight: 36 }}>Nada</button>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", alignItems: "center" }}>
+        <span style={{ fontSize: 12, color: "var(--color-text-tertiary)", marginRight: "auto" }}>
+          {total > 0 ? `${formatCantidad(total)} unidades se descuentan` : "Nada marcado aún"}
+        </span>
+        <button onClick={onClose} style={{ fontSize: 13 }}>Cancelar</button>
+        <button
+          onClick={() => total > 0 && onDescontar(cantidades)}
+          disabled={total <= 0}
+          style={{
+            fontSize: 13,
+            fontWeight: 500,
+            background: total > 0 ? "#639922" : "var(--color-background-secondary)",
+            color: total > 0 ? "white" : "var(--color-text-tertiary)",
+            border: "none",
+            borderRadius: "var(--border-radius-md)",
+            padding: "9px 14px",
+            minHeight: 40,
+            cursor: total > 0 ? "pointer" : "not-allowed",
+          }}
+        >
+          <i className="ti ti-check" style={{ fontSize: 14, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
+          Descontar
+        </button>
+      </div>
+    </ModalOverlay>
+  );
+}
+
 // Formulario para crear una remisión a mano (sin PDF): pedidos que llegan en
 // hoja aparte de remisiones (arena, bloque, etc.), ajenos a World Office. El
 // número REM lo pone el componente padre (siguienteNumeroRemision).
@@ -5365,6 +5730,8 @@ function ExtractReviewCardCotizacion({ data, onChange, onConfirm, onCancel }) {
           No se detectó: {missing.join(", ")}. Complétalo a mano.
         </div>
       )}
+
+      <AvisoLineasIgnoradas lineas={data.lineasIgnoradas} />
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 12 }}>
         <Field label="N° cotización" inputMode="numeric" spellCheck={false} value={data.numeroFactura || ""} onChange={(v) => onChange({ ...data, numeroFactura: v })} />
