@@ -13,6 +13,10 @@ const VEHICULOS = [
 // un campo de texto para escribir cualquier otro lugar a mano.
 const DESTINOS = ["Corozal", "Morroa"];
 
+// Cuánto tiempo se puede deshacer un pedido borrado antes de que se elimine
+// de verdad de la base de datos.
+const VENTANA_DESHACER_MS = 8000;
+
 // Columnas del tablero de cotizaciones. A nivel de módulo (igual que
 // VEHICULOS): es una constante y no hay razón para recrearla en cada render.
 const ESTADOS_COTIZACION = [
@@ -678,6 +682,9 @@ export default function DespachoPedidos() {
   // Factura madre a la que se le va a descontar material que el cliente ya se
   // llevó directo (sin remisión).
   const [descontarDe, setDescontarDe] = useState(null);
+  // Pedido borrado que todavía se puede deshacer (ver deletePedido).
+  const [borradoPendiente, setBorradoPendiente] = useState(null);
+  const borradoRef = useRef(null);
   const [dragId, setDragId] = useState(null);
   const [dragOverCol, setDragOverCol] = useState(null);
   // Modo "juntar pedidos": al activarlo, las tarjetas del tablero se vuelven
@@ -929,13 +936,50 @@ export default function DespachoPedidos() {
     );
   }
 
-  function deletePedido(id) {
-    const prev = pedidos;
-    setPedidos(pedidos.filter((p) => p.id !== id));
-    eliminarPedido(id).catch(() => {
-      setPedidos(prev);
+  // Borrado con ventana de "Deshacer": el pedido desaparece de la pantalla al
+  // instante, pero NO se borra de la base de datos hasta que pasan unos
+  // segundos. Si el usuario deshace, la base nunca se tocó. Se hace así (y no
+  // borrando de una y recreando al deshacer) porque el PDF adjunto no está
+  // cargado en memoria — recrear el pedido desde cero lo perdería.
+  function flushBorradoPendiente() {
+    const b = borradoRef.current;
+    if (!b) return;
+    clearTimeout(b.timer);
+    borradoRef.current = null;
+    setBorradoPendiente(null);
+    eliminarPedido(b.pedido.id).catch(() => {
+      setPedidos((prev) => (prev.some((p) => p.id === b.pedido.id) ? prev : [...prev, b.pedido]));
       showToast("No se pudo eliminar de la base de datos. El pedido se restauró.", 5000);
     });
+  }
+
+  function deletePedido(id) {
+    const pedido = pedidos.find((p) => p.id === id);
+    if (!pedido) return;
+    // Si ya había otro borrado esperando, ese se confirma ya (solo se puede
+    // deshacer el último).
+    flushBorradoPendiente();
+    setPedidos((prev) => prev.filter((p) => p.id !== id));
+    const timer = setTimeout(() => {
+      borradoRef.current = null;
+      setBorradoPendiente(null);
+      eliminarPedido(pedido.id).catch(() => {
+        setPedidos((prev) => (prev.some((p) => p.id === pedido.id) ? prev : [...prev, pedido]));
+        showToast("No se pudo eliminar de la base de datos. El pedido se restauró.", 5000);
+      });
+    }, VENTANA_DESHACER_MS);
+    borradoRef.current = { pedido, timer };
+    setBorradoPendiente(pedido);
+  }
+
+  function deshacerBorrado() {
+    const b = borradoRef.current;
+    if (!b) return;
+    clearTimeout(b.timer);
+    borradoRef.current = null;
+    setBorradoPendiente(null);
+    setPedidos((prev) => (prev.some((p) => p.id === b.pedido.id) ? prev : [...prev, b.pedido]));
+    showToast("Pedido restaurado");
   }
 
   // Un pedido "paga al recibir" no se entrega de un toque: primero se
@@ -2090,6 +2134,48 @@ export default function DespachoPedidos() {
           }}
         >
           {toast}
+        </div>
+      )}
+
+      {borradoPendiente && (
+        <div
+          role="status"
+          aria-live="polite"
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            background: "var(--color-background-warning)",
+            border: "0.5px solid var(--color-border-warning)",
+            color: "var(--color-text-warning)",
+            fontSize: 13,
+            padding: "10px 14px",
+            borderRadius: "var(--border-radius-md)",
+            marginBottom: 12,
+          }}
+        >
+          <i className="ti ti-trash" style={{ fontSize: 15, flexShrink: 0 }} aria-hidden="true"></i>
+          <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            Se eliminó el pedido de {borradoPendiente.cliente || "sin nombre"}
+            {borradoPendiente.numeroFactura ? ` (${borradoPendiente.numeroFactura})` : ""}
+          </span>
+          <button
+            onClick={deshacerBorrado}
+            style={{
+              flexShrink: 0,
+              fontSize: 13,
+              fontWeight: 600,
+              minHeight: 40,
+              padding: "8px 14px",
+              border: "0.5px solid var(--color-border-warning)",
+              background: "var(--color-background-primary)",
+              color: "var(--color-text-warning)",
+              borderRadius: "var(--border-radius-md)",
+            }}
+          >
+            <i className="ti ti-arrow-back-up" style={{ fontSize: 14, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
+            Deshacer
+          </button>
         </div>
       )}
 
@@ -3435,6 +3521,8 @@ function DestinoSelector({ value, onChange }) {
 
 function PedidoCard({ pedido, posicion, esSecundario, isDragging, onDragStart, onDragEnd, onDragOverItem, onDropItem, onDelete, onEntregado, onEdit, onVerPdf, onNotaPendiente, atrasadoDesde, onMoverAHoy, onProgramar, onMaterialUnidades, onCrearRemision, onDescontarMaterial }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
+  // Momento en que se armó el botón de eliminar, para ignorar el doble toque.
+  const armadoEnRef = useRef(0);
   const [verProductos, setVerProductos] = useState(false);
   const productos = pedido.productos || [];
   const pagado = pedido.estadoPago === "pagado";
@@ -3785,7 +3873,13 @@ function PedidoCard({ pedido, posicion, esSecundario, isDragging, onDragStart, o
         {!esSecundario &&
           (confirmDelete ? (
             <button
-              onClick={onDelete}
+              onClick={() => {
+                // El botón de confirmar queda en el MISMO sitio que el de
+                // "Eliminar", así que un doble toque rápido borraba de una.
+                // Se ignoran los toques durante el primer medio segundo.
+                if (Date.now() - armadoEnRef.current < 600) return;
+                onDelete();
+              }}
               style={{
                 fontSize: 12.5,
                 padding: "9px 12px",
@@ -3801,7 +3895,13 @@ function PedidoCard({ pedido, posicion, esSecundario, isDragging, onDragStart, o
             </button>
           ) : (
             <button
-              onClick={() => setConfirmDelete(true)}
+              onClick={() => {
+                armadoEnRef.current = Date.now();
+                setConfirmDelete(true);
+                // Si no confirma, el botón se desarma solo para no quedar
+                // "cargado" esperando un toque accidental más tarde.
+                setTimeout(() => setConfirmDelete(false), 5000);
+              }}
               style={{
                 fontSize: 12.5,
                 padding: "9px 12px",
