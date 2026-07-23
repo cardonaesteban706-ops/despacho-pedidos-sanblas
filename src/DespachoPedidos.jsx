@@ -2201,6 +2201,9 @@ export default function DespachoPedidos() {
         </div>
       )}
 
+      {/* Estilos de la tarjeta de pedido: una sola vez para toda la app. */}
+      <style>{CARD_CSS}</style>
+
       {borradoPendiente && (
         <div
           role="status"
@@ -3608,10 +3611,44 @@ function DestinoSelector({ value, onChange }) {
   );
 }
 
+// Estilos de la tarjeta. Se inyectan UNA sola vez desde el componente
+// principal (no por tarjeta): con 50 pedidos en pantalla, una etiqueta de
+// estilos por tarjeta serían 50 copias idénticas en el DOM.
+const CARD_CSS = `
+.pc-card{display:flex;background:var(--color-background-primary);border:0.5px solid var(--color-border-tertiary);
+  border-radius:var(--border-radius-md);margin-bottom:8px;overflow:hidden;}
+.pc-body{flex:1;min-width:0;padding:11px 12px;}
+.pc-rail{display:flex;flex-direction:column;justify-content:space-between;gap:8px;width:112px;flex-shrink:0;
+  border-left:0.5px solid var(--color-border-tertiary);padding:10px;position:relative;}
+.pc-menu-btn{width:100%;min-height:38px;font-size:12.5px;padding:8px 6px;background:transparent;
+  color:var(--color-text-secondary);border:0.5px solid var(--color-border-tertiary);
+  border-radius:var(--border-radius-md);cursor:pointer;}
+.pc-menu-btn:hover{background:var(--color-background-secondary);}
+.pc-primary{border:none;color:#fff;font-weight:500;font-size:12.5px;border-radius:var(--border-radius-md);
+  padding:10px 6px;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:3px;line-height:1.15;
+  min-height:56px;}
+.pc-pop{position:absolute;top:50px;right:0;background:var(--color-background-primary);
+  border:0.5px solid var(--color-border-secondary);border-radius:var(--border-radius-lg);
+  box-shadow:0 8px 24px rgba(4,44,83,.16);padding:6px;width:212px;z-index:30;}
+.pc-item{display:flex;align-items:center;gap:10px;padding:10px;border-radius:var(--border-radius-sm);
+  font-size:13px;color:var(--color-text-primary);cursor:pointer;background:none;border:none;width:100%;
+  text-align:left;min-height:42px;}
+.pc-item:hover{background:var(--color-background-secondary);}
+.pc-item.danger{color:var(--color-text-danger);}
+/* Columnas angostas: el riel se pasa abajo como fila para que el nombre del
+   cliente y el total no queden espichados. */
+@media (max-width:1100px){
+  .pc-card{flex-direction:column;}
+  .pc-rail{width:auto;flex-direction:row;border-left:none;border-top:0.5px solid var(--color-border-tertiary);}
+  .pc-menu-btn{width:auto;flex:1;}
+  .pc-primary{flex:2;flex-direction:row;justify-content:center;min-height:44px;}
+  .pc-pop{top:auto;bottom:52px;left:10px;right:auto;}
+}
+`;
+
 function PedidoCard({ pedido, posicion, esSecundario, isDragging, onDragStart, onDragEnd, onDragOverItem, onDropItem, onDelete, onEntregado, onEdit, onVerPdf, onNotaPendiente, atrasadoDesde, onMoverAHoy, onProgramar, onMaterialUnidades, onCrearRemision, onDescontarMaterial }) {
+  const [menuAbierto, setMenuAbierto] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
-  // Momento en que se armó el botón de eliminar, para ignorar el doble toque.
-  const armadoEnRef = useRef(0);
   const [verProductos, setVerProductos] = useState(false);
   const productos = pedido.productos || [];
   const pagado = pedido.estadoPago === "pagado";
@@ -3623,411 +3660,286 @@ function PedidoCard({ pedido, posicion, esSecundario, isDragging, onDragStart, o
   // Es una remisión: puede venir de una factura grande (remisionDe) o ser
   // manual (tipoDocumento "remision", sin factura de origen).
   const esRemision = !!pedido.remisionDe || pedido.tipoDocumento === "remision";
+  const faltan = faltantesDeProductos(productos);
+
+  // Franja de color a la izquierda: el estado del pedido de un vistazo, sin
+  // tener que leer las insignias.
+  const franja = atrasadoDesde || pendiente
+    ? "var(--color-border-danger)"
+    : esMadreConSaldo
+    ? "var(--color-border-warning)"
+    : pagado
+    ? "var(--color-border-success)"
+    : MARCA.azulMedio;
+
+  const cerrarMenu = () => {
+    setMenuAbierto(false);
+    setConfirmDelete(false);
+  };
+
+  // Acciones secundarias. Solo aparecen las que aplican a esta vista: en el
+  // tablero del día no hay "Mover a despacho", y "Crear remisión" ya no llega
+  // aquí (vive en la pantalla "Por entregar").
+  const acciones = [
+    onProgramar && { label: "Mover a despacho", icon: "ti-truck-delivery", fn: onProgramar },
+    onCrearRemision && { label: "Crear remisión", icon: "ti-arrows-split", fn: onCrearRemision },
+    esMadreConSaldo && onDescontarMaterial && { label: "Descontar material", icon: "ti-checklist", fn: onDescontarMaterial },
+    onMaterialUnidades && !esMadreConSaldo && {
+      label: faltan.length > 0 ? "Editar material entregado" : "Material entregado",
+      icon: "ti-package-import",
+      fn: onMaterialUnidades,
+      alerta: faltan.length > 0,
+    },
+    !esSecundario && onNotaPendiente && { label: pendiente ? "Editar pendiente" : "Quedó pendiente", icon: "ti-note", fn: onNotaPendiente },
+    pedido.tienePdf && onVerPdf && { label: "Ver documento", icon: "ti-file-text", fn: onVerPdf },
+    onEdit && { label: "Editar", icon: "ti-pencil", fn: onEdit },
+  ].filter(Boolean);
 
   return (
     <div
+      className="pc-card"
       draggable={!esSecundario}
       onDragStart={esSecundario ? undefined : onDragStart}
       onDragEnd={esSecundario ? undefined : onDragEnd}
       onDragOver={esSecundario ? undefined : onDragOverItem}
       onDrop={esSecundario ? undefined : onDropItem}
       style={{
-        background: "var(--color-background-primary)",
-        border: pendiente ? "0.5px solid var(--color-border-danger)" : "0.5px solid var(--color-border-tertiary)",
-        borderLeft: pendiente ? "3px solid var(--color-border-danger)" : undefined,
-        borderRadius: "var(--border-radius-md)",
-        padding: "10px 12px",
-        marginBottom: 8,
+        borderLeft: `4px solid ${franja}`,
         cursor: esSecundario ? "default" : "grab",
         opacity: isDragging ? 0.4 : 1,
       }}
     >
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 7 }}>
-        <span
-          style={{
-            width: 28,
-            height: 28,
-            borderRadius: "50%",
-            background: MARCA.azulClaro,
-            color: MARCA.azulOscuro,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            fontSize: 12,
-            fontWeight: 500,
-            flexShrink: 0,
-          }}
-        >
-          {posicion !== null ? posicion : <i className="ti ti-help-circle" style={{ fontSize: 13 }} aria-hidden="true"></i>}
-        </span>
-        <span style={{ fontWeight: 500, fontSize: 14, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-          {pedido.cliente}
-        </span>
-        {pedido.total ? (
-          <span style={{ fontSize: 14, fontWeight: 500, color: MARCA.azulOscuro, flexShrink: 0 }}>${formatCOP(pedido.total)}</span>
-        ) : null}
-        {!esSecundario && (
-          <i className="ti ti-grip-vertical" style={{ fontSize: 14, color: "var(--color-text-tertiary)", flexShrink: 0 }} aria-hidden="true"></i>
-        )}
-      </div>
-
-      {esSecundario && (
-        <div style={{ marginBottom: 7, paddingLeft: 36 }}>
+      <div className="pc-body">
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
           <span
             style={{
-              fontSize: 12,
-              background: "var(--color-background-secondary)",
-              color: "var(--color-text-secondary)",
-              borderRadius: "var(--border-radius-sm)",
-              padding: "2px 7px",
-            }}
-          >
-            <i className="ti ti-arrows-split" style={{ fontSize: 11, verticalAlign: "-1px", marginRight: 3 }} aria-hidden="true"></i>
-            Parte de este pedido va aquí — el principal está en {vehiculoPrincipal ? vehiculoPrincipal.label : "otro vehículo"}
-          </span>
-        </div>
-      )}
-
-      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 7, paddingLeft: 36, flexWrap: "wrap" }}>
-        {atrasadoDesde && (
-          <span
-            style={{
+              width: 26,
+              height: 26,
+              borderRadius: "50%",
+              background: MARCA.azulClaro,
+              color: MARCA.azulOscuro,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
               fontSize: 12,
               fontWeight: 500,
-              background: "var(--color-background-danger)",
-              color: "var(--color-text-danger)",
-              borderRadius: "var(--border-radius-sm)",
-              padding: "2px 7px",
+              flexShrink: 0,
             }}
           >
-            <i className="ti ti-alert-triangle" style={{ fontSize: 11, verticalAlign: "-1px", marginRight: 3 }} aria-hidden="true"></i>
-            Atrasado — era para {formatFechaCorta(atrasadoDesde)}
+            {posicion !== null ? posicion : <i className="ti ti-help-circle" style={{ fontSize: 13 }} aria-hidden="true"></i>}
           </span>
-        )}
-        {pedido.numeroFactura && (
-          <span style={{ fontSize: 12, background: esRemision ? "var(--color-background-info)" : "var(--color-background-secondary)", color: esRemision ? "var(--color-text-info)" : "var(--color-text-secondary)", borderRadius: "var(--border-radius-sm)", padding: "2px 7px" }}>
-            {esRemision ? (
-              <>
-                <i className="ti ti-arrows-split" style={{ fontSize: 11, verticalAlign: "-1px", marginRight: 3 }} aria-hidden="true"></i>
-                {pedido.remisionDe ? `${pedido.numeroFactura} · de Factura ${pedido.remisionDe}` : `${pedido.numeroFactura} · manual`}
-              </>
-            ) : (
-              `${pedido.tipoDocumento === "cotizacion" ? "Cotización" : "Factura"} ${pedido.numeroFactura}`
-            )}
+          <span style={{ fontWeight: 500, fontSize: 14.5, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {pedido.cliente}
           </span>
-        )}
-        {esMadreConSaldo && (
-          <span style={{ fontSize: 12, fontWeight: 500, background: "var(--color-background-warning)", color: "var(--color-text-warning)", borderRadius: "var(--border-radius-sm)", padding: "2px 7px" }}>
-            <i className="ti ti-package" style={{ fontSize: 11, verticalAlign: "-1px", marginRight: 3 }} aria-hidden="true"></i>
-            Factura con remisiones
-          </span>
-        )}
-        {pedido.destino && pedido.destino.trim() && (
-          <span style={{ fontSize: 12, background: "var(--color-background-info)", color: "var(--color-text-info)", borderRadius: "var(--border-radius-sm)", padding: "2px 7px" }}>
-            <i className="ti ti-map-pin" style={{ fontSize: 11, verticalAlign: "-1px", marginRight: 3 }} aria-hidden="true"></i>
-            {pedido.destino}
-          </span>
-        )}
-        {pedido.hora && <span style={{ fontSize: 12, color: "var(--color-text-tertiary)" }}>{pedido.hora}</span>}
-        <span
-          style={{
-            width: 6,
-            height: 6,
-            borderRadius: "50%",
-            background: pagado ? "var(--color-text-success)" : "var(--color-text-warning)",
-            marginLeft: "auto",
-          }}
-        ></span>
-        <span style={{ fontSize: 12, color: pagado ? "var(--color-text-success)" : "var(--color-text-warning)" }}>
-          {pagado ? "Pagado" : "Paga al recibir"}
-        </span>
-      </div>
-
-      {productos.length > 0 && (
-        <div style={{ marginBottom: 9, paddingLeft: 36 }}>
-          {productos.length === 1 ? (
-            <div style={{ fontSize: 12.5, color: "var(--color-text-secondary)" }}>
-              <b style={{ color: "var(--color-text-primary)", fontWeight: 500 }}>
-                {productos[0].cantidad} {productos[0].unidad}
-              </b>{" "}
-              — {productos[0].descripcion}
-              {productos[0].cantidadRestante !== undefined && productos[0].cantidadRestante !== null && (
-                <span style={{ color: "var(--color-text-warning)", fontWeight: 500 }}>
-                  {" "}· quedan {formatCantidad(productos[0].cantidadRestante)} de {formatCantidad(cantidadNum(productos[0].cantidad))}
-                </span>
-              )}
-            </div>
-          ) : (
-            <>
-              <button
-                onClick={() => setVerProductos(!verProductos)}
-                style={{
-                  fontSize: 12.5,
-                  padding: "8px 0",
-                  minHeight: 40,
-                  border: "none",
-                  background: "transparent",
-                  color: "var(--color-text-secondary)",
-                  textAlign: "left",
-                  cursor: "pointer",
-                }}
-              >
-                {verProductos ? "Ocultar productos" : `${productos[0].descripcion} +${productos.length - 1} más`}
-                <i
-                  className={verProductos ? "ti ti-chevron-up" : "ti ti-chevron-down"}
-                  style={{ fontSize: 13, verticalAlign: "-2px", marginLeft: 4, color: MARCA.azulMedio }}
-                  aria-hidden="true"
-                ></i>
-              </button>
-
-              {verProductos && (
-                <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 7 }}>
-                  {productos.map((p, i) => (
-                    <div key={i} style={{ display: "flex", gap: 8, fontSize: 12.5 }}>
-                      <span
-                        style={{
-                          fontWeight: 500,
-                          color: "var(--color-text-primary)",
-                          flexShrink: 0,
-                          minWidth: 58,
-                        }}
-                      >
-                        {p.cantidad} {p.unidad}
-                      </span>
-                      <span style={{ color: "var(--color-text-secondary)" }}>
-                        {p.descripcion}
-                        {p.cantidadRestante !== undefined && p.cantidadRestante !== null && (
-                          <span style={{ color: "var(--color-text-warning)", fontWeight: 500 }}>
-                            {" "}· quedan {formatCantidad(p.cantidadRestante)} de {formatCantidad(cantidadNum(p.cantidad))}
-                          </span>
-                        )}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </>
+          {pedido.total ? (
+            <span style={{ fontSize: 14.5, fontWeight: 500, color: MARCA.azulOscuro, flexShrink: 0 }}>${formatCOP(pedido.total)}</span>
+          ) : null}
+          {!esSecundario && (
+            <i className="ti ti-grip-vertical" style={{ fontSize: 14, color: "var(--color-text-tertiary)", flexShrink: 0 }} aria-hidden="true"></i>
           )}
         </div>
-      )}
 
-      {pendiente && (
-        <div
-          style={{
-            fontSize: 12.5,
-            color: "var(--color-text-danger)",
-            background: "var(--color-background-danger)",
-            borderRadius: "var(--border-radius-sm)",
-            padding: "6px 8px",
-            marginBottom: 9,
-            marginLeft: 36,
-            fontWeight: 500,
-          }}
-        >
-          <i className="ti ti-alert-triangle" style={{ fontSize: 12, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
-          Quedó pendiente{pedido.notaPendiente && pedido.notaPendiente.trim() ? `: ${pedido.notaPendiente}` : ""}
-        </div>
-      )}
-
-      <div style={{ display: "flex", alignItems: "center", gap: 6, paddingLeft: 36, flexWrap: "wrap" }}>
-        {onCrearRemision && (
-          <button
-            onClick={onCrearRemision}
-            style={{
-              fontSize: 12.5,
-              padding: "9px 12px",
-              minHeight: 40,
-              fontWeight: 500,
-              background: "var(--color-background-warning)",
-              color: "var(--color-text-warning)",
-              border: "0.5px solid var(--color-border-warning)",
-            }}
-          >
-            <i className="ti ti-arrows-split" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
-            Crear remisión
-          </button>
-        )}
-        {onProgramar && (
-          <button
-            onClick={onProgramar}
-            style={{
-              fontSize: 12.5,
-              padding: "9px 12px",
-              minHeight: 40,
-              fontWeight: 500,
-              background: "var(--color-background-info)",
-              color: "var(--color-text-info)",
-              border: "0.5px solid var(--color-border-info)",
-            }}
-          >
-            <i className="ti ti-truck-delivery" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
-            Mover a despacho
-          </button>
-        )}
-        {/* En una factura madre el saldo lo llevan las remisiones, así que el
-            botón cambia a "Descontar material": sirve para lo que el cliente ya
-            se llevó directo y no se va a remisionar. Antes este botón se
-            escondía y no había forma de bajar ese material del saldo. */}
-        {esMadreConSaldo && onDescontarMaterial && (
-          <button
-            onClick={onDescontarMaterial}
-            style={{
-              fontSize: 12.5,
-              padding: "9px 12px",
-              minHeight: 40,
-              background: "transparent",
-              color: "var(--color-text-primary)",
-              border: "0.5px solid var(--color-border-tertiary)",
-            }}
-          >
-            <i className="ti ti-checklist" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
-            Descontar material
-          </button>
-        )}
-        {onMaterialUnidades &&
-          !esMadreConSaldo &&
-          (() => {
-            const faltan = faltantesDeProductos(pedido.productos);
-            const tocado = (pedido.productos || []).some((p) => p.cantidadEntregada !== undefined && p.cantidadEntregada !== null);
-            return (
-              <button
-                onClick={onMaterialUnidades}
-                style={{
-                  fontSize: 12.5,
-                  padding: "9px 12px",
-                  minHeight: 40,
-                  background: faltan.length > 0 ? "var(--color-background-warning)" : "transparent",
-                  color: faltan.length > 0 ? "var(--color-text-warning)" : "var(--color-text-primary)",
-                  border: faltan.length > 0 ? "0.5px solid var(--color-border-warning)" : "0.5px solid var(--color-border-tertiary)",
-                }}
-              >
-                <i className="ti ti-checklist" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
-                {faltan.length > 0 ? `Material (faltan ${faltan.length})` : tocado ? "Material ✓" : "Material entregado"}
-              </button>
-            );
-          })()}
-        {atrasadoDesde && !esSecundario && onMoverAHoy && (
-          <button
-            onClick={onMoverAHoy}
-            style={{
-              fontSize: 12.5,
-              padding: "9px 12px",
-              minHeight: 40,
-              fontWeight: 500,
-              background: "var(--color-background-warning)",
-              color: "var(--color-text-warning)",
-              border: "0.5px solid var(--color-border-warning)",
-            }}
-          >
-            <i className="ti ti-calendar-up" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
-            Mover a hoy
-          </button>
-        )}
-        {(pedido.tienePdf || pedido.pdfDataUrl) && (
-          <button onClick={onVerPdf} style={{ fontSize: 12.5, padding: "9px 12px", minHeight: 40 }}>
-            <i className="ti ti-file-text" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
-            Ver documento
-          </button>
-        )}
-        <button
-          onClick={onEdit}
-          style={{
-            fontSize: 12.5,
-            padding: "9px 12px",
-            minHeight: 40,
-            background: MARCA.azulClaro,
-            color: MARCA.azulOscuro,
-            border: `0.5px solid ${MARCA.azulMedio}`,
-          }}
-        >
-          <i className="ti ti-edit" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
-          Editar
-        </button>
-        {!esSecundario && onNotaPendiente && (
-          <button
-            onClick={onNotaPendiente}
-            style={{
-              fontSize: 12.5,
-              padding: "9px 12px",
-              minHeight: 40,
-              background: pendiente ? "var(--color-background-danger)" : "transparent",
-              color: pendiente ? "var(--color-text-danger)" : "var(--color-text-primary)",
-              border: pendiente ? "0.5px solid var(--color-border-danger)" : "0.5px solid var(--color-border-tertiary)",
-            }}
-          >
-            <i className="ti ti-alert-triangle" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
-            {pendiente ? "Editar pendiente" : "Quedó pendiente"}
-          </button>
-        )}
-        {!esSecundario &&
-          (confirmDelete ? (
-            <button
-              onClick={() => {
-                // El botón de confirmar queda en el MISMO sitio que el de
-                // "Eliminar", así que un doble toque rápido borraba de una.
-                // Se ignoran los toques durante el primer medio segundo.
-                if (Date.now() - armadoEnRef.current < 600) return;
-                onDelete();
-              }}
-              style={{
-                fontSize: 12.5,
-                padding: "9px 12px",
-                minHeight: 40,
-                background: "var(--color-background-danger)",
-                color: "var(--color-text-danger)",
-                border: "0.5px solid var(--color-border-danger)",
-                fontWeight: 500,
-              }}
-            >
-              <i className="ti ti-alert-triangle" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
-              Toca otra vez para eliminar
-            </button>
+        {/* Línea de estado: lo más importante primero (atrasado > remisión >
+            pago), y al lado el resto de datos en gris. */}
+        <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 7, flexWrap: "wrap" }}>
+          {atrasadoDesde ? (
+            <span style={{ fontSize: 12, fontWeight: 500, color: "var(--color-text-danger)" }}>
+              <i className="ti ti-alert-triangle" style={{ fontSize: 12, verticalAlign: "-2px", marginRight: 3 }} aria-hidden="true"></i>
+              Atrasado · era para {formatFechaCorta(atrasadoDesde)}
+            </span>
+          ) : esMadreConSaldo ? (
+            <span style={{ fontSize: 12, fontWeight: 500, color: "var(--color-text-warning)" }}>
+              <i className="ti ti-package" style={{ fontSize: 12, verticalAlign: "-2px", marginRight: 3 }} aria-hidden="true"></i>
+              Factura con remisiones
+            </span>
           ) : (
+            <span style={{ fontSize: 12, fontWeight: 500, color: pagado ? "var(--color-text-success)" : "var(--color-text-warning)" }}>
+              <i className={pagado ? "ti ti-circle-check" : "ti ti-clock"} style={{ fontSize: 12.5, verticalAlign: "-2px", marginRight: 3 }} aria-hidden="true"></i>
+              {pagado ? "Pagado" : "Paga al recibir"}
+            </span>
+          )}
+          {esRemision && pedido.numeroFactura && (
+            <span style={{ fontSize: 11.5, fontWeight: 500, background: "var(--color-background-info)", color: "var(--color-text-info)", borderRadius: "var(--border-radius-sm)", padding: "2px 7px" }}>
+              <i className="ti ti-arrows-split" style={{ fontSize: 11, verticalAlign: "-1px", marginRight: 3 }} aria-hidden="true"></i>
+              {pedido.remisionDe ? `${pedido.numeroFactura} · de Factura ${pedido.remisionDe}` : `${pedido.numeroFactura} · manual`}
+            </span>
+          )}
+          <span style={{ fontSize: 12, color: "var(--color-text-tertiary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {[
+              !esRemision && pedido.numeroFactura ? `${pedido.tipoDocumento === "cotizacion" ? "Cotización" : "Factura"} ${pedido.numeroFactura}` : null,
+              pedido.destino && pedido.destino.trim() ? pedido.destino : null,
+              pedido.hora || null,
+            ]
+              .filter(Boolean)
+              .join(" · ")}
+          </span>
+        </div>
+
+        {esSecundario && (
+          <div style={{ marginBottom: 7 }}>
+            <span style={{ fontSize: 11.5, background: "var(--color-background-secondary)", color: "var(--color-text-secondary)", borderRadius: "var(--border-radius-sm)", padding: "2px 7px" }}>
+              <i className="ti ti-arrows-split" style={{ fontSize: 11, verticalAlign: "-1px", marginRight: 3 }} aria-hidden="true"></i>
+              Parte de este pedido va aquí — el principal está en {vehiculoPrincipal ? vehiculoPrincipal.label : "otro vehículo"}
+            </span>
+          </div>
+        )}
+
+        {productos.length > 0 && (
+          <div style={{ marginBottom: pendiente || (atrasadoDesde && onMoverAHoy) ? 8 : 0 }}>
+            {productos.length === 1 ? (
+              <div style={{ fontSize: 12.5, color: "var(--color-text-secondary)" }}>
+                <b style={{ color: "var(--color-text-primary)", fontWeight: 500 }}>
+                  {productos[0].cantidad} {productos[0].unidad}
+                </b>{" "}
+                — {productos[0].descripcion}
+                {productos[0].cantidadRestante !== undefined && productos[0].cantidadRestante !== null && (
+                  <span style={{ color: "var(--color-text-warning)", fontWeight: 500 }}>
+                    {" "}· quedan {formatCantidad(productos[0].cantidadRestante)} de {formatCantidad(cantidadNum(productos[0].cantidad))}
+                  </span>
+                )}
+              </div>
+            ) : (
+              <>
+                <button
+                  onClick={() => setVerProductos(!verProductos)}
+                  style={{ fontSize: 12.5, padding: "6px 0", minHeight: 34, border: "none", background: "transparent", color: "var(--color-text-secondary)", textAlign: "left", cursor: "pointer" }}
+                >
+                  {verProductos ? "Ocultar productos" : `${productos[0].descripcion} +${productos.length - 1} más`}
+                  <i className={verProductos ? "ti ti-chevron-up" : "ti ti-chevron-down"} style={{ fontSize: 13, verticalAlign: "-2px", marginLeft: 4, color: MARCA.azulMedio }} aria-hidden="true"></i>
+                </button>
+                {verProductos && (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 6 }}>
+                    {productos.map((p, i) => (
+                      <div key={i} style={{ display: "flex", gap: 8, fontSize: 12.5 }}>
+                        <span style={{ fontWeight: 500, color: "var(--color-text-primary)", flexShrink: 0, minWidth: 58 }}>
+                          {p.cantidad} {p.unidad}
+                        </span>
+                        <span style={{ color: "var(--color-text-secondary)" }}>
+                          {p.descripcion}
+                          {p.cantidadRestante !== undefined && p.cantidadRestante !== null && (
+                            <span style={{ color: "var(--color-text-warning)", fontWeight: 500 }}>
+                              {" "}· quedan {formatCantidad(p.cantidadRestante)} de {formatCantidad(cantidadNum(p.cantidad))}
+                            </span>
+                          )}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        )}
+
+        {pendiente && (
+          <div
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6,
+              fontSize: 12.5,
+              color: "var(--color-text-danger)",
+              background: "var(--color-background-danger)",
+              borderRadius: "var(--border-radius-sm)",
+              padding: "6px 9px",
+              fontWeight: 500,
+              marginBottom: atrasadoDesde && onMoverAHoy ? 8 : 0,
+            }}
+          >
+            <i className="ti ti-alert-triangle" style={{ fontSize: 12.5 }} aria-hidden="true"></i>
+            Debe{pedido.notaPendiente && pedido.notaPendiente.trim() ? `: ${pedido.notaPendiente}` : " material"}
+          </div>
+        )}
+
+        {atrasadoDesde && onMoverAHoy && (
+          <div>
             <button
-              onClick={() => {
-                armadoEnRef.current = Date.now();
-                setConfirmDelete(true);
-                // Si no confirma, el botón se desarma solo para no quedar
-                // "cargado" esperando un toque accidental más tarde.
-                setTimeout(() => setConfirmDelete(false), 5000);
-              }}
+              onClick={onMoverAHoy}
               style={{
                 fontSize: 12.5,
-                padding: "9px 12px",
-                minHeight: 40,
-                background: "var(--color-background-danger)",
-                color: "var(--color-text-danger)",
-                border: "0.5px solid var(--color-border-danger)",
+                padding: "7px 11px",
+                minHeight: 36,
+                fontWeight: 500,
+                background: "var(--color-background-warning)",
+                color: "var(--color-text-warning)",
+                border: "0.5px solid var(--color-border-warning)",
               }}
             >
-              <i className="ti ti-trash" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
-              Eliminar
+              <i className="ti ti-calendar-up" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
+              Mover a hoy
             </button>
-          ))}
-        {!esSecundario && !esMadreConSaldo && (
-        <button
-          onClick={onEntregado}
-          style={{
-            marginLeft: "auto",
-            border: "none",
-            background: "#639922",
-            color: "white",
-            fontWeight: 500,
-            fontSize: 13,
-            borderRadius: "var(--border-radius-md)",
-            padding: "9px 14px",
-            minHeight: 40,
-          }}
-        >
-          <i className="ti ti-check" style={{ fontSize: 14, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
-          Entregado
+          </div>
+        )}
+      </div>
+
+      {/* Riel de acción: el menú arriba y "Entregado" siempre abajo, en el
+          mismo sitio en todas las tarjetas. */}
+      <div className="pc-rail">
+        <button className="pc-menu-btn" onClick={() => (menuAbierto ? cerrarMenu() : setMenuAbierto(true))} aria-haspopup="true" aria-expanded={menuAbierto}>
+          <i className="ti ti-dots" style={{ fontSize: 16, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
+          Menú
+          {faltan.length > 0 && (
+            <span style={{ display: "inline-block", width: 6, height: 6, borderRadius: "50%", background: "var(--color-text-danger)", marginLeft: 5, verticalAlign: "middle" }}></span>
+          )}
         </button>
+
+        {menuAbierto && (
+          <>
+            <div style={{ position: "fixed", inset: 0, zIndex: 20 }} onClick={cerrarMenu}></div>
+            <div className="pc-pop">
+              {acciones.map((a) => (
+                <button
+                  key={a.label}
+                  className="pc-item"
+                  onClick={() => {
+                    a.fn();
+                    cerrarMenu();
+                  }}
+                >
+                  <i className={`ti ${a.icon}`} style={{ fontSize: 17, width: 20, color: a.alerta ? "var(--color-text-warning)" : "var(--color-text-tertiary)" }} aria-hidden="true"></i>
+                  {a.label}
+                </button>
+              ))}
+              {onDelete && (
+                <>
+                  <div style={{ height: 1, background: "var(--color-border-tertiary)", margin: "4px 6px" }}></div>
+                  {/* Eliminar pide confirmación dentro del propio menú: un clic
+                      suelto no puede borrar. Si aun así se va, queda la barra
+                      de "Deshacer" del componente principal. */}
+                  {confirmDelete ? (
+                    <button
+                      className="pc-item danger"
+                      onClick={() => {
+                        onDelete();
+                        cerrarMenu();
+                      }}
+                      style={{ fontWeight: 500, background: "var(--color-background-danger)" }}
+                    >
+                      <i className="ti ti-trash" style={{ fontSize: 17, width: 20 }} aria-hidden="true"></i>
+                      Sí, eliminar
+                    </button>
+                  ) : (
+                    <button className="pc-item danger" onClick={() => setConfirmDelete(true)}>
+                      <i className="ti ti-trash" style={{ fontSize: 17, width: 20 }} aria-hidden="true"></i>
+                      Eliminar
+                    </button>
+                  )}
+                </>
+              )}
+            </div>
+          </>
+        )}
+
+        {!esSecundario && !esMadreConSaldo && (
+          <button className="pc-primary" style={{ background: "#639922" }} onClick={onEntregado}>
+            <i className="ti ti-check" style={{ fontSize: 22 }} aria-hidden="true"></i>
+            Entregado
+          </button>
         )}
       </div>
     </div>
   );
 }
-
 // Renderiza el PDF como imagen usando PDF.js + canvas, en vez de un iframe.
 // Esto evita los bloqueos de visor nativo que impedían ver el PDF dentro
 // del artifact.
