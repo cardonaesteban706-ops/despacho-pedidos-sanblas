@@ -170,6 +170,19 @@ function esLineaFlete(descripcion) {
 // que se entregó todo lo facturado. El Panel usa SIEMPRE esta cantidad — contar
 // lo facturado inflaba los kilos cuando la entrega fue incompleta, y contaba
 // doble a las facturas madre archivadas (su material ya salió vía remisiones).
+// Al cerrar un pedido (botón "Entregado") se deja registrado que salió TODO lo
+// facturado. Sin esto, un pedido entregado en dos viajes conservaba el
+// cantidadEntregada del primer viaje (ej. 570 de 900) y el Panel contaba ese
+// número el día del cierre, perdiendo el resto para siempre. Las facturas
+// madre (las que llevan saldo de remisiones) NO se tocan: su material ya se
+// contó al salir cada remisión.
+function cerrarEntregaCompleta(productos) {
+  return (productos || []).map((p) => {
+    if (p.cantidadRestante !== undefined && p.cantidadRestante !== null) return p;
+    return { ...p, cantidadEntregada: p.cantidad };
+  });
+}
+
 function cantidadEntregadaDe(prod) {
   if (prod && prod.cantidadEntregada !== undefined && prod.cantidadEntregada !== null) {
     return cantidadNum(prod.cantidadEntregada);
@@ -1019,6 +1032,7 @@ export default function DespachoPedidos() {
     const entregado = {
       ...pedido,
       ...extra,
+      productos: cerrarEntregaCompleta(pedido.productos),
       entregaPendiente: false,
       notaPendiente: "",
       entregadoEn: new Date().toISOString(),
@@ -1110,6 +1124,7 @@ export default function DespachoPedidos() {
     if (miembros.length === 0) return;
     const entregados = miembros.map((m) => ({
       ...m,
+      productos: cerrarEntregaCompleta(m.productos),
       // Las que ya estaban pagadas se respetan; a las "paga al recibir" se les
       // aplica la decisión tomada en la confirmación del grupo.
       estadoPago: (m.estadoPago || "pendiente") === "pagado" ? "pagado" : estadoPagoPorCobrar,
@@ -1822,6 +1837,16 @@ export default function DespachoPedidos() {
         numeroFactura: p.numeroFactura,
         vehiculo: p.vehiculo,
         kilos: cargaP,
+        // Detalle de lo que se contó en esta factura, para poder verificar en
+        // el Panel que el total de material cuadra con lo que salió de verdad.
+        items: (p.productos || []).map((prod) => ({
+          descripcion: prod.descripcion || "(sin descripción)",
+          unidad: prod.unidad || "",
+          contada: cantidadEntregadaDe(prod),
+          facturada: cantidadNum(prod.cantidad),
+          kilos: esLineaFlete(prod.descripcion) ? 0 : pesoDeProducto(prod),
+          esFlete: esLineaFlete(prod.descripcion),
+        })),
       });
     }
     return {

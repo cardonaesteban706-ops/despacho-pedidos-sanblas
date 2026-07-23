@@ -135,6 +135,8 @@ export default function PanelResumen({
   historial = [],          // TODOS los pedidos entregados (para el reporte de fletes por rango)
 }) {
   const [sinCatAbierto, setSinCatAbierto] = useState(false);
+  // Factura del día cuyo detalle de ítems está desplegado (para verificar el conteo).
+  const [filaAbierta, setFilaAbierta] = useState(null);
   const [fleteDesde, setFleteDesde] = useState(primerDiaMesISO);
   const [fleteHasta, setFleteHasta] = useState(hoyISO);
 
@@ -374,15 +376,53 @@ export default function PanelResumen({
                 <tbody>
                   {r.pedidosDia.map((p, i) => {
                     const info = VEHICULOS.find((x) => x.id === p.vehiculo);
+                    const clave = p.id || p.numeroFactura || i;
+                    const abierta = filaAbierta === clave;
+                    const items = p.items || [];
+                    const bordeCelda = "0.5px solid var(--color-border-tertiary, #e6e8ec)";
                     return (
-                      <tr key={p.id || p.numeroFactura || i}>
-                        <td style={{ padding: "9px 0", borderBottom: "0.5px solid var(--color-border-tertiary, #e6e8ec)", fontWeight: 600, color: "var(--color-text-primary, #1a1a1a)" }}>{p.cliente || "—"}</td>
-                        <td style={{ padding: "9px 0", borderBottom: "0.5px solid var(--color-border-tertiary, #e6e8ec)", color: "var(--color-text-tertiary, #9aa0a6)", fontVariantNumeric: "tabular-nums" }}>{p.numeroFactura ? `#${p.numeroFactura}` : "—"}</td>
-                        <td style={{ padding: "9px 0", borderBottom: "0.5px solid var(--color-border-tertiary, #e6e8ec)" }}>
-                          <span style={{ fontSize: 11, fontWeight: 600, padding: "3px 9px", borderRadius: 20, background: info ? info.bg : "var(--color-background-tertiary, #eef0f3)", color: info ? info.text : "var(--color-text-secondary, #4b5563)" }}>{info ? info.label : (p.vehiculo || "—")}</span>
-                        </td>
-                        <td style={{ padding: "9px 0", borderBottom: "0.5px solid var(--color-border-tertiary, #e6e8ec)", textAlign: "right", fontWeight: 700, color: MARCA.azulMuyOscuro, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>{formatCOP(Math.round(p.kilos))} kg</td>
-                      </tr>
+                      <React.Fragment key={clave}>
+                        {/* Toda la fila abre el detalle: así se puede verificar
+                            qué ítems y qué cantidades entraron en el total. */}
+                        <tr onClick={() => setFilaAbierta(abierta ? null : clave)} style={{ cursor: items.length ? "pointer" : "default" }}>
+                          <td style={{ padding: "9px 0", borderBottom: bordeCelda, fontWeight: 600, color: "var(--color-text-primary, #1a1a1a)" }}>
+                            {items.length > 0 && (
+                              <i className={abierta ? "ti ti-chevron-down" : "ti ti-chevron-right"} style={{ fontSize: 14, verticalAlign: "-2px", marginRight: 5, color: "var(--color-text-tertiary, #9aa0a6)" }} aria-hidden="true" />
+                            )}
+                            {p.cliente || "—"}
+                          </td>
+                          <td style={{ padding: "9px 0", borderBottom: bordeCelda, color: "var(--color-text-tertiary, #9aa0a6)", fontVariantNumeric: "tabular-nums" }}>{p.numeroFactura ? `#${p.numeroFactura}` : "—"}</td>
+                          <td style={{ padding: "9px 0", borderBottom: bordeCelda }}>
+                            <span style={{ fontSize: 11, fontWeight: 600, padding: "3px 9px", borderRadius: 20, background: info ? info.bg : "var(--color-background-tertiary, #eef0f3)", color: info ? info.text : "var(--color-text-secondary, #4b5563)" }}>{info ? info.label : (p.vehiculo || "—")}</span>
+                          </td>
+                          <td style={{ padding: "9px 0", borderBottom: bordeCelda, textAlign: "right", fontWeight: 700, color: MARCA.azulMuyOscuro, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>{formatCOP(Math.round(p.kilos))} kg</td>
+                        </tr>
+                        {abierta && items.length > 0 && (
+                          <tr>
+                            <td colSpan={4} style={{ padding: "8px 0 12px", borderBottom: bordeCelda, background: "var(--color-background-secondary, #f7f8fa)" }}>
+                              {items.map((it, k) => (
+                                <div key={k} style={{ display: "flex", gap: 10, alignItems: "baseline", padding: "3px 10px", fontSize: 12.5 }}>
+                                  <span style={{ fontWeight: 600, minWidth: 70, flexShrink: 0, fontVariantNumeric: "tabular-nums", color: "var(--color-text-primary, #1a1a1a)" }}>
+                                    {formatCantidad(it.contada)} {it.unidad}
+                                  </span>
+                                  <span style={{ flex: 1, minWidth: 0, color: "var(--color-text-secondary, #5b6472)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                    {it.descripcion}
+                                    {it.contada !== it.facturada && (
+                                      <span style={{ color: "var(--color-text-warning, #b45309)" }}> · de {formatCantidad(it.facturada)} facturadas</span>
+                                    )}
+                                  </span>
+                                  <span style={{ flexShrink: 0, fontVariantNumeric: "tabular-nums", color: "var(--color-text-tertiary, #9aa0a6)", whiteSpace: "nowrap" }}>
+                                    {it.esFlete ? "flete" : `${formatCOP(Math.round(it.kilos))} kg`}
+                                  </span>
+                                </div>
+                              ))}
+                              <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, padding: "6px 10px 0", fontSize: 12.5, fontWeight: 700, color: MARCA.azulMuyOscuro, borderTop: bordeCelda, marginTop: 6 }}>
+                                Total factura: {formatCOP(Math.round(p.kilos))} kg
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </React.Fragment>
                     );
                   })}
                 </tbody>
