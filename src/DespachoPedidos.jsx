@@ -422,9 +422,19 @@ function parseFactura(lines) {
     }
   }
 
-  const tableHeaderIdx = lines.findIndex((l) => /^C[óo]digo Descripci[óo]n/i.test(l));
-  const tableEndIdx = lines.findIndex((l) => /TOTAL IT[ÉE]M/i.test(l));
-  if (tableHeaderIdx !== -1 && tableEndIdx !== -1) {
+  // Una factura puede venir en VARIAS páginas, y cada página repite el
+  // encabezado de la tabla y su pie "TOTAL ÍTEM". Antes se buscaba solo la
+  // PRIMERA aparición de cada uno, así que en una factura de 2 páginas se leía
+  // la página 1 y los ítems de la 2 se perdían en silencio. Ahora se recorren
+  // todos los tramos (encabezado → pie) del documento.
+  const tramos = [];
+  lines.forEach((l, i) => {
+    if (/^C[óo]digo Descripci[óo]n/i.test(l)) {
+      const fin = lines.findIndex((x, j) => j > i && /TOTAL IT[ÉE]M/i.test(x));
+      tramos.push([i, fin === -1 ? lines.length : fin]);
+    }
+  });
+  for (const [tableHeaderIdx, tableEndIdx] of tramos) {
     // La cantidad acepta separador de miles ("1.500", "1.500,00"): un pedido
     // de 1.500 ladrillos es normal en ferretería, y sin esa alternativa el
     // regex no matcheaba y la línea del producto se descartaba en silencio.
@@ -563,9 +573,16 @@ function parseCotizacion(lines) {
     }
   }
 
-  const tableHeaderIdx = lines.findIndex((l) => /^CODIGO DESCRIPCION/i.test(l));
-  const tableEndIdx = lines.findIndex((l) => /^CANT SUBTOTAL/i.test(l));
-  if (tableHeaderIdx !== -1 && tableEndIdx !== -1) {
+  // Igual que en la factura: se recorren TODOS los tramos (una cotización de
+  // varias páginas repite el encabezado y el pie en cada una).
+  const tramos = [];
+  lines.forEach((l, i) => {
+    if (/^CODIGO DESCRIPCION/i.test(l)) {
+      const fin = lines.findIndex((x, j) => j > i && /^CANT SUBTOTAL/i.test(x));
+      tramos.push([i, fin === -1 ? lines.length : fin]);
+    }
+  });
+  for (const [tableHeaderIdx, tableEndIdx] of tramos) {
     // Igual que en la factura: la cantidad acepta separador de miles.
     // La UNIDAD se lee genérica (cualquier palabra corta, con dígito opcional
     // para m2/m3). Antes era una lista fija y cualquier unidad que no estuviera
