@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from "react"
 import { cargarPedidosActivos, cargarHistorial, guardarPedido, actualizarPedido, eliminarPedido, cargarPdfPedido } from "./supabaseClient";
 import { cargarCotizaciones, guardarCotizacion, eliminarCotizacion, cargarPdfCotizacion } from "./supabaseClient";
 import PanelResumen from "./PanelResumen.jsx";
+import PorEntregar from "./PorEntregar.jsx";
 
 const VEHICULOS = [
   { id: "camion", label: "Camión", icon: "ti-truck", bg: "#E6F1FB", border: "#378ADD", text: "#0C447C" },
@@ -1644,6 +1645,62 @@ export default function DespachoPedidos() {
   // "pendiente"): no ocupan una fecha real ni el tablero de un día.
   const pedidosEsperaViaje = useMemo(() => pedidos.filter((p) => fechaDe(p) === "viaje"), [pedidos, hoyIso]);
 
+  // Datos derivados para la pantalla "Por entregar": cuánto lleva entregado
+  // cada factura, cuántas remisiones se le han hecho y hace cuántos días se
+  // movió por última vez. Se calculan aquí (no en el componente) porque hay que
+  // cruzar la factura con sus remisiones, que viven en pedidos e historial.
+  const facturasPorEntregar = useMemo(() => {
+    const todos = [...pedidos, ...historial];
+    return pedidosPendientes.map((f) => {
+      const productos = f.productos || [];
+      // % entregado POR VALOR: cada línea aporta según su peso en pesos, así
+      // una línea de $3M cuenta más que una de $9.000.
+      let valorTotal = 0;
+      let valorEntregado = 0;
+      for (const p of productos) {
+        const totalLinea = parseInt(String(p.total || "0").replace(/\./g, ""), 10) || 0;
+        const cant = cantidadNum(p.cantidad);
+        const resta = p.cantidadRestante !== undefined && p.cantidadRestante !== null ? Number(p.cantidadRestante) || 0 : cant;
+        valorTotal += totalLinea;
+        valorEntregado += cant > 0 ? (totalLinea * (cant - resta)) / cant : 0;
+      }
+      const porcentajeEntregado = valorTotal > 0 ? Math.round((valorEntregado / valorTotal) * 100) : 0;
+
+      // Remisiones hechas contra esta factura (activas o ya entregadas).
+      const hijas = f.numeroFactura ? todos.filter((h) => h.remisionDe && h.remisionDe === f.numeroFactura) : [];
+
+      // Última señal de movimiento: la remisión más reciente; si no hay
+      // ninguna, la fecha en que se subió la factura.
+      const fechas = [];
+      for (const h of hijas) {
+        const entregada = fechaEntregaISO(h);
+        if (entregada) fechas.push(entregada);
+        else if (h.fechaDespacho && /^\d{4}-\d{2}-\d{2}$/.test(h.fechaDespacho)) fechas.push(h.fechaDespacho);
+      }
+      if (fechas.length === 0 && f.fecha && f.fecha.includes("/")) {
+        const [d, m, y] = f.fecha.split("/");
+        if (d && m && y) fechas.push(`${y}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`);
+      }
+      const ultima = fechas.sort().pop() || null;
+      let diasSinMovimiento = 0;
+      if (ultima) {
+        const [ay, am, ad] = ultima.split("-").map(Number);
+        const [hy, hm, hd] = hoyIso.split("-").map(Number);
+        diasSinMovimiento = Math.max(0, Math.round((Date.UTC(hy, hm - 1, hd) - Date.UTC(ay, am - 1, ad)) / 86400000));
+      }
+
+      return {
+        ...f,
+        porcentajeEntregado,
+        numeroRemisiones: hijas.length,
+        diasSinMovimiento,
+        fecha: f.fecha || "",
+        telefono: f.telefono || f.telefonoContacto || "",
+        destino: f.destino || "Sin destino",
+      };
+    });
+  }, [pedidosPendientes, pedidos, historial, hoyIso]);
+
   // Resultados del buscador de Despachos: pedidos activos (de cualquier fecha,
   // incluidos Pendientes y Por viaje) que coincidan por cliente, número de
   // factura, dirección, destino o vendedor. Sin acentos ni mayúsculas para que
@@ -2202,8 +2259,10 @@ export default function DespachoPedidos() {
           {/* Buscador del tablero. Va ARRIBA de los avisos y pestañas: mientras
               se escribe, abajo solo se ven los resultados (filas compactas y
               estables), sin que los banners/pestañas/tarjetas brinquen. Tocar
-              un resultado lleva a la pestaña donde vive ese pedido. */}
-          <div style={{ position: "relative", marginBottom: 12 }}>
+              un resultado lleva a la pestaña donde vive ese pedido.
+              En "Por entregar" se esconde: esa pantalla trae su propio buscador
+              (con orden y agrupación) y dos barras seguidas confundían. */}
+          <div style={{ position: "relative", marginBottom: 12, display: selectedDate === "pendiente" ? "none" : "block" }}>
             <i
               className="ti ti-search"
               style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", fontSize: 15, color: "var(--color-text-tertiary)" }}
@@ -2240,7 +2299,7 @@ export default function DespachoPedidos() {
                   const f = fechaDe(p);
                   const esAtras = f !== "pendiente" && f !== "viaje" && f < hoyIso;
                   const etiqueta =
-                    f === "pendiente" ? "Pendientes" : f === "viaje" ? "Por viaje" : esAtras ? `Atrasado (${formatFechaCorta(f)})` : etiquetaFecha(f, hoyIso);
+                    f === "pendiente" ? "Por entregar" : f === "viaje" ? "Por viaje" : esAtras ? `Atrasado (${formatFechaCorta(f)})` : etiquetaFecha(f, hoyIso);
                   // Los atrasados no tienen pestaña propia: se muestran en "Hoy".
                   const tabDestino = f === "pendiente" || f === "viaje" ? f : esAtras ? hoyIso : f;
                   const veh = (VEHICULOS.find((v) => v.id === p.vehiculo) || {}).label || "Sin vehículo";
@@ -2262,7 +2321,7 @@ export default function DespachoPedidos() {
                         onClick={() => {
                           setSelectedDate(tabDestino);
                           setBusquedaDespacho("");
-                          showToast(`Mostrando ${f === "pendiente" ? "Pendientes" : f === "viaje" ? "Por viaje" : etiquetaFecha(tabDestino, hoyIso)}`);
+                          showToast(`Mostrando ${f === "pendiente" ? "Por entregar" : f === "viaje" ? "Por viaje" : etiquetaFecha(tabDestino, hoyIso)}`);
                         }}
                         style={{ flex: 1, minWidth: 0, textAlign: "left", border: "none", background: "transparent", padding: "4px 0", minHeight: 44, cursor: "pointer" }}
                       >
@@ -2422,8 +2481,8 @@ export default function DespachoPedidos() {
                 whiteSpace: "nowrap",
               }}
             >
-              <i className="ti ti-help-circle" style={{ fontSize: 14, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
-              Pendientes
+              <i className="ti ti-package" style={{ fontSize: 14, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
+              Por entregar
               {pedidosPendientes.length > 0 && (
                 <span
                   style={{
@@ -2468,16 +2527,43 @@ export default function DespachoPedidos() {
             </button>
           </div>
 
-          {selectedDate === "pendiente" || selectedDate === "viaje" ? (
+          {selectedDate === "pendiente" ? (
+            <PorEntregar
+              facturas={facturasPorEntregar}
+              onCrearRemision={(id) => {
+                const p = pedidos.find((x) => x.id === id);
+                if (p) setRemisionDeModal(p);
+              }}
+              onProgramar={(id) => {
+                const p = pedidos.find((x) => x.id === id);
+                if (p) setEditing(p);
+              }}
+              onDescontar={(id) => {
+                const p = pedidos.find((x) => x.id === id);
+                if (p) setDescontarDe(p);
+              }}
+              onMaterialEntregado={(id) => {
+                const p = pedidos.find((x) => x.id === id);
+                if (p) setMaterialDe(p);
+              }}
+              onVerPdf={(id) => {
+                const p = pedidos.find((x) => x.id === id);
+                if (p) setViewingPdf(p);
+              }}
+              onEditar={(id) => {
+                const p = pedidos.find((x) => x.id === id);
+                if (p) setEditing(p);
+              }}
+              onEliminar={(id) => deletePedido(id)}
+            />
+          ) : selectedDate === "viaje" ? (
             (() => {
-              const esViaje = selectedDate === "viaje";
-              const lista = esViaje ? pedidosEsperaViaje : pedidosPendientes;
-              const ayuda = esViaje
-                ? "Pedidos listos que se llevan cuando salga un viaje a su zona. Cuando salga el viaje, toca \u201CMover a despacho\u201D para asignarles fecha y vehículo."
-                : "Pedidos sin fecha ni vehículo asignado todavía. Cuando sepas cuándo se entregan, toca \u201CMover a despacho\u201D.";
-              const vacio = esViaje
-                ? "No hay pedidos esperando viaje. Al subir una factura, o al editar un pedido, elige \u201CPor viaje\u201D para que aparezca aquí."
-                : "No hay pedidos sin fecha. Cuando subas una factura y elijas \u201CSin fecha aún\u201D, aparecerá aquí.";
+              const esViaje = true;
+              const lista = pedidosEsperaViaje;
+              const ayuda =
+                "Pedidos listos que se llevan cuando salga un viaje a su zona. Cuando salga el viaje, toca \u201CMover a despacho\u201D para asignarles fecha y vehículo.";
+              const vacio =
+                "No hay pedidos esperando viaje. Al subir una factura, o al editar un pedido, elige \u201CPor viaje\u201D para que aparezca aquí.";
               return (
                 <div
                   style={{
@@ -3315,7 +3401,7 @@ function ExtractReviewCard({ data, onChange, onConfirm, onCancel }) {
             )}
             {esPendiente && (
               <div style={{ fontSize: 12, color: "var(--color-text-tertiary)", marginTop: 6 }}>
-                El pedido va a la pestaña "Pendientes" hasta que sepas cuándo y en qué vehículo se entrega.
+                El pedido va a la pestaña "Por entregar" hasta que sepas cuándo y en qué vehículo se entrega.
               </div>
             )}
             {esViaje && (
@@ -5328,7 +5414,7 @@ function EditModal({ pedido, onClose, onSave }) {
           </div>
           {modo === "pendiente" && (
             <span style={{ fontSize: 12, color: "var(--color-text-tertiary)", display: "block", marginTop: 4 }}>
-              Va a la pestaña "Pendientes" hasta que sepas cuándo y en qué vehículo se entrega.
+              Va a la pestaña "Por entregar" hasta que sepas cuándo y en qué vehículo se entrega.
             </span>
           )}
           {modo === "viaje" && (
