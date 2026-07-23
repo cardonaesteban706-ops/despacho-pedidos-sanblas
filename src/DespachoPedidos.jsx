@@ -3632,8 +3632,14 @@ function DestinoSelector({ value, onChange }) {
 // principal (no por tarjeta): con 50 pedidos en pantalla, una etiqueta de
 // estilos por tarjeta serían 50 copias idénticas en el DOM.
 const CARD_CSS = `
+/* Sin overflow:hidden — recortaba el menú cuando la tarjeta era más corta
+   que el desplegable. La franja de color es un border, no un hijo, así que
+   no necesita recorte para respetar las esquinas redondeadas. */
 .pc-card{display:flex;background:var(--color-background-primary);border:0.5px solid var(--color-border-tertiary);
-  border-radius:var(--border-radius-md);margin-bottom:8px;overflow:hidden;}
+  border-radius:var(--border-radius-md);margin-bottom:8px;position:relative;}
+/* Con el menú abierto la tarjeta se pone por encima de las de abajo, si no
+   el desplegable queda tapado por la tarjeta siguiente. */
+.pc-card.pc-abierta{z-index:40;}
 .pc-body{flex:1;min-width:0;padding:11px 12px;}
 .pc-rail{display:flex;flex-direction:column;justify-content:space-between;gap:8px;width:112px;flex-shrink:0;
   border-left:0.5px solid var(--color-border-tertiary);padding:10px;position:relative;}
@@ -3652,6 +3658,9 @@ const CARD_CSS = `
   text-align:left;min-height:42px;}
 .pc-item:hover{background:var(--color-background-secondary);}
 .pc-item.danger{color:var(--color-text-danger);}
+/* Si la tarjeta está al final de la pantalla, el menú se abre hacia arriba
+   para no quedar cortado por el borde inferior. */
+.pc-pop.pc-arriba{top:auto;bottom:50px;}
 /* Columnas angostas: el riel se pasa abajo como fila para que el nombre del
    cliente y el total no queden espichados. */
 @media (max-width:1100px){
@@ -3665,6 +3674,9 @@ const CARD_CSS = `
 
 function PedidoCard({ pedido, posicion, esSecundario, isDragging, onDragStart, onDragEnd, onDragOverItem, onDropItem, onDelete, onEntregado, onEdit, onVerPdf, onNotaPendiente, atrasadoDesde, onMoverAHoy, onProgramar, onMaterialUnidades, onCrearRemision, onDescontarMaterial }) {
   const [menuAbierto, setMenuAbierto] = useState(false);
+  // Si el menú debe abrirse hacia arriba (no cabe abajo en la pantalla).
+  const [menuArriba, setMenuArriba] = useState(false);
+  const railRef = useRef(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [verProductos, setVerProductos] = useState(false);
   const productos = pedido.productos || [];
@@ -3714,8 +3726,8 @@ function PedidoCard({ pedido, posicion, esSecundario, isDragging, onDragStart, o
 
   return (
     <div
-      className="pc-card"
-      draggable={!esSecundario}
+      className={`pc-card${menuAbierto ? " pc-abierta" : ""}`}
+      draggable={!esSecundario && !menuAbierto}
       onDragStart={esSecundario ? undefined : onDragStart}
       onDragEnd={esSecundario ? undefined : onDragEnd}
       onDragOver={esSecundario ? undefined : onDragOverItem}
@@ -3891,8 +3903,22 @@ function PedidoCard({ pedido, posicion, esSecundario, isDragging, onDragStart, o
 
       {/* Riel de acción: el menú arriba y "Entregado" siempre abajo, en el
           mismo sitio en todas las tarjetas. */}
-      <div className="pc-rail">
-        <button className="pc-menu-btn" onClick={() => (menuAbierto ? cerrarMenu() : setMenuAbierto(true))} aria-haspopup="true" aria-expanded={menuAbierto}>
+      <div className="pc-rail" ref={railRef}>
+        <button
+          className="pc-menu-btn"
+          onClick={() => {
+            if (menuAbierto) {
+              cerrarMenu();
+              return;
+            }
+            const r = railRef.current && railRef.current.getBoundingClientRect();
+            // ~64px por opción es suficiente margen para el alto del menú.
+            setMenuArriba(!!r && window.innerHeight - r.bottom < acciones.length * 44 + 90);
+            setMenuAbierto(true);
+          }}
+          aria-haspopup="true"
+          aria-expanded={menuAbierto}
+        >
           <i className="ti ti-dots" style={{ fontSize: 16, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
           Menú
           {faltan.length > 0 && (
@@ -3903,7 +3929,7 @@ function PedidoCard({ pedido, posicion, esSecundario, isDragging, onDragStart, o
         {menuAbierto && (
           <>
             <div style={{ position: "fixed", inset: 0, zIndex: 20 }} onClick={cerrarMenu}></div>
-            <div className="pc-pop">
+            <div className={`pc-pop${menuArriba ? " pc-arriba" : ""}`}>
               {acciones.map((a) => (
                 <button
                   key={a.label}
