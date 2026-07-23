@@ -1653,7 +1653,6 @@ export default function DespachoPedidos() {
 
   // Pedidos que quedaron debiendo material, sin importar de qué día sean.
   // Es lo primero que la persona del mostrador necesita ver al abrir la app.
-  const pedidosConEntregaPendiente = useMemo(() => pedidos.filter((p) => p.entregaPendiente), [pedidos]);
 
   const pedidosPendientes = useMemo(() => pedidos.filter((p) => fechaDe(p) === "pendiente"), [pedidos, hoyIso]);
 
@@ -2387,30 +2386,6 @@ export default function DespachoPedidos() {
             </div>
           ) : (
           <>
-          {pedidosConEntregaPendiente.length > 0 && (
-            <div
-              style={{
-                background: "var(--color-background-danger)",
-                border: "0.5px solid var(--color-border-danger)",
-                borderRadius: "var(--border-radius-md)",
-                padding: "10px 14px",
-                marginBottom: 14,
-              }}
-            >
-              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6, color: "var(--color-text-danger)" }}>
-                <i className="ti ti-alert-triangle" style={{ fontSize: 16 }} aria-hidden="true"></i>
-                <span style={{ fontWeight: 500, fontSize: 13 }}>
-                  Quedó material por entregar ({pedidosConEntregaPendiente.length})
-                </span>
-              </div>
-              {pedidosConEntregaPendiente.map((p) => (
-                <div key={p.id} style={{ fontSize: 12, color: "var(--color-text-danger)", padding: "2px 0" }}>
-                  {p.cliente}
-                  {p.notaPendiente && p.notaPendiente.trim() ? ` — ${p.notaPendiente}` : ""}
-                </div>
-              ))}
-            </div>
-          )}
           {/* Recordatorio de pedidos que esperan un viaje a su zona. No sale
               cuando ya estás en la pestaña "Por viaje" (ahí ves la lista completa).
               Se puede tocar para saltar a esa pestaña. */}
@@ -3679,6 +3654,8 @@ function PedidoCard({ pedido, posicion, esSecundario, isDragging, onDragStart, o
   const railRef = useRef(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [verProductos, setVerProductos] = useState(false);
+  // Si la lista de material pendiente está desplegada completa.
+  const [verFaltantes, setVerFaltantes] = useState(false);
   const productos = pedido.productos || [];
   const pagado = pedido.estadoPago === "pagado";
   const pendiente = !!pedido.entregaPendiente;
@@ -3860,23 +3837,71 @@ function PedidoCard({ pedido, posicion, esSecundario, isDragging, onDragStart, o
           </div>
         )}
 
+        {/* Material pendiente. Antes se pintaba la nota completa como un
+            párrafo rojo corrido y con 6 materiales era ilegible. Ahora se usa
+            la lista estructurada (cantidad · unidad · descripción), una línea
+            por material, mostrando 2 y el resto detrás de "+N más". */}
         {pendiente && (
           <div
             style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 6,
               fontSize: 12.5,
               color: "var(--color-text-danger)",
               background: "var(--color-background-danger)",
               borderRadius: "var(--border-radius-sm)",
-              padding: "6px 9px",
-              fontWeight: 500,
+              padding: "7px 9px",
               marginBottom: atrasadoDesde && onMoverAHoy ? 8 : 0,
             }}
           >
-            <i className="ti ti-alert-triangle" style={{ fontSize: 12.5 }} aria-hidden="true"></i>
-            Debe{pedido.notaPendiente && pedido.notaPendiente.trim() ? `: ${pedido.notaPendiente}` : " material"}
+            <div style={{ display: "flex", alignItems: "center", gap: 6, fontWeight: 500 }}>
+              <i className="ti ti-alert-triangle" style={{ fontSize: 12.5, flexShrink: 0 }} aria-hidden="true"></i>
+              {faltan.length > 0
+                ? `Debe ${faltan.length} ${faltan.length === 1 ? "material" : "materiales"}`
+                : "Debe material"}
+            </div>
+            {faltan.length > 0 ? (
+              <div style={{ marginTop: 5 }}>
+                {(verFaltantes ? faltan : faltan.slice(0, 2)).map((f, i) => (
+                  <div
+                    key={i}
+                    style={{ display: "flex", gap: 6, padding: "2px 0", lineHeight: 1.35 }}
+                  >
+                    <span style={{ fontWeight: 500, flexShrink: 0, whiteSpace: "nowrap" }}>
+                      {formatCantidad(f.faltan)} {f.unidad}
+                    </span>
+                    <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {f.descripcion}
+                    </span>
+                  </div>
+                ))}
+                {faltan.length > 2 && (
+                  <button
+                    onClick={() => setVerFaltantes(!verFaltantes)}
+                    style={{
+                      fontSize: 12,
+                      fontWeight: 500,
+                      padding: "4px 0",
+                      minHeight: 30,
+                      border: "none",
+                      background: "transparent",
+                      color: "var(--color-text-danger)",
+                      cursor: "pointer",
+                    }}
+                  >
+                    {verFaltantes ? "Ver menos" : `+${faltan.length - 2} más`}
+                    <i
+                      className={verFaltantes ? "ti ti-chevron-up" : "ti ti-chevron-down"}
+                      style={{ fontSize: 12, verticalAlign: "-2px", marginLeft: 3 }}
+                      aria-hidden="true"
+                    ></i>
+                  </button>
+                )}
+              </div>
+            ) : (
+              pedido.notaPendiente &&
+              pedido.notaPendiente.trim() && (
+                <div style={{ marginTop: 4, lineHeight: 1.35 }}>{pedido.notaPendiente}</div>
+              )
+            )}
           </div>
         )}
 
