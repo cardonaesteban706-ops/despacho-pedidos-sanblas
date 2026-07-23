@@ -10,7 +10,6 @@ import { useMemo, useState } from "react";
  *   onCrearRemision(id)
  *   onProgramar(id)
  *   onDescontar(id)
- *   onMaterialEntregado(id)
  *   onVerPdf(id)
  *   onEditar(id)
  *   onEliminar(id)
@@ -79,7 +78,17 @@ function enrich(f) {
   const pct = Math.max(0, Math.min(100, f.porcentajeEntregado ?? 0));
   const productos = (f.productos || []).map((p) => {
     const cant = Number(p.cantidad);
-    const rest = p.cantidadRestante == null ? cant : p.cantidadRestante;
+    // Saldo de la línea, en orden de prioridad:
+    //  1) cantidadRestante — lo deja el sistema de remisiones;
+    //  2) cantidad - cantidadEntregada — lo deja "Material entregado" (el
+    //     sistema anterior, que todavía tienen las facturas viejas);
+    //  3) si no hay ninguno, no se ha entregado nada.
+    // Sin el paso 2, las facturas marcadas con el sistema viejo aparecían
+    // como si no se hubiera entregado nada.
+    let rest;
+    if (p.cantidadRestante != null) rest = Number(p.cantidadRestante) || 0;
+    else if (p.cantidadEntregada != null) rest = Math.max(0, cant - (Number(p.cantidadEntregada) || 0));
+    else rest = cant;
     const ent = cant - rest;
     const pctL = cant ? Math.round((ent / cant) * 100) : 0;
     const done = rest <= 0;
@@ -191,7 +200,6 @@ function Fila({ f, expanded, onToggle, cb }) {
             <div style={{ display: "flex", flexWrap: "wrap", gap: 7, marginBottom: 12 }}>
               <button className="pend-detbtn" onClick={() => cb.onProgramar?.(f.id)}><i className="ti ti-calendar-plus" style={{ fontSize: 14 }} />Programar</button>
               <button className="pend-detbtn" onClick={() => cb.onDescontar?.(f.id)}><i className="ti ti-checklist" style={{ fontSize: 14 }} />Descontar material</button>
-              <button className="pend-detbtn" onClick={() => cb.onMaterialEntregado?.(f.id)}><i className="ti ti-package-import" style={{ fontSize: 14 }} />Material entregado</button>
               {f.tienePdf && <button className="pend-detbtn" onClick={() => cb.onVerPdf?.(f.id)}><i className="ti ti-file-text" style={{ fontSize: 14 }} />Ver PDF</button>}
               <button className="pend-detbtn" onClick={() => cb.onEditar?.(f.id)}><i className="ti ti-edit" style={{ fontSize: 14 }} />Editar</button>
               <button className="pend-detbtn" style={{ color: "#dc2626" }} onClick={() => cb.onEliminar?.(f.id)}><i className="ti ti-trash" style={{ fontSize: 14 }} />Eliminar</button>
@@ -208,7 +216,7 @@ function Fila({ f, expanded, onToggle, cb }) {
 
 export default function Pendientes({
   facturas = [],
-  onCrearRemision, onProgramar, onDescontar, onMaterialEntregado, onVerPdf, onEditar, onEliminar,
+  onCrearRemision, onProgramar, onDescontar, onVerPdf, onEditar, onEliminar,
 }) {
   const [q, setQ] = useState("");
   const [sort, setSort] = useState("movimiento");
@@ -216,7 +224,7 @@ export default function Pendientes({
   const [filter, setFilter] = useState("all");
   const [expanded, setExpanded] = useState(null);
 
-  const cb = { onCrearRemision, onProgramar, onDescontar, onMaterialEntregado, onVerPdf, onEditar, onEliminar };
+  const cb = { onCrearRemision, onProgramar, onDescontar, onVerPdf, onEditar, onEliminar };
 
   const enriched = useMemo(() => facturas.map(enrich), [facturas]);
   const stats = useMemo(() => ({

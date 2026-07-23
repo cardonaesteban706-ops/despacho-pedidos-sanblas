@@ -1660,7 +1660,14 @@ export default function DespachoPedidos() {
       for (const p of productos) {
         const totalLinea = parseInt(String(p.total || "0").replace(/\./g, ""), 10) || 0;
         const cant = cantidadNum(p.cantidad);
-        const resta = p.cantidadRestante !== undefined && p.cantidadRestante !== null ? Number(p.cantidadRestante) || 0 : cant;
+        // Mismo orden de prioridad que disponibleDe(): manda el saldo de
+        // remisiones; si no existe, lo marcado con "Material entregado"; si
+        // tampoco, no se ha entregado nada. Antes solo miraba cantidadRestante,
+        // así que las facturas marcadas a mano salían en 0%.
+        let resta;
+        if (p.cantidadRestante !== undefined && p.cantidadRestante !== null) resta = Number(p.cantidadRestante) || 0;
+        else if (p.cantidadEntregada !== undefined && p.cantidadEntregada !== null) resta = Math.max(0, cant - cantidadNum(p.cantidadEntregada));
+        else resta = cant;
         valorTotal += totalLinea;
         valorEntregado += cant > 0 ? (totalLinea * (cant - resta)) / cant : 0;
       }
@@ -2541,10 +2548,6 @@ export default function DespachoPedidos() {
               onDescontar={(id) => {
                 const p = pedidos.find((x) => x.id === id);
                 if (p) setDescontarDe(p);
-              }}
-              onMaterialEntregado={(id) => {
-                const p = pedidos.find((x) => x.id === id);
-                if (p) setMaterialDe(p);
               }}
               onVerPdf={(id) => {
                 const p = pedidos.find((x) => x.id === id);
