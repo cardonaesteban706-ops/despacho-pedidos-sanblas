@@ -3524,7 +3524,7 @@ function ExtractReviewCard({ data, onChange, onConfirm, onCancel }) {
                 aria-pressed={esPendiente}
                 style={opcion(esPendiente)}
               >
-                Sin fecha
+                Por entregar
               </button>
               <button
                 onClick={() => onChange({ ...data, sinFechaDefinida: true, fechaDespacho: "viaje", vehiculo: null })}
@@ -5435,7 +5435,7 @@ function RemisionManualModal({ hoyIso, onClose, onCrear }) {
   const opcionesFecha = [
     { id: "hoy", label: "Hoy" },
     { id: "otro", label: "Otro día" },
-    { id: "pendiente", label: "Sin fecha" },
+    { id: "pendiente", label: "Por entregar" },
     { id: "viaje", label: "Por viaje" },
   ];
 
@@ -5752,7 +5752,7 @@ function EditModal({ pedido, onClose, onSave }) {
               onClick={() => setForm({ ...form, fechaDespacho: "pendiente", vehiculo: null, vehiculoSecundario: null })}
               style={opcionModo(modo === "pendiente")}
             >
-              Sin fecha
+              Por entregar
             </button>
             <button
               aria-pressed={modo === "viaje"}
