@@ -180,7 +180,12 @@ function esLineaFlete(descripcion) {
 // contó al salir cada remisión.
 function cerrarEntregaCompleta(productos) {
   return (productos || []).map((p) => {
-    if (p.cantidadRestante !== undefined && p.cantidadRestante !== null) return p;
+    // Factura con remisiones: lo que sale HOY es solo el saldo que quedaba
+    // (lo demás ya se contó al entregar cada remisión). Se deja el saldo en
+    // cero para que no vuelva a contarse.
+    if (p.cantidadRestante !== undefined && p.cantidadRestante !== null) {
+      return { ...p, cantidadEntregada: Number(p.cantidadRestante) || 0, cantidadRestante: 0 };
+    }
     return { ...p, cantidadEntregada: p.cantidad };
   });
 }
@@ -253,12 +258,24 @@ function cargaDePedido(pedido) {
   return items.reduce((sum, p) => sum + pesoDeProducto(p), 0);
 }
 
-// Kilos de lo FACTURADO (no de lo ya entregado). Es lo que hay que subir al
-// vehículo, así que es el número que se muestra en la tarjeta y el que se
-// compara contra la capacidad del camión.
-function cargaFacturada(pedido) {
+// Cuánto FALTA por entregar de una línea. Misma prioridad que en el resto de
+// la app: manda el saldo de remisiones; si no, lo facturado menos lo marcado a
+// mano; si no hay nada de eso, todo lo facturado.
+function cantidadPorEntregarDe(prod) {
+  if (!prod) return 0;
+  if (prod.cantidadRestante !== undefined && prod.cantidadRestante !== null) return Number(prod.cantidadRestante) || 0;
+  if (prod.cantidadEntregada !== undefined && prod.cantidadEntregada !== null) {
+    return Math.max(0, cantidadNum(prod.cantidad) - cantidadNum(prod.cantidadEntregada));
+  }
+  return cantidadNum(prod.cantidad);
+}
+
+// Kilos de lo que TODAVÍA hay que subir al vehículo. Es el número de la
+// tarjeta y el que se compara contra la capacidad del camión: si ya salieron
+// remisiones, ese peso ya no cuenta porque ese material no está en la bodega.
+function cargaPorEntregar(pedido) {
   const items = pedido && pedido.productos ? pedido.productos : [];
-  return items.reduce((sum, p) => sum + pesoUnitarioDe(p) * cantidadNum(p.cantidad), 0);
+  return items.reduce((sum, p) => sum + pesoUnitarioDe(p) * cantidadPorEntregarDe(p), 0);
 }
 
 // Día local de Colombia (YYYY-MM-DD) en que se entregó el pedido. Preferimos
@@ -3003,7 +3020,7 @@ export default function DespachoPedidos() {
                 {/* Carga total de la columna: es el número con el que se
                     decide si el día sale en un viaje o en varios. */}
                 {(() => {
-                  const cargaCol = col.items.reduce((s2, p) => s2 + cargaFacturada(p), 0);
+                  const cargaCol = col.items.reduce((s2, p) => s2 + cargaPorEntregar(p), 0);
                   if (cargaCol <= 0) return null;
                   const cap = col.capacidadKg;
                   const viajes = cap ? Math.ceil(cargaCol / cap) : 1;
@@ -3801,7 +3818,7 @@ function PedidoCard({ pedido, posicion, esSecundario, isDragging, onDragStart, o
   const esRemision = !!pedido.remisionDe || pedido.tipoDocumento === "remision";
   const faltan = faltantesDeProductos(productos);
   // Peso de lo que hay que subir al vehículo, y si por sí solo ya no cabe.
-  const carga = cargaFacturada(pedido);
+  const carga = cargaPorEntregar(pedido);
   const capacidad = vehiculoPrincipal && vehiculoPrincipal.capacidadKg;
   const excedeCapacidad = !!capacidad && carga > capacidad;
 
@@ -4152,7 +4169,10 @@ function PedidoCard({ pedido, posicion, esSecundario, isDragging, onDragStart, o
           </>
         )}
 
-        {!esSecundario && !esMadreConSaldo && (
+        {/* La factura con remisiones también se puede entregar: cuando se
+            programa a un día es justamente para llevar lo que quedaba. Al
+            entregarla solo se cuenta ese saldo, no la factura completa. */}
+        {!esSecundario && (
           <button className="pc-primary" style={{ background: "#639922" }} onClick={onEntregado}>
             <i className="ti ti-check" style={{ fontSize: 22 }} aria-hidden="true"></i>
             Entregado
