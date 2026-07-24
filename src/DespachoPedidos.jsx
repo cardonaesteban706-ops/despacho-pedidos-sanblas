@@ -4,10 +4,12 @@ import { cargarCotizaciones, guardarCotizacion, eliminarCotizacion, cargarPdfCot
 import PanelResumen from "./PanelResumen.jsx";
 import PorEntregar from "./PorEntregar.jsx";
 
+// capacidadKg: carga máxima del vehículo, para avisar cuando un pedido (o el
+// total de una columna) no cabe en un solo viaje. null = sin límite definido.
 const VEHICULOS = [
-  { id: "camion", label: "Camión", icon: "ti-truck", bg: "#E6F1FB", border: "#378ADD", text: "#0C447C" },
-  { id: "motocarro", label: "Motocarro", icon: "ti-moped", bg: "#FAEEDA", border: "#BA7517", text: "#633806" },
-  { id: "tractor", label: "Tractor", icon: "ti-tractor", bg: "#EAF3DE", border: "#639922", text: "#27500A" },
+  { id: "camion", label: "Camión", icon: "ti-truck", bg: "#E6F1FB", border: "#378ADD", text: "#0C447C", capacidadKg: 3000 },
+  { id: "motocarro", label: "Motocarro", icon: "ti-moped", bg: "#FAEEDA", border: "#BA7517", text: "#633806", capacidadKg: null },
+  { id: "tractor", label: "Tractor", icon: "ti-tractor", bg: "#EAF3DE", border: "#639922", text: "#27500A", capacidadKg: null },
 ];
 
 // Destinos frecuentes para marcar la zona del pedido al montarlo. "Otro" abre
@@ -192,16 +194,71 @@ function cantidadEntregadaDe(prod) {
 
 // Kilos de una línea de producto: peso unitario de su categoría × cantidad
 // realmente entregada. (Solo se usa en el Panel, sobre el historial.)
-function pesoDeProducto(prod) {
+// Peso de UNA unidad del producto, en kilos. Se resuelve en tres pasos, del
+// más exacto al más aproximado:
+//   1) el peso escrito en la propia descripción ("50 KG", "42,5 KG", "X 2 Kg").
+//      Es el caso más común y el más confiable: el mismo cemento viene en
+//      bultos de 50 y de 42,5, así que una tabla fija se quedaba corta.
+//   2) varilla: se calcula el peso real del acero con su diámetro y su largo,
+//      así no hay que mantener una lista de calibres.
+//   3) si no, el peso por categoría de CATEGORIAS_PESO (aproximado).
+function pesoUnitarioDe(prod) {
+  const desc = normalizarTexto(prod && prod.descripcion);
+
+  // 1) Kilos escritos en la descripción.
+  const mKg = desc.match(/(\d+(?:[.,]\d+)?)\s*(?:kgs?|kilos?)\b/);
+  if (mKg) {
+    const n = parseFloat(mKg[1].replace(",", "."));
+    if (n > 0 && n < 2000) return n;
+  }
+
   const cat = categoriaDeProducto(prod && prod.descripcion);
-  const kgUnidad = cat ? cat.kg : PESO_POR_DEFECTO;
-  return kgUnidad * cantidadEntregadaDe(prod);
+
+  // 2) Varilla por diámetro. El acero pesa 0,006165 kg por metro y por mm² de
+  //    diámetro (densidad 7850 kg/m³), fórmula estándar de la industria.
+  //    Solo se aplica si la categoría resuelta es varilla/hierro, para que un
+  //    "MALLA ELECT 4mm" no se confunda con una varilla de 4 mm.
+  if (cat && cat.nombre === "Varilla / hierro") {
+    let diametro = null;
+    const mMm = desc.match(/(\d+(?:[.,]\d+)?)\s*mm\b/);
+    if (mMm) diametro = parseFloat(mMm[1].replace(",", "."));
+    else {
+      // Algunas vienen sin la palabra "mm" ("VARILLA 3/8 X 6Mts 7.0"): se toma
+      // el último número suelto si cae en un rango plausible de diámetro.
+      const sueltos = desc.match(/(\d+(?:[.,]\d+)?)(?!\s*(?:m|mt|mts|metros|kg|"|''))/g);
+      if (sueltos && sueltos.length) {
+        const ultimo = parseFloat(sueltos[sueltos.length - 1].replace(",", "."));
+        if (ultimo >= 3 && ultimo <= 40) diametro = ultimo;
+      }
+    }
+    if (diametro) {
+      const mLargo = desc.match(/x\s*(\d+(?:[.,]\d+)?)\s*m(?:t|ts|etros)?\b/);
+      const largo = mLargo ? parseFloat(mLargo[1].replace(",", ".")) : 6; // 6 m es el estándar
+      const kg = 0.006165 * diametro * diametro * largo;
+      if (kg > 0 && kg < 500) return kg;
+    }
+  }
+
+  // 3) Aproximado por categoría.
+  return cat ? cat.kg : PESO_POR_DEFECTO;
+}
+
+function pesoDeProducto(prod) {
+  return pesoUnitarioDe(prod) * cantidadEntregadaDe(prod);
 }
 
 // Kilos totales de un pedido: suma de todas sus líneas.
 function cargaDePedido(pedido) {
   const items = pedido && pedido.productos ? pedido.productos : [];
   return items.reduce((sum, p) => sum + pesoDeProducto(p), 0);
+}
+
+// Kilos de lo FACTURADO (no de lo ya entregado). Es lo que hay que subir al
+// vehículo, así que es el número que se muestra en la tarjeta y el que se
+// compara contra la capacidad del camión.
+function cargaFacturada(pedido) {
+  const items = pedido && pedido.productos ? pedido.productos : [];
+  return items.reduce((sum, p) => sum + pesoUnitarioDe(p) * cantidadNum(p.cantidad), 0);
 }
 
 // Día local de Colombia (YYYY-MM-DD) en que se entregó el pedido. Preferimos
@@ -713,6 +770,8 @@ export default function DespachoPedidos() {
   // Factura madre a la que se le va a descontar material que el cliente ya se
   // llevó directo (sin remisión).
   const [descontarDe, setDescontarDe] = useState(null);
+  // Remisión cuya tirilla se está viendo/imprimiendo.
+  const [tirillaDe, setTirillaDe] = useState(null);
   // Pedido borrado que todavía se puede deshacer (ver deletePedido).
   const [borradoPendiente, setBorradoPendiente] = useState(null);
   const borradoRef = useRef(null);
@@ -1257,6 +1316,7 @@ export default function DespachoPedidos() {
     };
     persistPedidos([...pedidos, nuevo], [nuevo], { crear: true });
     setRemisionManualAbierta(false);
+    setTirillaDe(nuevo);
     if (esConFecha) setSelectedDate(data.fechaDespacho);
     else if (data.fechaDespacho === "viaje") setSelectedDate("viaje");
     else setSelectedDate("pendiente");
@@ -1426,6 +1486,7 @@ export default function DespachoPedidos() {
       };
       setPedidos([child, ...pedidos.filter((p) => p.id !== madre.id)]);
       setHistorial([madreCompletada, ...historial]);
+      setTirillaDe(child);
       showToast(`Remisión ${numRemision} creada. Factura ${madre.numeroFactura || ""} completada, pasó al historial.`, 4500);
       try {
         await guardarPedido(child, "activo");
@@ -1447,6 +1508,8 @@ export default function DespachoPedidos() {
         notaPendiente: notaNueva,
       };
       setPedidos([child, ...pedidos.map((p) => (p.id === madre.id ? nuevaMadre : p))]);
+      // Se abre la tirilla de una: es el momento en que se necesita imprimir.
+      setTirillaDe(child);
       showToast(`Remisión ${numRemision} creada y enviada a despacho.`, 4000);
       try {
         await guardarPedido(child, "activo");
@@ -2616,6 +2679,7 @@ export default function DespachoPedidos() {
                       onMaterialUnidades={esViaje ? undefined : () => setMaterialDe(p)}
                       onCrearRemision={esViaje ? undefined : () => setRemisionDeModal(p)}
                       onDescontarMaterial={() => setDescontarDe(p)}
+                      onImprimirTirilla={() => setTirillaDe(p)}
                     />
                   ))}
                 </div>
@@ -2812,6 +2876,7 @@ export default function DespachoPedidos() {
                         onVerPdf={() => setViewingPdf(u.pedido)}
                         onMaterialUnidades={() => setMaterialDe(u.pedido)}
                         onDescontarMaterial={() => setDescontarDe(u.pedido)}
+                        onImprimirTirilla={() => setTirillaDe(u.pedido)}
                         atrasadoDesde={esAtrasado(u.pedido) ? fechaDe(u.pedido) : null}
                         onMoverAHoy={() => moverAHoy(u.pedido.id)}
                       />
@@ -2934,6 +2999,37 @@ export default function DespachoPedidos() {
                     {col.items.length}
                   </span>
                 </div>
+
+                {/* Carga total de la columna: es el número con el que se
+                    decide si el día sale en un viaje o en varios. */}
+                {(() => {
+                  const cargaCol = col.items.reduce((s2, p) => s2 + cargaFacturada(p), 0);
+                  if (cargaCol <= 0) return null;
+                  const cap = col.capacidadKg;
+                  const viajes = cap ? Math.ceil(cargaCol / cap) : 1;
+                  const pasa = !!cap && cargaCol > cap;
+                  return (
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 6,
+                        fontSize: 12,
+                        marginBottom: 10,
+                        padding: "6px 9px",
+                        borderRadius: "var(--border-radius-sm)",
+                        background: pasa ? "var(--color-background-danger)" : "var(--color-background-primary)",
+                        color: pasa ? "var(--color-text-danger)" : col.text,
+                        fontWeight: 500,
+                      }}
+                    >
+                      <i className={pasa ? "ti ti-alert-triangle" : "ti ti-weight"} style={{ fontSize: 13, flexShrink: 0 }} aria-hidden="true"></i>
+                      {formatCOP(Math.round(cargaCol))} kg
+                      {cap ? ` de ${formatCOP(cap)} kg` : ""}
+                      {pasa ? ` · ${viajes} viajes` : ""}
+                    </div>
+                  );
+                })()}
 
                 {col.items.length === 0 && (
                   <div style={{ fontSize: 13, color: "var(--color-text-tertiary)", padding: "8px 4px" }}>
@@ -3147,6 +3243,8 @@ export default function DespachoPedidos() {
           onCrear={crearRemisionManual}
         />
       )}
+
+      {tirillaDe && <TirillaModal pedido={tirillaDe} onClose={() => setTirillaDe(null)} />}
 
       {descontarDe && (
         <DescontarMaterialModal
@@ -3661,6 +3759,16 @@ const CARD_CSS = `
 /* Si la tarjeta está al final de la pantalla, el menú se abre hacia arriba
    para no quedar cortado por el borde inferior. */
 .pc-pop.pc-arriba{top:auto;bottom:50px;}
+
+/* Impresión de la tirilla térmica (58 mm). Al imprimir se oculta toda la
+   página y solo queda la tirilla, pegada al borde del papel. */
+@media print{
+  body *{visibility:hidden !important;}
+  #tirilla-print,#tirilla-print *{visibility:visible !important;}
+  #tirilla-print{position:fixed !important;left:0;top:0;width:54mm;margin:0;padding:0;
+    box-shadow:none !important;border:none !important;}
+  @page{size:58mm auto;margin:2mm;}
+}
 /* Columnas angostas: el riel se pasa abajo como fila para que el nombre del
    cliente y el total no queden espichados. */
 @media (max-width:1100px){
@@ -3672,7 +3780,7 @@ const CARD_CSS = `
 }
 `;
 
-function PedidoCard({ pedido, posicion, esSecundario, isDragging, onDragStart, onDragEnd, onDragOverItem, onDropItem, onDelete, onEntregado, onEdit, onVerPdf, onNotaPendiente, atrasadoDesde, onMoverAHoy, onProgramar, onMaterialUnidades, onCrearRemision, onDescontarMaterial }) {
+function PedidoCard({ pedido, posicion, esSecundario, isDragging, onDragStart, onDragEnd, onDragOverItem, onDropItem, onDelete, onEntregado, onEdit, onVerPdf, onNotaPendiente, atrasadoDesde, onMoverAHoy, onProgramar, onMaterialUnidades, onCrearRemision, onDescontarMaterial, onImprimirTirilla }) {
   const [menuAbierto, setMenuAbierto] = useState(false);
   // Si el menú debe abrirse hacia arriba (no cabe abajo en la pantalla).
   const [menuArriba, setMenuArriba] = useState(false);
@@ -3692,6 +3800,10 @@ function PedidoCard({ pedido, posicion, esSecundario, isDragging, onDragStart, o
   // manual (tipoDocumento "remision", sin factura de origen).
   const esRemision = !!pedido.remisionDe || pedido.tipoDocumento === "remision";
   const faltan = faltantesDeProductos(productos);
+  // Peso de lo que hay que subir al vehículo, y si por sí solo ya no cabe.
+  const carga = cargaFacturada(pedido);
+  const capacidad = vehiculoPrincipal && vehiculoPrincipal.capacidadKg;
+  const excedeCapacidad = !!capacidad && carga > capacidad;
 
   // Franja de color a la izquierda: el estado del pedido de un vistazo, sin
   // tener que leer las insignias.
@@ -3722,6 +3834,7 @@ function PedidoCard({ pedido, posicion, esSecundario, isDragging, onDragStart, o
       alerta: faltan.length > 0,
     },
     !esSecundario && onNotaPendiente && { label: pendiente ? "Editar pendiente" : "Quedó pendiente", icon: "ti-note", fn: onNotaPendiente },
+    esRemision && onImprimirTirilla && { label: "Imprimir tirilla", icon: "ti-printer", fn: onImprimirTirilla },
     pedido.tienePdf && onVerPdf && { label: "Ver documento", icon: "ti-file-text", fn: onVerPdf },
     onEdit && { label: "Editar", icon: "ti-pencil", fn: onEdit },
   ].filter(Boolean);
@@ -3804,6 +3917,22 @@ function PedidoCard({ pedido, posicion, esSecundario, isDragging, onDragStart, o
               .filter(Boolean)
               .join(" · ")}
           </span>
+          {/* Peso del pedido: sirve para saber si cabe en un viaje. Si el
+              pedido por sí solo pasa de la capacidad del vehículo, se avisa. */}
+          {carga > 0 && (
+            <span
+              style={{
+                fontSize: 12,
+                fontWeight: 500,
+                color: excedeCapacidad ? "var(--color-text-danger)" : "var(--color-text-secondary)",
+                whiteSpace: "nowrap",
+              }}
+            >
+              <i className="ti ti-weight" style={{ fontSize: 12.5, verticalAlign: "-2px", marginRight: 3 }} aria-hidden="true"></i>
+              {formatCOP(Math.round(carga))} kg
+              {excedeCapacidad ? " · no cabe en un viaje" : ""}
+            </span>
+          )}
         </div>
 
         {esSecundario && (
@@ -5071,6 +5200,123 @@ function DescontarMaterialModal({ pedido, onClose, onDescontar }) {
         >
           <i className="ti ti-check" style={{ fontSize: 14, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
           Descontar
+        </button>
+      </div>
+    </ModalOverlay>
+  );
+}
+
+// Tirilla de remisión para impresora térmica de 58 mm. NO es factura de venta
+// (no lleva CUFE, QR ni resolución DIAN): es el comprobante interno de que el
+// material salió y alguien lo recibió. Por eso lleva firma de quien recibe.
+// Sin peso a propósito: el peso de la app es aproximado y no debe imprimirse
+// en un papel que el cliente firma.
+function TirillaModal({ pedido, onClose }) {
+  const productos = pedido.productos || [];
+  const veh = VEHICULOS.find((v) => v.id === pedido.vehiculo);
+  const linea = { display: "flex", gap: 4, lineHeight: 1.35 };
+  const rot = { width: 46, flexShrink: 0 };
+  const sep = { borderTop: "1px dashed #000", margin: "5px 0" };
+
+  return (
+    <ModalOverlay onClose={onClose} maxWidth={360}>
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}>
+        <span style={{ fontWeight: 500, fontSize: 15 }}>Tirilla de remisión</span>
+        <button onClick={onClose} aria-label="Cerrar" style={{ padding: 8, minWidth: 40, minHeight: 40 }}>
+          <i className="ti ti-x" style={{ fontSize: 14 }} aria-hidden="true"></i>
+        </button>
+      </div>
+
+      <div style={{ display: "flex", justifyContent: "center", marginBottom: 12 }}>
+        <div
+          id="tirilla-print"
+          style={{
+            background: "#fff",
+            width: 230,
+            padding: "10px 9px 14px",
+            fontFamily: "ui-monospace, 'Courier New', monospace",
+            fontSize: 10.5,
+            lineHeight: 1.4,
+            color: "#000",
+            border: "0.5px solid var(--color-border-tertiary)",
+          }}
+        >
+          <div style={{ textAlign: "center", fontWeight: 700, fontSize: 12 }}>FERROMATERIALES</div>
+          <div style={{ textAlign: "center", fontWeight: 700, fontSize: 12 }}>SAN BLAS S.A.S.</div>
+          <div style={{ textAlign: "center", fontSize: 9 }}>NIT 901.577.413-3</div>
+          <div style={{ textAlign: "center", fontSize: 9 }}>Calle 7 Cra 2-48 AV. San Blas</div>
+          <div style={{ textAlign: "center", fontSize: 9 }}>Tel. 310 590 0475</div>
+
+          <div style={sep}></div>
+          <div style={{ textAlign: "center", fontWeight: 700, fontSize: 11, letterSpacing: 0.5 }}>REMISION DE ENTREGA</div>
+          <div style={{ textAlign: "center", fontWeight: 700, fontSize: 15, margin: "2px 0" }}>{pedido.numeroFactura || "-"}</div>
+          {pedido.remisionDe && <div style={{ textAlign: "center", fontSize: 9 }}>de Factura {pedido.remisionDe}</div>}
+          <div style={sep}></div>
+
+          <div style={linea}><span style={rot}>FECHA</span><span>{todayStr()} {nowTimeStr()}</span></div>
+          <div style={linea}><span style={rot}>CLIENTE</span><span style={{ flex: 1 }}>{pedido.cliente || "-"}</span></div>
+          {pedido.direccion && <div style={linea}><span style={rot}>DIRECC.</span><span style={{ flex: 1 }}>{pedido.direccion}</span></div>}
+          {(pedido.telefono || pedido.telefonoContacto) && (
+            <div style={linea}><span style={rot}>TEL.</span><span>{pedido.telefono || pedido.telefonoContacto}</span></div>
+          )}
+          {pedido.destino && <div style={linea}><span style={rot}>DESTINO</span><span>{pedido.destino}</span></div>}
+          {veh && <div style={linea}><span style={rot}>VEHIC.</span><span>{veh.label.toUpperCase()}</span></div>}
+
+          <div style={{ borderTop: "1px dashed #000", margin: "6px 0 3px" }}></div>
+          <div style={{ display: "flex", fontWeight: 700, fontSize: 9 }}>
+            <span style={{ width: 46, flexShrink: 0 }}>CANT</span>
+            <span style={{ flex: 1 }}>DESCRIPCION</span>
+          </div>
+          <div style={{ borderTop: "1px solid #000", margin: "2px 0 4px" }}></div>
+
+          {productos.map((p, i) => (
+            <div key={i} style={{ display: "flex", gap: 4, marginBottom: 3, lineHeight: 1.3 }}>
+              <span style={{ width: 46, flexShrink: 0, fontWeight: 700 }}>
+                {p.cantidad} {p.unidad}
+              </span>
+              <span style={{ flex: 1, wordBreak: "break-word" }}>{p.descripcion}</span>
+            </div>
+          ))}
+
+          <div style={sep}></div>
+          <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 700 }}>
+            <span>TOTAL ITEMS</span>
+            <span>{productos.length}</span>
+          </div>
+
+          <div style={{ marginTop: 26, borderTop: "1px solid #000", paddingTop: 3, textAlign: "center", fontSize: 9 }}>
+            FIRMA DE QUIEN RECIBE
+          </div>
+          <div style={{ marginTop: 18, borderTop: "1px solid #000", paddingTop: 3, textAlign: "center", fontSize: 9 }}>
+            C.C. / NOMBRE
+          </div>
+
+          <div style={{ borderTop: "1px dashed #000", margin: "8px 0 4px" }}></div>
+          <div style={{ textAlign: "center", fontSize: 8.5, lineHeight: 1.3 }}>
+            Documento interno de entrega.
+            <br />
+            NO es factura de venta.
+          </div>
+        </div>
+      </div>
+
+      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+        <button onClick={onClose} style={{ fontSize: 13 }}>Cerrar</button>
+        <button
+          onClick={() => window.print()}
+          style={{
+            fontSize: 13,
+            fontWeight: 500,
+            background: MARCA.azulMedio,
+            color: "#fff",
+            border: "none",
+            borderRadius: "var(--border-radius-md)",
+            padding: "9px 14px",
+            minHeight: 40,
+          }}
+        >
+          <i className="ti ti-printer" style={{ fontSize: 14, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
+          Imprimir
         </button>
       </div>
     </ModalOverlay>
