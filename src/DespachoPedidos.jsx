@@ -3777,13 +3777,38 @@ const CARD_CSS = `
    para no quedar cortado por el borde inferior. */
 .pc-pop.pc-arriba{top:auto;bottom:50px;}
 
-/* Impresión de la tirilla térmica (58 mm). Al imprimir se oculta toda la
-   página y solo queda la tirilla, pegada al borde del papel. */
+/* Tirilla térmica de 58 mm. Todo el tamaño interno va en "em" y se controla
+   con el font-size del contenedor: en pantalla se ve en px (vista previa) y al
+   imprimir se cambia a milímetros, que es lo único que la impresora respeta.
+   Con px la tirilla salía mucho más angosta y con letra más pequeña que las
+   del sistema de facturación. */
+.tr{background:#fff;color:#000;font-family:ui-monospace,'Courier New',monospace;
+  font-size:12px;line-height:1.35;width:240px;padding:10px 9px 14px;
+  border:0.5px solid var(--color-border-tertiary);}
+.tr-tit{font-size:1.15em;font-weight:700;text-align:center;line-height:1.2;}
+.tr-sub{font-size:0.82em;text-align:center;line-height:1.3;}
+.tr-enc{font-size:1em;font-weight:700;text-align:center;letter-spacing:0.04em;}
+.tr-num{font-size:1.5em;font-weight:700;text-align:center;margin:1px 0;}
+.tr-sep{border-top:1px dashed #000;margin:0.45em 0;}
+.tr-solid{border-top:1px solid #000;margin:0.2em 0 0.35em;}
+.tr-row{display:flex;gap:0.35em;line-height:1.35;}
+.tr-lab{width:4.6em;flex-shrink:0;}
+.tr-item{display:flex;gap:0.35em;margin-bottom:0.25em;line-height:1.3;}
+.tr-qty{width:4.6em;flex-shrink:0;font-weight:700;}
+.tr-desc{flex:1;word-break:break-word;}
+.tr-tot{display:flex;justify-content:space-between;font-weight:700;}
+.tr-firma{margin-top:2.4em;border-top:1px solid #000;padding-top:0.25em;
+  text-align:center;font-size:0.82em;}
+.tr-nota{text-align:center;font-size:0.75em;line-height:1.3;}
+
+/* Al imprimir se oculta toda la página y solo queda la tirilla. El
+   font-size en mm es lo que hace que la letra salga del tamaño correcto. */
 @media print{
   body *{visibility:hidden !important;}
   #tirilla-print,#tirilla-print *{visibility:visible !important;}
-  #tirilla-print{position:fixed !important;left:0;top:0;width:54mm;margin:0;padding:0;
-    box-shadow:none !important;border:none !important;}
+  #tirilla-print{position:fixed !important;left:0 !important;top:0 !important;
+    width:100% !important;font-size:2.3mm !important;margin:0 !important;
+    padding:0 !important;border:none !important;box-shadow:none !important;}
   @page{size:58mm auto;margin:2mm;}
 }
 /* Columnas angostas: el riel se pasa abajo como fila para que el nombre del
@@ -5234,9 +5259,7 @@ function DescontarMaterialModal({ pedido, onClose, onDescontar }) {
 function TirillaModal({ pedido, onClose }) {
   const productos = pedido.productos || [];
   const veh = VEHICULOS.find((v) => v.id === pedido.vehiculo);
-  const linea = { display: "flex", gap: 4, lineHeight: 1.35 };
-  const rot = { width: 46, flexShrink: 0 };
-  const sep = { borderTop: "1px dashed #000", margin: "5px 0" };
+  const tel = pedido.telefono || pedido.telefonoContacto;
 
   return (
     <ModalOverlay onClose={onClose} maxWidth={360}>
@@ -5248,71 +5271,52 @@ function TirillaModal({ pedido, onClose }) {
       </div>
 
       <div style={{ display: "flex", justifyContent: "center", marginBottom: 12 }}>
-        <div
-          id="tirilla-print"
-          style={{
-            background: "#fff",
-            width: 230,
-            padding: "10px 9px 14px",
-            fontFamily: "ui-monospace, 'Courier New', monospace",
-            fontSize: 10.5,
-            lineHeight: 1.4,
-            color: "#000",
-            border: "0.5px solid var(--color-border-tertiary)",
-          }}
-        >
-          <div style={{ textAlign: "center", fontWeight: 700, fontSize: 12 }}>FERROMATERIALES</div>
-          <div style={{ textAlign: "center", fontWeight: 700, fontSize: 12 }}>SAN BLAS S.A.S.</div>
-          <div style={{ textAlign: "center", fontSize: 9 }}>NIT 901.577.413-3</div>
-          <div style={{ textAlign: "center", fontSize: 9 }}>Calle 7 Cra 2-48 AV. San Blas</div>
-          <div style={{ textAlign: "center", fontSize: 9 }}>Tel. 310 590 0475</div>
+        <div id="tirilla-print" className="tr">
+          <div className="tr-tit">FERROMATERIALES</div>
+          <div className="tr-tit">SAN BLAS S.A.S.</div>
+          <div className="tr-sub">NIT 901.577.413-3</div>
+          <div className="tr-sub">CL 7 CRA 2-28 AV SAN BLAS</div>
+          <div className="tr-sub">CEL 310 590 0475</div>
+          <div className="tr-sub">MORROA - SUCRE</div>
 
-          <div style={sep}></div>
-          <div style={{ textAlign: "center", fontWeight: 700, fontSize: 11, letterSpacing: 0.5 }}>REMISION DE ENTREGA</div>
-          <div style={{ textAlign: "center", fontWeight: 700, fontSize: 15, margin: "2px 0" }}>{pedido.numeroFactura || "-"}</div>
-          {pedido.remisionDe && <div style={{ textAlign: "center", fontSize: 9 }}>de Factura {pedido.remisionDe}</div>}
-          <div style={sep}></div>
+          <div className="tr-sep"></div>
+          <div className="tr-enc">REMISION DE ENTREGA</div>
+          <div className="tr-num">{pedido.numeroFactura || "-"}</div>
+          {pedido.remisionDe && <div className="tr-sub">de Factura {pedido.remisionDe}</div>}
+          <div className="tr-sep"></div>
 
-          <div style={linea}><span style={rot}>FECHA</span><span>{todayStr()} {nowTimeStr()}</span></div>
-          <div style={linea}><span style={rot}>CLIENTE</span><span style={{ flex: 1 }}>{pedido.cliente || "-"}</span></div>
-          {pedido.direccion && <div style={linea}><span style={rot}>DIRECC.</span><span style={{ flex: 1 }}>{pedido.direccion}</span></div>}
-          {(pedido.telefono || pedido.telefonoContacto) && (
-            <div style={linea}><span style={rot}>TEL.</span><span>{pedido.telefono || pedido.telefonoContacto}</span></div>
-          )}
-          {pedido.destino && <div style={linea}><span style={rot}>DESTINO</span><span>{pedido.destino}</span></div>}
-          {veh && <div style={linea}><span style={rot}>VEHIC.</span><span>{veh.label.toUpperCase()}</span></div>}
+          <div className="tr-row"><span className="tr-lab">FECHA</span><span>{todayStr()} {nowTimeStr()}</span></div>
+          <div className="tr-row"><span className="tr-lab">CLIENTE</span><span style={{ flex: 1 }}>{pedido.cliente || "-"}</span></div>
+          {pedido.direccion && <div className="tr-row"><span className="tr-lab">DIRECC.</span><span style={{ flex: 1 }}>{pedido.direccion}</span></div>}
+          {tel && <div className="tr-row"><span className="tr-lab">CEL.</span><span>{tel}</span></div>}
+          {pedido.destino && <div className="tr-row"><span className="tr-lab">DESTINO</span><span>{pedido.destino}</span></div>}
+          {veh && <div className="tr-row"><span className="tr-lab">VEHIC.</span><span>{veh.label.toUpperCase()}</span></div>}
 
-          <div style={{ borderTop: "1px dashed #000", margin: "6px 0 3px" }}></div>
-          <div style={{ display: "flex", fontWeight: 700, fontSize: 9 }}>
-            <span style={{ width: 46, flexShrink: 0 }}>CANT</span>
-            <span style={{ flex: 1 }}>DESCRIPCION</span>
+          <div className="tr-sep"></div>
+          <div className="tr-item" style={{ fontWeight: 700 }}>
+            <span className="tr-qty">CANT</span>
+            <span className="tr-desc">DESCRIPCION</span>
           </div>
-          <div style={{ borderTop: "1px solid #000", margin: "2px 0 4px" }}></div>
+          <div className="tr-solid"></div>
 
           {productos.map((p, i) => (
-            <div key={i} style={{ display: "flex", gap: 4, marginBottom: 3, lineHeight: 1.3 }}>
-              <span style={{ width: 46, flexShrink: 0, fontWeight: 700 }}>
-                {p.cantidad} {p.unidad}
-              </span>
-              <span style={{ flex: 1, wordBreak: "break-word" }}>{p.descripcion}</span>
+            <div key={i} className="tr-item">
+              <span className="tr-qty">{p.cantidad} {p.unidad}</span>
+              <span className="tr-desc">{p.descripcion}</span>
             </div>
           ))}
 
-          <div style={sep}></div>
-          <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 700 }}>
+          <div className="tr-sep"></div>
+          <div className="tr-tot">
             <span>TOTAL ITEMS</span>
             <span>{productos.length}</span>
           </div>
 
-          <div style={{ marginTop: 26, borderTop: "1px solid #000", paddingTop: 3, textAlign: "center", fontSize: 9 }}>
-            FIRMA DE QUIEN RECIBE
-          </div>
-          <div style={{ marginTop: 18, borderTop: "1px solid #000", paddingTop: 3, textAlign: "center", fontSize: 9 }}>
-            C.C. / NOMBRE
-          </div>
+          <div className="tr-firma">FIRMA DE QUIEN RECIBE</div>
+          <div className="tr-firma" style={{ marginTop: "1.8em" }}>C.C. / NOMBRE</div>
 
-          <div style={{ borderTop: "1px dashed #000", margin: "8px 0 4px" }}></div>
-          <div style={{ textAlign: "center", fontSize: 8.5, lineHeight: 1.3 }}>
+          <div className="tr-sep" style={{ marginTop: "0.8em" }}></div>
+          <div className="tr-nota">
             Documento interno de entrega.
             <br />
             NO es factura de venta.
