@@ -146,6 +146,29 @@ const CATEGORIAS_PESO = [
 
 // Quita tildes y pasa a minúsculas para comparar sin importar cómo venga escrito
 // en la factura ("CERÁMICA", "Ceramica", "cerámica" → "ceramica").
+// Fecha del documento (la que trae impresa la factura o cotización), en
+// formato DD/MM/AAAA. Es distinta del día en que se sube el PDF a la app: una
+// factura de obra puede subirse semanas después. Se usa para saber hace cuánto
+// se generó y marcarla como estancada.
+function fechaDocumentoDe(text) {
+  // Factura: "FECHA FACTURA" y debajo 23/07/2026.
+  const m1 = text.match(/FECHA\s+FACTURA[\s\S]{0,120}?(\d{2}\/\d{2}\/\d{4})/i);
+  if (m1) return m1[1];
+  // Cotización: "FECHA PEDIDO" y debajo 13-jul.-26.
+  const meses = { ene: "01", feb: "02", mar: "03", abr: "04", may: "05", jun: "06", jul: "07", ago: "08", sep: "09", oct: "10", nov: "11", dic: "12" };
+  const m2 = text.match(/FECHA\s+PEDIDO[\s\S]{0,120}?(\d{1,2})[-\/\s]([a-zA-Z]{3})\.?[-\/\s](\d{2,4})/i);
+  if (m2) {
+    const mes = meses[m2[2].toLowerCase()];
+    if (mes) {
+      const anio = m2[3].length === 2 ? `20${m2[3]}` : m2[3];
+      return `${m2[1].padStart(2, "0")}/${mes}/${anio}`;
+    }
+  }
+  // Cualquier fecha DD/MM/AAAA como último recurso.
+  const m3 = text.match(/(\d{2}\/\d{2}\/\d{4})/);
+  return m3 ? m3[1] : null;
+}
+
 function normalizarTexto(s) {
   return (s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
 }
@@ -164,7 +187,14 @@ function categoriaDeProducto(descripcion) {
 // "Sin categorizar", y se cuenta aparte en pesos ($), no en kilos.
 function esLineaFlete(descripcion) {
   const d = normalizarTexto(descripcion);
-  return d.includes("transporte de carga") || d.includes("transporte carga") || /\bflete\b/.test(d);
+  return (
+    d.includes("transporte de carga") ||
+    d.includes("transporte carga") ||
+    d.includes("carga de material") ||
+    d.includes("carga material") ||
+    d.includes("acarreo") ||
+    /\bflete\b/.test(d)
+  );
 }
 
 // Cantidad que de verdad se entregó de una línea: si el despachador marcó
@@ -454,6 +484,7 @@ function parseFactura(lines) {
 
   const fecvMatch = text.match(/FECV\s*No\.?\s*(\d+)/i);
   if (fecvMatch) result.numeroFactura = fecvMatch[1];
+  result.fechaDocumento = fechaDocumentoDe(text);
 
   const clienteLine = lines.find((l) => /^CLIENTE\b/i.test(l));
   if (clienteLine) {
@@ -596,6 +627,7 @@ function parseCotizacion(lines) {
 
   const numMatch = text.match(/COTIZACION No\.?\s*(\d+)/i);
   if (numMatch) result.numeroFactura = numMatch[1];
+  result.fechaDocumento = fechaDocumentoDe(text);
 
   // Anclado al inicio de línea, igual que el replace de abajo: sin ancla,
   // una línea anterior con "CLIENTE" en el medio (p. ej. un encabezado
@@ -1019,7 +1051,10 @@ export default function DespachoPedidos() {
       destino: data.destino || "",
       pdfDataUrl: data.pdfDataUrl,
       fileName: data.fileName,
-      fecha: todayStr(),
+      // Fecha del documento (la impresa en la factura/cotización). Si el
+      // lector no la encontró, se usa la de hoy. Es la que cuenta para saber
+      // hace cuánto se generó, no el día en que se subió el PDF.
+      fecha: data.fechaDocumento || todayStr(),
       fechaDespacho: fechaDestino,
       estadoPago: data.estadoPago || "pendiente",
       hora: nowTimeStr(),
@@ -1238,9 +1273,13 @@ export default function DespachoPedidos() {
       showToast("Marca cuánto material se llevó el cliente.");
       return;
     }
+    const hoyMov = new Date().toLocaleDateString("en-CA", { timeZone: "America/Bogota" });
     const nuevosProductos = productosMadre.map((p, i) => {
       const usado = Number(cantidades[i]) || 0;
-      return { ...p, cantidadRestante: Math.max(0, disponibleDe(p) - usado) };
+      const base = { ...p, cantidadRestante: Math.max(0, disponibleDe(p) - usado) };
+      // Descontar material también es movimiento sobre la factura: se guarda
+      // la fecha para que no se marque "estancada" si se le está restando.
+      return usado > 0 ? { ...base, fechaMovimiento: hoyMov } : base;
     });
     const saldoTotal = nuevosProductos.reduce((s, p) => s + (Number(p.cantidadRestante) || 0), 0);
     const prevPedidos = pedidos;
@@ -1296,7 +1335,8 @@ export default function DespachoPedidos() {
         descripcion: p.descripcion.trim(),
         cantidad: String(p.cantidad).trim(),
         unidad: (p.unidad || "").trim(),
-        total: "0",
+        // Precio total de la línea. Si va vacío queda en 0, igual que antes.
+        total: String(parseInt(String(p.precio || "0").replace(/[^\d]/g, ""), 10) || 0),
       }));
     if (productos.length === 0) {
       showToast("Agrega al menos un material con cantidad.");
@@ -1320,7 +1360,7 @@ export default function DespachoPedidos() {
       telefono: (data.telefono || "").trim(),
       direccion: (data.direccion || "").trim(),
       vendedor: "",
-      total: null,
+      total: productos.reduce((sum, p) => sum + (parseInt(p.total, 10) || 0), 0) || null,
       productos,
       vehiculo: vehiculoDest,
       destino: data.destino || null,
@@ -1604,7 +1644,10 @@ export default function DespachoPedidos() {
       productos: data.productos || [],
       pdfDataUrl: data.pdfDataUrl,
       fileName: data.fileName,
-      fecha: todayStr(),
+      // Fecha del documento (la impresa en la factura/cotización). Si el
+      // lector no la encontró, se usa la de hoy. Es la que cuenta para saber
+      // hace cuánto se generó, no el día en que se subió el PDF.
+      fecha: data.fechaDocumento || todayStr(),
       estado: "pendiente",
       fechaSeguimiento: data.fechaSeguimiento || null,
       fechaVencimiento: data.fechaVencimiento || null,
@@ -1790,6 +1833,11 @@ export default function DespachoPedidos() {
       // Última señal de movimiento: la remisión más reciente; si no hay
       // ninguna, la fecha en que se subió la factura.
       const fechas = [];
+      // Descuentos de material hechos a mano: no generan remisión, pero sí son
+      // movimiento sobre la factura.
+      for (const prod of productos) {
+        if (prod.fechaMovimiento) fechas.push(prod.fechaMovimiento);
+      }
       for (const h of hijas) {
         const entregada = fechaEntregaISO(h);
         if (entregada) fechas.push(entregada);
@@ -4498,6 +4546,12 @@ function GrupoCard({ miembros, isDragging, onDragStart, onDragEnd, onDragOverIte
   const clientesUnicos = Array.from(new Set(miembros.map((m) => (m.cliente || "").trim()).filter(Boolean)));
   const titulo = clientesUnicos.length === 1 ? clientesUnicos[0] : `${miembros.length} pedidos en un viaje`;
   const conPendiente = miembros.filter((m) => m.entregaPendiente);
+  // Peso del viaje completo: la suma de lo que falta por entregar de cada
+  // factura del grupo. Es el número que dice si el viaje cabe o no.
+  const cargaGrupo = miembros.reduce((sum, m) => sum + cargaPorEntregar(m), 0);
+  const vehGrupo = VEHICULOS.find((v) => v.id === (miembros[0] && miembros[0].vehiculo));
+  const capGrupo = vehGrupo && vehGrupo.capacidadKg;
+  const excedeGrupo = !!capGrupo && cargaGrupo > capGrupo;
 
   return (
     <div
@@ -4545,6 +4599,13 @@ function GrupoCard({ miembros, isDragging, onDragStart, onDragEnd, onDragOverIte
           <i className="ti ti-layers-intersect" style={{ fontSize: 11, verticalAlign: "-1px", marginRight: 3 }} aria-hidden="true"></i>
           Viaje juntado · {miembros.length} facturas
         </span>
+        {cargaGrupo > 0 && (
+          <span style={{ fontSize: 11.5, fontWeight: 500, marginLeft: 8, color: excedeGrupo ? "var(--color-text-danger)" : "var(--color-text-secondary)" }}>
+            <i className="ti ti-weight" style={{ fontSize: 12, verticalAlign: "-2px", marginRight: 3 }} aria-hidden="true"></i>
+            {formatCOP(Math.round(cargaGrupo))} kg
+            {excedeGrupo ? " · no cabe en un viaje" : ""}
+          </span>
+        )}
       </div>
 
       {/* Al juntar pedidos se perdía de vista el material pendiente de cada
@@ -5356,7 +5417,7 @@ function RemisionManualModal({ hoyIso, onClose, onCrear }) {
   const [direccion, setDireccion] = useState("");
   const [destino, setDestino] = useState("");
   const [estadoPago, setEstadoPago] = useState("pendiente");
-  const [productos, setProductos] = useState([{ descripcion: "", cantidad: "", unidad: "" }]);
+  const [productos, setProductos] = useState([{ descripcion: "", cantidad: "", unidad: "", precio: "" }]);
   const [fechaOpcion, setFechaOpcion] = useState("hoy");
   const [fechaOtro, setFechaOtro] = useState(addDaysISO(hoyIso, 1));
   const [vehiculo, setVehiculo] = useState(VEHICULOS[0].id);
@@ -5365,7 +5426,7 @@ function RemisionManualModal({ hoyIso, onClose, onCrear }) {
   const fechaResuelta = fechaOpcion === "hoy" ? hoyIso : fechaOpcion === "otro" ? fechaOtro : fechaOpcion; // "pendiente" | "viaje"
 
   const setProd = (i, campo, valor) => setProductos((prev) => prev.map((p, idx) => (idx === i ? { ...p, [campo]: valor } : p)));
-  const agregarFila = () => setProductos((prev) => [...prev, { descripcion: "", cantidad: "", unidad: "" }]);
+  const agregarFila = () => setProductos((prev) => [...prev, { descripcion: "", cantidad: "", unidad: "", precio: "" }]);
   const quitarFila = (i) => setProductos((prev) => (prev.length === 1 ? prev : prev.filter((_, idx) => idx !== i)));
 
   const hayMaterial = productos.some((p) => (p.descripcion || "").trim() && cantidadNum(p.cantidad) > 0);
@@ -5440,7 +5501,18 @@ function RemisionManualModal({ hoyIso, onClose, onCrear }) {
               value={p.unidad}
               onChange={(e) => setProd(i, "unidad", e.target.value)}
               placeholder="und"
-              style={{ width: 60 }}
+              style={{ width: 54 }}
+            />
+            {/* Precio total de la línea. Necesario para que los fletes escritos
+                a mano ("carga de material") sumen en el reporte del Panel. */}
+            <input
+              type="number"
+              inputMode="numeric"
+              value={p.precio}
+              onChange={(e) => setProd(i, "precio", e.target.value)}
+              placeholder="$"
+              aria-label="Precio de la línea"
+              style={{ width: 78 }}
             />
             <button
               onClick={() => quitarFila(i)}
