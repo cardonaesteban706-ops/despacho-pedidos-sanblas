@@ -1387,7 +1387,22 @@ export default function DespachoPedidos() {
   async function devolverADespacho(id) {
     const pedido = historial.find((p) => p.id === id);
     if (!pedido) return;
-    const restaurado = { ...pedido, entregadoEn: null, fechaEntrega: null };
+    // Al devolver un pedido a despacho hay que borrar la marca de "todo
+    // entregado" que puso "Entregado" (cerrarEntregaCompleta fija
+    // cantidadEntregada = cantidad). Si no se limpia, el pedido vuelve a
+    // despacho creyendo que ya salió completo: no muestra peso, sale 100%
+    // entregado en "Por entregar" y el modal de remisión muestra todo como
+    // "ya se despachó completo" (no deja remisionar). Las líneas con saldo de
+    // remisiones (cantidadRestante) SÍ se respetan: son facturas madre cuyo
+    // material ya salió por remisiones y no debe volver a contarse.
+    const productosLimpios = (pedido.productos || []).map((p) => {
+      if (p.cantidadRestante !== undefined && p.cantidadRestante !== null) return p;
+      if (p.cantidadEntregada === undefined || p.cantidadEntregada === null) return p;
+      const copia = { ...p };
+      delete copia.cantidadEntregada;
+      return copia;
+    });
+    const restaurado = { ...pedido, productos: productosLimpios, entregadoEn: null, fechaEntrega: null };
     const prevPedidos = pedidos;
     const prevHistorial = historial;
     setHistorial(historial.filter((p) => p.id !== id));
