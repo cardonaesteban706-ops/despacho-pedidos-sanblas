@@ -26,8 +26,15 @@ import {
  * `ack` (revisión de líneas no leídas), `verTodos` y `aviso` son estado de UI local,
  * no forman parte de `data`.
  */
-export default function ExtractReviewCard({ data, onChange, onConfirm, onCancel }) {
-  const esCotizacion = data.tipo === "cotizacion";
+export default function ExtractReviewCard({ data, onChange, onConfirm, onCancel, seguimiento = false }) {
+  // `seguimiento` decide el LAYOUT: true = interfaz de seguimiento de cotizaciones
+  // (solo datos + fecha de seguimiento); false = interfaz de despacho (vehículo,
+  // fecha de entrega, destino). Es INDEPENDIENTE del formato del PDF: una
+  // cotización subida desde el tablero de despachos entra en modo despacho.
+  const esCotizacion = seguimiento;
+  // `tipoCotizacion` es el FORMATO del documento leído (factura vs cotización).
+  // Solo afecta etiquetas ("N° cotización", badge), nunca el layout.
+  const tipoCotizacion = data.tipo === "cotizacion";
   const [aviso, setAviso] = useState("");
   const [ack, setAck] = useState(false);
   const [verTodos, setVerTodos] = useState(false);
@@ -44,7 +51,7 @@ export default function ExtractReviewCard({ data, onChange, onConfirm, onCancel 
   // ---- estado derivado ----
   const missing = [];
   if (!data.cliente) missing.push("cliente");
-  if (!data.numeroFactura) missing.push(esCotizacion ? "número" : "N° documento");
+  if (!data.numeroFactura) missing.push(tipoCotizacion ? "número" : "N° documento");
   if (!data.telefono) missing.push("teléfono");
   if (!data.vendedor) missing.push("vendedor");
   if (!data.total) missing.push("total");
@@ -151,7 +158,7 @@ export default function ExtractReviewCard({ data, onChange, onConfirm, onCancel 
           </div>
         </div>
         <span style={{ marginLeft: "auto", fontSize: 12, fontWeight: 600, padding: "4px 11px", borderRadius: 20, background: "#E6F1FB", color: "#0C447C", flexShrink: 0 }}>
-          {esCotizacion ? "Cotización" : "Factura"}
+          {tipoCotizacion ? "Cotización" : "Factura"}
         </span>
       </div>
 
@@ -212,7 +219,7 @@ export default function ExtractReviewCard({ data, onChange, onConfirm, onCancel 
                 <input type="text" autoComplete="off" value={data.cliente || ""} onChange={(e) => set({ cliente: e.target.value })} style={inputStyle(!data.cliente)} />
               </label>
               <label style={{ display: "block" }}>
-                <span style={{ fontSize: 12, color: "var(--color-text-secondary)", display: "block", marginBottom: 5 }}>{esCotizacion ? "N° cotización" : "N° documento"}</span>
+                <span style={{ fontSize: 12, color: "var(--color-text-secondary)", display: "block", marginBottom: 5 }}>{tipoCotizacion ? "N° cotización" : "N° documento"}</span>
                 <input type="text" inputMode="numeric" spellCheck={false} autoComplete="off" value={data.numeroFactura || ""} onChange={(e) => set({ numeroFactura: e.target.value })} style={inputStyle(!data.numeroFactura)} />
               </label>
               <label style={{ display: "block" }}>
@@ -430,6 +437,10 @@ export default function ExtractReviewCard({ data, onChange, onConfirm, onCancel 
   );
 }
 
-// Nombres antiguos conservados para no tocar los sitios de uso.
-// Ambos apuntan al mismo componente; el modo se decide con data.tipo.
-export { ExtractReviewCard as ExtractReviewCardCotizacion };
+// Interfaz de SEGUIMIENTO de cotizaciones (tablero de cotizaciones): mismo
+// componente en modo seguimiento (sin vehículo ni fecha de entrega). El
+// tablero de DESPACHOS usa el export por defecto (modo despacho) aunque el
+// PDF sea una cotización, porque ahí también se despachan cotizaciones.
+export function ExtractReviewCardCotizacion(props) {
+  return <ExtractReviewCard {...props} seguimiento={true} />;
+}
