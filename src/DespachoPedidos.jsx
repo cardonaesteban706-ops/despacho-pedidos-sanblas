@@ -3,10 +3,11 @@ import { cargarPedidosActivos, cargarHistorial, guardarPedido, actualizarPedido,
 import { cargarCotizaciones, guardarCotizacion, eliminarCotizacion, cargarPdfCotizacion } from "./supabaseClient";
 import PanelResumen from "./PanelResumen.jsx";
 import PorEntregar from "./PorEntregar.jsx";
+import ExtractReviewCard, { ExtractReviewCardCotizacion } from "./ExtractReviewCard.jsx";
 
 // capacidadKg: carga máxima del vehículo, para avisar cuando un pedido (o el
 // total de una columna) no cabe en un solo viaje. null = sin límite definido.
-const VEHICULOS = [
+export const VEHICULOS = [
   { id: "camion", label: "Camión", icon: "ti-truck", bg: "#E6F1FB", border: "#378ADD", text: "#0C447C", capacidadKg: 3000 },
   { id: "motocarro", label: "Motocarro", icon: "ti-moped", bg: "#FAEEDA", border: "#BA7517", text: "#633806", capacidadKg: null },
   { id: "tractor", label: "Tractor", icon: "ti-tractor", bg: "#EAF3DE", border: "#639922", text: "#27500A", capacidadKg: null },
@@ -14,7 +15,7 @@ const VEHICULOS = [
 
 // Destinos frecuentes para marcar la zona del pedido al montarlo. "Otro" abre
 // un campo de texto para escribir cualquier otro lugar a mano.
-const DESTINOS = ["Corozal", "Morroa"];
+export const DESTINOS = ["Corozal", "Morroa"];
 
 // Cuánto tiempo se puede deshacer un pedido borrado antes de que se elimine
 // de verdad de la base de datos.
@@ -42,7 +43,7 @@ function uid() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 }
 
-function formatCOP(n) {
+export function formatCOP(n) {
   if (n === null || n === undefined || isNaN(n)) return "-";
   return new Intl.NumberFormat("es-CO", { maximumFractionDigits: 0 }).format(n);
 }
@@ -185,7 +186,7 @@ function categoriaDeProducto(descripcion) {
 // aparte en la factura, agregado a mano desde World Office). No es material —
 // no tiene peso — así que se excluye del sistema de categorías de peso y del
 // "Sin categorizar", y se cuenta aparte en pesos ($), no en kilos.
-function esLineaFlete(descripcion) {
+export function esLineaFlete(descripcion) {
   const d = normalizarTexto(descripcion);
   return (
     d.includes("transporte de carga") ||
@@ -368,7 +369,7 @@ function todayStr() {
 
 // Fecha de despacho: usamos formato ISO (YYYY-MM-DD) internamente porque es
 // fácil de comparar y ordenar; el formato bonito (es-CO) es solo para mostrar.
-function todayISO() {
+export function todayISO() {
   const d = new Date();
   const yyyy = d.getFullYear();
   const mm = String(d.getMonth() + 1).padStart(2, "0");
@@ -376,7 +377,7 @@ function todayISO() {
   return `${yyyy}-${mm}-${dd}`;
 }
 
-function addDaysISO(iso, days) {
+export function addDaysISO(iso, days) {
   const [y, m, d] = iso.split("-").map(Number);
   const dt = new Date(y, m - 1, d);
   dt.setDate(dt.getDate() + days);
@@ -3353,365 +3354,6 @@ export default function DespachoPedidos() {
   );
 }
 
-// Aviso cuando el lector de PDF encontró líneas que parecían producto pero no
-// pudo interpretar. Antes se descartaban en silencio y el usuario terminaba
-// confiando en una lista incompleta al despachar — el peor error posible.
-function AvisoLineasIgnoradas({ lineas }) {
-  if (!lineas || lineas.length === 0) return null;
-  return (
-    <div
-      style={{
-        fontSize: 12,
-        color: "var(--color-text-danger)",
-        background: "var(--color-background-danger)",
-        border: "0.5px solid var(--color-border-danger)",
-        borderRadius: "var(--border-radius-md)",
-        padding: "8px 10px",
-        marginBottom: 10,
-      }}
-    >
-      <div style={{ fontWeight: 600, marginBottom: 4 }}>
-        <i className="ti ti-alert-triangle" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
-        Ojo: {lineas.length} {lineas.length === 1 ? "línea no se pudo leer" : "líneas no se pudieron leer"}
-      </div>
-      <div style={{ marginBottom: 6 }}>Estos materiales NO quedarán en el pedido. Agrégalos a mano o revisa el PDF antes de despachar:</div>
-      {lineas.slice(0, 6).map((l, i) => (
-        <div key={i} style={{ fontFamily: "monospace", fontSize: 11, opacity: 0.9, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-          {l}
-        </div>
-      ))}
-      {lineas.length > 6 && <div style={{ fontSize: 11, marginTop: 4 }}>…y {lineas.length - 6} más.</div>}
-    </div>
-  );
-}
-
-function ExtractReviewCard({ data, onChange, onConfirm, onCancel }) {
-  const [aviso, setAviso] = useState("");
-  const confirmadoRef = useRef(false);
-  const missing = [];
-  if (!data.cliente) missing.push("cliente");
-  if (!data.numeroFactura) missing.push("número");
-  if (!data.total) missing.push("total");
-  if (!data.vendedor) missing.push("vendedor");
-
-  return (
-    <div
-      style={{
-        background: "var(--color-background-primary)",
-        border: "0.5px solid var(--color-border-secondary)",
-        borderRadius: "var(--border-radius-lg)",
-        padding: "1rem 1.25rem",
-        marginBottom: 16,
-      }}
-    >
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
-        <i className="ti ti-file-text" style={{ fontSize: 18 }} aria-hidden="true"></i>
-        <span style={{ fontWeight: 500, fontSize: 15 }}>Revisa los datos extraídos</span>
-        <span
-          style={{
-            fontSize: 12,
-            padding: "2px 8px",
-            borderRadius: "var(--border-radius-sm)",
-            background: "var(--color-background-secondary)",
-            color: "var(--color-text-secondary)",
-            marginLeft: "auto",
-          }}
-        >
-          {data.tipo === "cotizacion" ? "Cotización" : "Factura"}
-        </span>
-      </div>
-
-      {missing.length > 0 && (
-        <div style={{ fontSize: 12, color: "var(--color-text-warning)", marginBottom: 10 }}>
-          <i className="ti ti-alert-triangle" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
-          No se detectó: {missing.join(", ")}. Complétalo a mano.
-        </div>
-      )}
-
-      <AvisoLineasIgnoradas lineas={data.lineasIgnoradas} />
-
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 12 }}>
-        <Field label="N° documento" inputMode="numeric" spellCheck={false} value={data.numeroFactura || ""} onChange={(v) => onChange({ ...data, numeroFactura: v })} />
-        <Field label="Cliente" value={data.cliente || ""} onChange={(v) => onChange({ ...data, cliente: v })} />
-        <Field
-          label="Teléfono"
-          type="tel"
-          value={data.telefono || ""}
-          onChange={(v) => onChange({ ...data, telefono: v })}
-        />
-        <Field label="Vendedor" value={data.vendedor || ""} onChange={(v) => onChange({ ...data, vendedor: v })} />
-      </div>
-
-      {data.telefonoContacto && data.telefono === "111111111" && (
-        <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 12 }}>
-          <i className="ti ti-phone" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
-          Cliente sin teléfono registrado, pero hay un celular de contacto anotado: {data.telefonoContacto}
-        </div>
-      )}
-
-      {data.productos && data.productos.length > 0 ? (
-        <div style={{ marginBottom: 12 }}>
-          <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 6 }}>
-            Productos detectados ({data.productos.length}) — precio con IVA incluido
-          </div>
-          <div style={{ border: "0.5px solid var(--color-border-tertiary)", borderRadius: "var(--border-radius-md)", overflow: "hidden", maxHeight: 220, overflowY: "auto" }}>
-            {data.productos.map((p, i) => (
-              <div
-                key={i}
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  gap: 8,
-                  fontSize: 13,
-                  padding: "6px 10px",
-                  borderTop: i > 0 ? "0.5px solid var(--color-border-tertiary)" : "none",
-                }}
-              >
-                <span>{p.cantidad} {p.unidad} — {p.descripcion}</span>
-                <span style={{ color: "var(--color-text-secondary)", flexShrink: 0 }}>${formatCOP(parseInt(p.total))}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      ) : (
-        <div style={{ fontSize: 12, color: "var(--color-text-warning)", marginBottom: 12 }}>
-          No se detectaron productos en la tabla. Puedes seguir igual; el PDF queda adjunto como respaldo.
-        </div>
-      )}
-
-      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 14 }}>
-        <span style={{ fontSize: 13, color: "var(--color-text-secondary)" }}>Total (incluye IVA)</span>
-        <span style={{ fontSize: 18, fontWeight: 500 }}>{data.total ? `$${formatCOP(data.total)}` : "No detectado"}</span>
-      </div>
-
-      {(() => {
-        const esViaje = data.fechaDespacho === "viaje";
-        const esPendiente = !!data.sinFechaDefinida && !esViaje;
-        const fechaSel =
-          data.fechaDespacho && data.fechaDespacho !== "pendiente" && data.fechaDespacho !== "viaje"
-            ? data.fechaDespacho
-            : todayISO();
-        const esHoy = !esPendiente && !esViaje && fechaSel === todayISO();
-        const esProgramado = !esPendiente && !esViaje && fechaSel !== todayISO();
-        const opcion = (activo) => ({
-          flex: 1,
-          border: activo ? "2px solid var(--color-border-info)" : "0.5px solid var(--color-border-tertiary)",
-          background: activo ? "var(--color-background-info)" : "var(--color-background-primary)",
-          color: activo ? "var(--color-text-info)" : "var(--color-text-primary)",
-          padding: "8px 4px",
-          borderRadius: "var(--border-radius-md)",
-          fontSize: 12.5,
-          fontWeight: activo ? 500 : 400,
-        });
-        return (
-          <div style={{ marginBottom: 12 }}>
-            <span style={{ fontSize: 12, color: "var(--color-text-secondary)", display: "block", marginBottom: 6 }}>
-              ¿Cuándo se entrega?
-            </span>
-            <div style={{ display: "flex", gap: 6 }}>
-              <button onClick={() => onChange({ ...data, sinFechaDefinida: false, fechaDespacho: todayISO() })} aria-pressed={esHoy} style={opcion(esHoy)}>
-                Hoy
-              </button>
-              <button
-                onClick={() => onChange({ ...data, sinFechaDefinida: false, fechaDespacho: addDaysISO(todayISO(), 1) })}
-                aria-pressed={esProgramado}
-                style={opcion(esProgramado)}
-              >
-                Otro día
-              </button>
-              <button
-                onClick={() => onChange({ ...data, sinFechaDefinida: true, fechaDespacho: "pendiente", vehiculo: null })}
-                aria-pressed={esPendiente}
-                style={opcion(esPendiente)}
-              >
-                Por entregar
-              </button>
-              <button
-                onClick={() => onChange({ ...data, sinFechaDefinida: true, fechaDespacho: "viaje", vehiculo: null })}
-                aria-pressed={esViaje}
-                style={opcion(esViaje)}
-              >
-                Por viaje
-              </button>
-            </div>
-            {esProgramado && (
-              <div style={{ marginTop: 8 }}>
-                <div style={{ display: "flex", gap: 6, overflowX: "auto", paddingBottom: 4, marginBottom: 8 }}>
-                  {Array.from({ length: 7 }, (_, i) => addDaysISO(todayISO(), i + 1)).map((iso) => {
-                    const [yy, mm, dd] = iso.split("-").map(Number);
-                    const fechaObj = new Date(yy, mm - 1, dd);
-                    const etiqueta = iso === addDaysISO(todayISO(), 1) ? "Mañana" : fechaObj.toLocaleDateString("es-CO", { weekday: "short" }).replace(".", "");
-                    const mesAbrev = fechaObj.toLocaleDateString("es-CO", { month: "short" }).replace(".", "");
-                    const sel = fechaSel === iso;
-                    return (
-                      <button
-                        key={iso}
-                        onClick={() => onChange({ ...data, fechaDespacho: iso })}
-                        aria-pressed={sel}
-                        style={{
-                          flexShrink: 0,
-                          minWidth: 62,
-                          padding: "8px 8px",
-                          display: "flex",
-                          flexDirection: "column",
-                          alignItems: "center",
-                          gap: 1,
-                          borderRadius: "var(--border-radius-md)",
-                          border: sel ? "2px solid var(--color-border-info)" : "0.5px solid var(--color-border-tertiary)",
-                          background: sel ? "var(--color-background-info)" : "var(--color-background-primary)",
-                          color: sel ? "var(--color-text-info)" : "var(--color-text-primary)",
-                        }}
-                      >
-                        <span style={{ fontSize: 11, textTransform: "capitalize", color: sel ? "var(--color-text-info)" : "var(--color-text-tertiary)" }}>{etiqueta}</span>
-                        <span style={{ fontSize: 19, fontWeight: 600, lineHeight: 1.1 }}>{dd}</span>
-                        <span style={{ fontSize: 10, textTransform: "capitalize", color: sel ? "var(--color-text-info)" : "var(--color-text-tertiary)" }}>{mesAbrev}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-                <label style={{ display: "block" }}>
-                  <span style={{ fontSize: 12, color: "var(--color-text-tertiary)", display: "block", marginBottom: 4 }}>u otra fecha</span>
-                  <input
-                    type="date"
-                    aria-label="Fecha de despacho"
-                    value={fechaSel}
-                    min={todayISO()}
-                    onChange={(e) => onChange({ ...data, fechaDespacho: e.target.value || todayISO() })}
-                    style={{ width: "100%" }}
-                  />
-                </label>
-                <div style={{ fontSize: 12, color: "var(--color-text-tertiary)", marginTop: 4 }}>
-                  El pedido queda programado para esa fecha y aparece en su pestaña de día.
-                </div>
-              </div>
-            )}
-            {esPendiente && (
-              <div style={{ fontSize: 12, color: "var(--color-text-tertiary)", marginTop: 6 }}>
-                El pedido va a la pestaña "Por entregar" hasta que sepas cuándo y en qué vehículo se entrega.
-              </div>
-            )}
-            {esViaje && (
-              <div style={{ fontSize: 12, color: "var(--color-text-tertiary)", marginTop: 6 }}>
-                El pedido va a la pestaña "Por viaje". Se lleva cuando salga un viaje a esa zona; ahí le asignas fecha y vehículo.
-              </div>
-            )}
-          </div>
-        );
-      })()}
-
-      <div style={{ marginBottom: 12 }}>
-        <DestinoSelector value={data.destino || ""} onChange={(v) => onChange({ ...data, destino: v })} />
-      </div>
-
-      <div style={{ marginBottom: 12 }}>
-        <span style={{ fontSize: 12, color: "var(--color-text-secondary)", display: "block", marginBottom: 6 }}>
-          Estado de pago
-        </span>
-        <div style={{ display: "flex", gap: 8 }}>
-          <button
-            onClick={() => onChange({ ...data, estadoPago: "pagado" })}
-            aria-pressed={data.estadoPago === "pagado"}
-            style={{
-              flex: 1,
-              border: data.estadoPago === "pagado" ? "2px solid var(--color-border-success)" : "0.5px solid var(--color-border-tertiary)",
-              background: data.estadoPago === "pagado" ? "var(--color-background-success)" : "var(--color-background-primary)",
-              color: data.estadoPago === "pagado" ? "var(--color-text-success)" : "var(--color-text-primary)",
-              padding: "8px 0",
-              borderRadius: "var(--border-radius-md)",
-              fontSize: 13,
-            }}
-          >
-            Ya pagado
-          </button>
-          <button
-            onClick={() => onChange({ ...data, estadoPago: "pendiente" })}
-            aria-pressed={data.estadoPago === "pendiente"}
-            style={{
-              flex: 1,
-              border: data.estadoPago === "pendiente" ? "2px solid var(--color-border-warning)" : "0.5px solid var(--color-border-tertiary)",
-              background: data.estadoPago === "pendiente" ? "var(--color-background-warning)" : "var(--color-background-primary)",
-              color: data.estadoPago === "pendiente" ? "var(--color-text-warning)" : "var(--color-text-primary)",
-              padding: "8px 0",
-              borderRadius: "var(--border-radius-md)",
-              fontSize: 13,
-            }}
-          >
-            Paga al recibir
-          </button>
-        </div>
-      </div>
-
-      {!data.sinFechaDefinida && (
-        <div style={{ marginBottom: 12 }}>
-          <span style={{ fontSize: 12, color: "var(--color-text-secondary)", display: "block", marginBottom: 6 }}>Vehículo</span>
-          <div style={{ display: "flex", gap: 8 }}>
-            {VEHICULOS.map((v) => (
-              <button
-                key={v.id}
-                onClick={() => {
-                  setAviso("");
-                  onChange({ ...data, vehiculo: v.id });
-                }}
-                aria-pressed={data.vehiculo === v.id}
-                style={{
-                  flex: 1,
-                  border: data.vehiculo === v.id ? "2px solid var(--color-border-info)" : "0.5px solid var(--color-border-tertiary)",
-                  background: data.vehiculo === v.id ? "var(--color-background-info)" : "var(--color-background-primary)",
-                  color: data.vehiculo === v.id ? "var(--color-text-info)" : "var(--color-text-primary)",
-                  padding: "8px 0",
-                  borderRadius: "var(--border-radius-md)",
-                  fontSize: 13,
-                  fontWeight: data.vehiculo === v.id ? 500 : 400,
-                }}
-              >
-                <i className={`ti ${v.icon}`} style={{ fontSize: 16, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
-                {v.label}
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {aviso && (
-        <div style={{ fontSize: 12, color: "var(--color-text-danger)", marginBottom: 8, textAlign: "right" }}>
-          <i className="ti ti-alert-triangle" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
-          {aviso}
-        </div>
-      )}
-      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-        <button onClick={onCancel} style={{ fontSize: 13 }}>Cancelar</button>
-        <button
-          onClick={() => {
-            // Evita el pedido duplicado por doble clic mientras la tarjeta se cierra.
-            if (confirmadoRef.current) return;
-            if (!data.sinFechaDefinida && !data.vehiculo) {
-              setAviso("Selecciona un vehículo antes de guardar");
-              return;
-            }
-            if (!data.cliente || !data.cliente.trim()) {
-              setAviso("Escribe el nombre del cliente antes de guardar");
-              return;
-            }
-            setAviso("");
-            confirmadoRef.current = true;
-            onConfirm();
-          }}
-          style={{
-            fontSize: 13,
-            fontWeight: 500,
-            background: "var(--color-background-info)",
-            color: "var(--color-text-info)",
-            border: "0.5px solid var(--color-border-info)",
-          }}
-        >
-          <i className="ti ti-check" style={{ fontSize: 14, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
-          Agregar pedido
-        </button>
-      </div>
-    </div>
-  );
-}
-
 function Field({ label, value, onChange, type = "text", inputMode, spellCheck }) {
   return (
     <label style={{ display: "block" }}>
@@ -6232,141 +5874,6 @@ function CotizacionCard({ cotizacion, hoyIso, onDelete, onEdit, onVerPdf, onCamb
             Eliminar
           </button>
         )}
-      </div>
-    </div>
-  );
-}
-
-function ExtractReviewCardCotizacion({ data, onChange, onConfirm, onCancel }) {
-  const [aviso, setAviso] = useState("");
-  const confirmadoRef = useRef(false);
-  const missing = [];
-  if (!data.cliente) missing.push("cliente");
-  if (!data.numeroFactura) missing.push("número");
-  if (!data.total) missing.push("total");
-
-  return (
-    <div
-      style={{
-        background: "var(--color-background-primary)",
-        border: "0.5px solid var(--color-border-secondary)",
-        borderRadius: "var(--border-radius-lg)",
-        padding: "1rem 1.25rem",
-        marginBottom: 16,
-      }}
-    >
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
-        <i className="ti ti-file-text" style={{ fontSize: 18 }} aria-hidden="true"></i>
-        <span style={{ fontWeight: 500, fontSize: 15 }}>Revisa los datos de la cotización</span>
-      </div>
-
-      {missing.length > 0 && (
-        <div style={{ fontSize: 12, color: "var(--color-text-warning)", marginBottom: 10 }}>
-          <i className="ti ti-alert-triangle" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
-          No se detectó: {missing.join(", ")}. Complétalo a mano.
-        </div>
-      )}
-
-      <AvisoLineasIgnoradas lineas={data.lineasIgnoradas} />
-
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 12 }}>
-        <Field label="N° cotización" inputMode="numeric" spellCheck={false} value={data.numeroFactura || ""} onChange={(v) => onChange({ ...data, numeroFactura: v })} />
-        <Field label="Cliente" value={data.cliente || ""} onChange={(v) => onChange({ ...data, cliente: v })} />
-        <Field
-          label="Teléfono"
-          type="tel"
-          value={data.telefono || ""}
-          onChange={(v) => onChange({ ...data, telefono: v })}
-        />
-        <Field label="Vendedor" value={data.vendedor || ""} onChange={(v) => onChange({ ...data, vendedor: v })} />
-      </div>
-
-      {data.productos && data.productos.length > 0 ? (
-        <div style={{ marginBottom: 12 }}>
-          <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 6 }}>
-            Productos detectados ({data.productos.length}) — precio con IVA incluido
-          </div>
-          <div style={{ border: "0.5px solid var(--color-border-tertiary)", borderRadius: "var(--border-radius-md)", overflow: "hidden", maxHeight: 220, overflowY: "auto" }}>
-            {data.productos.map((p, i) => (
-              <div
-                key={i}
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  gap: 8,
-                  fontSize: 13,
-                  padding: "6px 10px",
-                  borderTop: i > 0 ? "0.5px solid var(--color-border-tertiary)" : "none",
-                }}
-              >
-                <span>{p.cantidad} {p.unidad} — {p.descripcion}</span>
-                <span style={{ color: "var(--color-text-secondary)", flexShrink: 0 }}>${formatCOP(parseInt(p.total))}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      ) : (
-        <div style={{ fontSize: 12, color: "var(--color-text-warning)", marginBottom: 12 }}>
-          No se detectaron productos en la tabla. Puedes seguir igual; el PDF queda adjunto como respaldo.
-        </div>
-      )}
-
-      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 14 }}>
-        <span style={{ fontSize: 13, color: "var(--color-text-secondary)" }}>Total (incluye IVA)</span>
-        <span style={{ fontSize: 18, fontWeight: 500 }}>{data.total ? `$${formatCOP(data.total)}` : "No detectado"}</span>
-      </div>
-
-      <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 12 }}>
-        <i className="ti ti-clock" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
-        Esta cotización empieza en estado <b>Pendiente</b>. Después podrás marcarla como Aceptada o Rechazada.
-      </div>
-
-      <label style={{ display: "block", marginBottom: 12 }}>
-        <span style={{ fontSize: 12, color: "var(--color-text-secondary)", display: "block", marginBottom: 6 }}>
-          Fecha de seguimiento (opcional)
-        </span>
-        <input
-          type="date"
-          value={data.fechaSeguimiento || ""}
-          onChange={(e) => onChange({ ...data, fechaSeguimiento: e.target.value })}
-          style={{ width: "100%" }}
-        />
-        <span style={{ fontSize: 12, color: "var(--color-text-tertiary)", display: "block", marginTop: 4 }}>
-          Para recordarte cuándo llamar al cliente y dar seguimiento.
-        </span>
-      </label>
-
-      {aviso && (
-        <div style={{ fontSize: 12, color: "var(--color-text-danger)", marginBottom: 8, textAlign: "right" }}>
-          <i className="ti ti-alert-triangle" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
-          {aviso}
-        </div>
-      )}
-      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-        <button onClick={onCancel} style={{ fontSize: 13 }}>Cancelar</button>
-        <button
-          onClick={() => {
-            // Evita la cotización duplicada por doble clic mientras la tarjeta se cierra.
-            if (confirmadoRef.current) return;
-            if (!data.cliente || !data.cliente.trim()) {
-              setAviso("Escribe el nombre del cliente antes de guardar");
-              return;
-            }
-            setAviso("");
-            confirmadoRef.current = true;
-            onConfirm();
-          }}
-          style={{
-            fontSize: 13,
-            fontWeight: 500,
-            background: "var(--color-background-info)",
-            color: "var(--color-text-info)",
-            border: "0.5px solid var(--color-border-info)",
-          }}
-        >
-          <i className="ti ti-check" style={{ fontSize: 14, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
-          Agregar cotización
-        </button>
       </div>
     </div>
   );
