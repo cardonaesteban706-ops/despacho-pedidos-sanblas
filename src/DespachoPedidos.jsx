@@ -2530,7 +2530,7 @@ export default function DespachoPedidos() {
                           {p.entregaPendiente ? " · debe material" : ""}
                         </div>
                       </button>
-                      {p.tienePdf && (
+                      {(p.tienePdf || p.pdfDataUrl) && (
                         <button
                           onClick={() => setViewingPdf(p)}
                           aria-label="Ver documento"
@@ -3582,7 +3582,7 @@ function PedidoCard({ pedido, posicion, esSecundario, isDragging, onDragStart, o
     },
     !esSecundario && onNotaPendiente && { label: pendiente ? "Editar pendiente" : "Quedó pendiente", icon: "ti-note", fn: onNotaPendiente },
     esRemision && onImprimirTirilla && { label: "Imprimir tirilla", icon: "ti-printer", fn: onImprimirTirilla },
-    pedido.tienePdf && onVerPdf && { label: "Ver documento", icon: "ti-file-text", fn: onVerPdf },
+    (pedido.tienePdf || pedido.pdfDataUrl) && onVerPdf && { label: "Ver documento", icon: "ti-file-text", fn: onVerPdf },
     onEdit && { label: "Editar", icon: "ti-pencil", fn: onEdit },
   ].filter(Boolean);
 
