@@ -1,15 +1,8 @@
 import { useState, useRef } from "react";
-import {
-  // Helpers y constantes ya existentes en DespachoPedidos.jsx.
-  // Añade `export` a cada uno allí (una palabra por línea, sin reescribir el archivo),
-  // o muévelos a un módulo compartido y ajusta esta ruta.
-  formatCOP,
-  esLineaFlete,
-  todayISO,
-  addDaysISO,
-  VEHICULOS,
-  DESTINOS,
-} from "./DespachoPedidos.jsx";
+// Antes esto importaba desde DespachoPedidos.jsx, que a su vez importa este
+// archivo: una importación circular. Ahora todo sale de constants.js y la
+// cadena va en una sola dirección.
+import { formatCOP, esLineaFlete, todayISO, addDaysISO, VEHICULOS, DESTINOS } from "./constants.js";
 
 /**
  * ExtractReviewCard — formulario de confirmación tras subir el PDF.

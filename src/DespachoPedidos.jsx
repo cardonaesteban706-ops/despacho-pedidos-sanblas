@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { cargarPedidosActivos, cargarHistorial, guardarPedido, actualizarPedido, eliminarPedido, cargarPdfPedido } from "./supabaseClient";
 import { cargarCotizaciones, guardarCotizacion, eliminarCotizacion, cargarPdfCotizacion } from "./supabaseClient";
+import { buscarHistorial, maxNumeroRemision, columnasFaltantes, moverPedidoAEstado, DIAS_HISTORIAL_PRECARGADO } from "./supabaseClient";
 import PanelResumen from "./PanelResumen.jsx";
 import PorEntregar from "./PorEntregar.jsx";
 import ExtractReviewCard, { ExtractReviewCardCotizacion } from "./ExtractReviewCard.jsx";
@@ -13,18 +14,38 @@ import {
   valorInicialMaterialDe,
   aplicarEntregadoDirecto,
 } from "./saldo.js";
+// Constantes y helpers puros (antes acá arriba). Se movieron a constants.js para
+// romper la importación circular con ExtractReviewCard.jsx.
+import {
+  VEHICULOS,
+  DESTINOS,
+  MARCA,
+  uid,
+  formatCOP,
+  formatCantidad,
+  normalizarTexto,
+  esLineaFlete,
+  todayStr,
+  todayISO,
+  addDaysISO,
+  formatFechaCorta,
+  etiquetaFecha,
+  nowTimeStr,
+} from "./constants.js";
+// Lectura y parseo de PDF (antes acá arriba, ~340 líneas). El parseo vive en un
+// módulo puro y testeado (pdfParser.test.mjs, `npm test`); la lectura del PDF
+// está aparte porque es la única parte que necesita pdf.js.
+import { extractPdfLines } from "./pdfExtract.js";
+import { parseDocumento } from "./pdfParser.js";
+// Reglas de remisión (enlace madre-hija y correlativo REM), con tests.
+import { remisionesDe, maxRemisionDeNumeros, formatearNumeroRemision } from "./remisiones.js";
 
-// capacidadKg: carga máxima del vehículo, para avisar cuando un pedido (o el
-// total de una columna) no cabe en un solo viaje. null = sin límite definido.
-export const VEHICULOS = [
-  { id: "camion", label: "Camión", icon: "ti-truck", bg: "#E6F1FB", border: "#378ADD", text: "#0C447C", capacidadKg: 3000 },
-  { id: "motocarro", label: "Motocarro", icon: "ti-moped", bg: "#FAEEDA", border: "#BA7517", text: "#633806", capacidadKg: null },
-  { id: "tractor", label: "Tractor", icon: "ti-tractor", bg: "#EAF3DE", border: "#639922", text: "#27500A", capacidadKg: null },
-];
+// Se siguen re-exportando para no romper nada que los importara desde acá.
+export { VEHICULOS, DESTINOS, formatCOP, esLineaFlete, todayISO, addDaysISO };
 
-// Destinos frecuentes para marcar la zona del pedido al montarlo. "Otro" abre
-// un campo de texto para escribir cualquier otro lugar a mano.
-export const DESTINOS = ["Corozal", "Morroa"];
+
+
+
 
 // Cuánto tiempo se puede deshacer un pedido borrado antes de que se elimine
 // de verdad de la base de datos.
@@ -38,33 +59,18 @@ const ESTADOS_COTIZACION = [
   { id: "rechazada", label: "Rechazada", icon: "ti-x", bg: "#FBE6E6", border: "#CC3333", text: "#7A1F1F" },
 ];
 
-// Colores de identidad de marca SANBLAS (tomados del logo: azul oscuro
-// institucional + celeste claro de fondo). Se usan en el header, la
-// pestaña activa y el botón principal de subir documento.
-const MARCA = {
-  azulOscuro: "#0C447C",
-  azulMedio: "#378ADD",
-  azulClaro: "#E6F1FB",
-  azulMuyOscuro: "#042C53",
-};
 
-function uid() {
-  return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-}
 
-export function formatCOP(n) {
-  if (n === null || n === undefined || isNaN(n)) return "-";
-  return new Intl.NumberFormat("es-CO", { maximumFractionDigits: 0 }).format(n);
-}
+
+
+
 
 // parseCantidad / cantidadNum y toda la regla del saldo viven en saldo.js: es
 // la fuente ÚNICA de verdad. Antes esa regla estaba copiada en seis sitios y
 // cada desvío entre copias producía un bug de saldo (ver el encabezado de
 // saldo.js). Se importan arriba.
 
-function formatCantidad(n) {
-  return new Intl.NumberFormat("es-CO", { maximumFractionDigits: 2 }).format(n);
-}
+
 
 // ---------------------------------------------------------------------
 // Panel (resumen del día): PIN de acceso y pesos de material.
@@ -141,34 +147,9 @@ const CATEGORIAS_PESO = [
   { nombre: "Cemento", kg: 50, claves: ["cemento"] },
 ];
 
-// Quita tildes y pasa a minúsculas para comparar sin importar cómo venga escrito
-// en la factura ("CERÁMICA", "Ceramica", "cerámica" → "ceramica").
-// Fecha del documento (la que trae impresa la factura o cotización), en
-// formato DD/MM/AAAA. Es distinta del día en que se sube el PDF a la app: una
-// factura de obra puede subirse semanas después. Se usa para saber hace cuánto
-// se generó y marcarla como estancada.
-function fechaDocumentoDe(text) {
-  // Factura: "FECHA FACTURA" y debajo 23/07/2026.
-  const m1 = text.match(/FECHA\s+FACTURA[\s\S]{0,120}?(\d{2}\/\d{2}\/\d{4})/i);
-  if (m1) return m1[1];
-  // Cotización: "FECHA PEDIDO" y debajo 13-jul.-26.
-  const meses = { ene: "01", feb: "02", mar: "03", abr: "04", may: "05", jun: "06", jul: "07", ago: "08", sep: "09", oct: "10", nov: "11", dic: "12" };
-  const m2 = text.match(/FECHA\s+PEDIDO[\s\S]{0,120}?(\d{1,2})[-\/\s]([a-zA-Z]{3})\.?[-\/\s](\d{2,4})/i);
-  if (m2) {
-    const mes = meses[m2[2].toLowerCase()];
-    if (mes) {
-      const anio = m2[3].length === 2 ? `20${m2[3]}` : m2[3];
-      return `${m2[1].padStart(2, "0")}/${mes}/${anio}`;
-    }
-  }
-  // Cualquier fecha DD/MM/AAAA como último recurso.
-  const m3 = text.match(/(\d{2}\/\d{2}\/\d{4})/);
-  return m3 ? m3[1] : null;
-}
 
-function normalizarTexto(s) {
-  return (s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
-}
+
+
 
 function categoriaDeProducto(descripcion) {
   const d = normalizarTexto(descripcion);
@@ -178,21 +159,7 @@ function categoriaDeProducto(descripcion) {
   return null;
 }
 
-// Detecta la línea de "Transporte de carga de cliente" (el flete que se cobra
-// aparte en la factura, agregado a mano desde World Office). No es material —
-// no tiene peso — así que se excluye del sistema de categorías de peso y del
-// "Sin categorizar", y se cuenta aparte en pesos ($), no en kilos.
-export function esLineaFlete(descripcion) {
-  const d = normalizarTexto(descripcion);
-  return (
-    d.includes("transporte de carga") ||
-    d.includes("transporte carga") ||
-    d.includes("carga de material") ||
-    d.includes("carga material") ||
-    d.includes("acarreo") ||
-    /\bflete\b/.test(d)
-  );
-}
+
 
 // Cantidad que de verdad se entregó de una línea: si el despachador marcó
 // "Material entregado" (cantidadEntregada), esa es la verdad; si no, se asume
@@ -345,43 +312,15 @@ function notaDesdeFaltantes(productos) {
   return faltan.map((p) => `${formatCantidad(p.faltan)} ${p.unidad || ""} ${p.descripcion || ""}`.replace(/\s+/g, " ").trim()).join("; ");
 }
 
-function todayStr() {
-  const d = new Date();
-  return d.toLocaleDateString("es-CO", { day: "2-digit", month: "2-digit", year: "numeric" });
-}
 
-// Fecha de despacho: usamos formato ISO (YYYY-MM-DD) internamente porque es
-// fácil de comparar y ordenar; el formato bonito (es-CO) es solo para mostrar.
-export function todayISO() {
-  const d = new Date();
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  return `${yyyy}-${mm}-${dd}`;
-}
 
-export function addDaysISO(iso, days) {
-  const [y, m, d] = iso.split("-").map(Number);
-  const dt = new Date(y, m - 1, d);
-  dt.setDate(dt.getDate() + days);
-  const yyyy = dt.getFullYear();
-  const mm = String(dt.getMonth() + 1).padStart(2, "0");
-  const dd = String(dt.getDate()).padStart(2, "0");
-  return `${yyyy}-${mm}-${dd}`;
-}
 
-function formatFechaCorta(iso) {
-  const [y, m, d] = iso.split("-").map(Number);
-  const dt = new Date(y, m - 1, d);
-  const dias = ["dom", "lun", "mar", "mié", "jue", "vie", "sáb"];
-  return `${dias[dt.getDay()]} ${String(d).padStart(2, "0")}/${String(m).padStart(2, "0")}`;
-}
 
-function etiquetaFecha(iso, hoyIso) {
-  if (iso === hoyIso) return "Hoy";
-  if (iso === addDaysISO(hoyIso, 1)) return "Mañana";
-  return formatFechaCorta(iso);
-}
+
+
+
+
+
 
 // Guía de carga interna: NO es una factura ni la reemplaza (no lleva CUFE, QR
 // ni resolución DIAN). Es solo una hoja de apoyo para que el despachador sepa
@@ -391,353 +330,17 @@ function etiquetaFecha(iso, hoyIso) {
 // artifact corre en un iframe con sandbox, y muchos navegadores bloquean las
 // ventanas emergentes ahí incluso al hacer clic directo.
 
-function nowTimeStr() {
-  const d = new Date();
-  return d.toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit" });
-}
 
-// Reconstruye filas reales del PDF agrupando fragmentos de texto por su
-// posición vertical (Y), no por orden de aparición en el stream del PDF.
-// Lee TODAS las páginas: las facturas con muchos ítems continúan la tabla de
-// productos (y traen el total) en la página 2 o siguientes.
-async function extractPdfLines(file) {
-  const arrayBuffer = await file.arrayBuffer();
-  const pdf = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
 
-  const allLines = [];
-  for (let num = 1; num <= pdf.numPages; num++) {
-    const page = await pdf.getPage(num);
-    const content = await page.getTextContent();
 
-    const items = content.items
-      .filter((it) => it.str && it.str.trim().length > 0)
-      .map((it) => ({ text: it.str, x: it.transform[4], y: Math.round(it.transform[5]) }));
 
-    // La agrupación por Y es por página: la coordenada Y se reinicia en cada
-    // página, así que mezclar páginas fusionaría filas que no van juntas.
-    //
-    // Se ordena por Y primero y se agrupa encadenando contra el ÚLTIMO
-    // fragmento agregado (no contra un ancla fija): fragmentos de una misma
-    // fila visual con Y = 100, 102, 104 quedan juntos aunque el primero y el
-    // último disten más que la tolerancia. Antes, el resultado dependía del
-    // orden de aparición en el stream del PDF y podía partir la fila de un
-    // producto en dos líneas (que el regex descartaba en silencio).
-    const sorted = [...items].sort((a, b) => b.y - a.y);
-    const rows = [];
-    let current = null;
-    sorted.forEach((it) => {
-      if (!current || Math.abs(current.lastY - it.y) > 2) {
-        current = { lastY: it.y, items: [] };
-        rows.push(current);
-      }
-      current.lastY = it.y;
-      current.items.push(it);
-    });
-    rows.forEach((r) => r.items.sort((a, b) => a.x - b.x));
 
-    allLines.push(
-      ...rows.map((r) => r.items.map((it) => it.text).join(" ").replace(/\s+/g, " ").trim()).filter(Boolean)
-    );
-  }
-  return allLines;
-}
 
-// Decide qué parser usar. El orden importa y NO es intercambiable.
-//
-// Antes bastaba con que apareciera "COTIZACION No" en cualquier parte del texto
-// para tratar el documento como cotización. Pero en ferretería es normal que la
-// FACTURA referencie la cotización aprobada ("OBSERVACIONES: se despacha según
-// COTIZACION No. 8891"), y esa factura entraba por parseCotizacion: 0 productos,
-// total nulo y número mal leído. Peor: como parseCotizacion tampoco encontraba
-// su encabezado de tabla, lineasIgnoradas quedaba vacío y la alarma roja de
-// "líneas no leídas" NO se disparaba. Se perdía en silencio.
-//
-// Ahora manda la marca propia de la factura electrónica, que una cotización no
-// puede tener. Solo si no está se considera cotización. Un documento normal
-// (solo uno de los dos marcadores) se clasifica igual que antes.
-function detectTipoDocumento(lines) {
-  const text = lines.join(" ");
-  if (/FECV\s*No/i.test(text) || /FACTURA\s+ELECTR[ÓO]NICA/i.test(text)) return "factura";
-  if (/COTIZACION\s+No/i.test(text)) return "cotizacion";
-  return "factura";
-}
 
-// Parser para Factura Electrónica de Venta (formato World Office / FECV).
-function parseFactura(lines) {
-  const text = lines.join(" | ");
-  const result = {
-    tipo: "factura",
-    numeroFactura: null,
-    cliente: null,
-    telefono: null,
-    telefonoContacto: null,
-    direccion: null,
-    vendedor: null,
-    total: null,
-    productos: [],
-    // Líneas que parecían producto pero el lector no pudo interpretar. Se le
-    // muestran al usuario para que no confíe en una lista incompleta.
-    lineasIgnoradas: [],
-  };
 
-  const fecvMatch = text.match(/FECV\s*No\.?\s*(\d+)/i);
-  if (fecvMatch) result.numeroFactura = fecvMatch[1];
-  result.fechaDocumento = fechaDocumentoDe(text);
 
-  const clienteLine = lines.find((l) => /^CLIENTE\b/i.test(l));
-  if (clienteLine) {
-    let rest = clienteLine.replace(/^CLIENTE\s*/i, "");
-    const cut = rest.search(/\bPOR CONCEPTO\b/i);
-    if (cut !== -1) rest = rest.slice(0, cut);
-    result.cliente = rest.trim();
-  }
 
-  const headerIdx = lines.findIndex((l) => /DIRECCI[ÓO]N/i.test(l) && /CIUDAD/i.test(l) && /TEL[ÉE]FONO/i.test(l));
-  if (headerIdx !== -1 && lines[headerIdx + 1]) {
-    const dataLine = lines[headerIdx + 1];
-    const telMatch = dataLine.match(/\b3\d{9}\b/);
-    if (telMatch) result.telefono = telMatch[0];
-    let rest = dataLine;
-    if (telMatch) rest = rest.slice(0, dataLine.lastIndexOf(telMatch[0])).trim();
-    const words = rest.split(/\s+/);
-    if (words.length > 1) {
-      words.pop(); // última palabra = ciudad
-      result.direccion = words.join(" ").trim();
-    } else {
-      result.direccion = rest;
-    }
-  }
 
-  const vendHeaderIdx = lines.findIndex((l) => /VENDEDOR/i.test(l) && /FORMA DE PAGO/i.test(l));
-  if (vendHeaderIdx !== -1) {
-    for (let j = vendHeaderIdx; j < Math.min(vendHeaderIdx + 2, lines.length); j++) {
-      // En la línea del encabezado se quita el texto de las columnas: si la
-      // agrupación por Y fusionó encabezado y datos en una sola línea, el
-      // regex capturaba "VENDEDOR FORMA DE PAGO JUAN PEREZ" como nombre.
-      const linea = j === vendHeaderIdx ? lines[j].replace(/^.*FORMA DE PAGO\s*/i, "") : lines[j];
-      const m = linea.match(/(?:\d{2}\/\d{2}\/\d{4}\s+\d{2}\/\d{2}\/\d{4}\s+)?([A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑ\s]+?)\s+(Contado|Cr[ée]dito)\b/i);
-      if (m && m[1].trim().length >= 4) {
-        result.vendedor = m[1].trim();
-        break;
-      }
-    }
-  }
-
-  const totalHeaderIdx = lines.findIndex((l) => /TOTAL FACTURA/i.test(l));
-  if (totalHeaderIdx !== -1) {
-    for (let j = totalHeaderIdx + 1; j < Math.min(totalHeaderIdx + 3, lines.length); j++) {
-      const nums = lines[j].match(/[\d.,]+/g);
-      if (nums && nums.length >= 3) {
-        const last = nums[nums.length - 1].replace(/\./g, "");
-        const parsed = parseInt(last, 10);
-        if (!isNaN(parsed) && parsed > 0) {
-          result.total = parsed;
-          break;
-        }
-      }
-    }
-  }
-
-  // Una factura puede venir en VARIAS páginas, y cada página repite el
-  // encabezado de la tabla y su pie "TOTAL ÍTEM". Antes se buscaba solo la
-  // PRIMERA aparición de cada uno, así que en una factura de 2 páginas se leía
-  // la página 1 y los ítems de la 2 se perdían en silencio. Ahora se recorren
-  // todos los tramos (encabezado → pie) del documento.
-  const tramos = [];
-  lines.forEach((l, i) => {
-    if (/^C[óo]digo Descripci[óo]n/i.test(l)) {
-      const fin = lines.findIndex((x, j) => j > i && /TOTAL IT[ÉE]M/i.test(x));
-      tramos.push([i, fin === -1 ? lines.length : fin]);
-    }
-  });
-  for (const [tableHeaderIdx, tableEndIdx] of tramos) {
-    // La cantidad acepta separador de miles ("1.500", "1.500,00"): un pedido
-    // de 1.500 ladrillos es normal en ferretería, y sin esa alternativa el
-    // regex no matcheaba y la línea del producto se descartaba en silencio.
-    // El N° de ítem acepta hasta 3 dígitos (antes 2: una factura de 100+ líneas
-    // perdía todo de la 100 en adelante). La UNIDAD se lee genérica (cualquier
-    // palabra corta + dígito opcional para m2/m3) en vez de una lista fija:
-    // cualquier unidad no listada descartaba la línea COMPLETA en silencio.
-    const productLineRegex = /^(\d{1,3})\s+([A-Z0-9]{2,12})\s+(.+?)\s+(\d{1,3}(?:\.\d{3})+(?:,\d{1,2})?|\d{1,5}(?:[.,]\d{1,2})?)\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ]{1,12}\d?\.?)\s+([\d.,]+)\s+(\d{1,2}%)\s+([\d.,]+)\s+([\d.,]+)\s*$/i;
-    let pending = null;
-    for (let i = tableHeaderIdx + 1; i < tableEndIdx; i++) {
-      const line = lines[i].trim();
-      const m = line.match(productLineRegex);
-      if (m) {
-        // En la factura (FECV), "Valor IVA" viene por unidad, no por línea.
-        // El "Total" de la columna NO incluye IVA (es cantidad x valor unitario).
-        // Para mostrar el precio con IVA incluido: total_linea_sin_iva + (valor_iva_unitario x cantidad).
-        // Se llamaba "cantidadNum", igual que el helper importado, y lo tapaba
-        // dentro de este bloque. Renombrada para que no confunda.
-        const cantLinea = parseCantidad(m[4]);
-        const valorIvaUnitario = parseInt(m[8].replace(/\./g, ""), 10) || 0;
-        const totalSinIva = parseInt(m[9].replace(/\./g, ""), 10) || 0;
-        const ivaLinea = Math.round(valorIvaUnitario * cantLinea);
-        const totalConIva = totalSinIva + ivaLinea;
-
-        result.productos.push({
-          codigo: m[2],
-          descripcion: m[3].trim(),
-          cantidad: m[4],
-          unidad: m[5],
-          total: String(totalConIva),
-        });
-        pending = result.productos[result.productos.length - 1];
-      } else if (
-        pending &&
-        line.length > 0 &&
-        line.length < 30 &&
-        !/^\d/.test(line) &&
-        // Con PDFs de varias páginas, entre el final de una página y el inicio
-        // de la otra aparecen pies/encabezados repetidos ("Página 1 de 2",
-        // "Código Descripción...", NIT, etc.) que no son continuación de nada.
-        !/p[áa]gina|c[óo]digo|descripci[óo]n|nit\b|fecv|cliente|tel[ée]fono/i.test(line)
-      ) {
-        // Continuación de una descripción larga partida en 2 líneas (ej: "3H", "ATLANTIS")
-        pending.descripcion = pending.descripcion + " " + line;
-      } else if (/^\d{1,3}\s+[A-Z0-9]{2,12}\s+\S/i.test(line)) {
-        // Parece línea de producto (N° ítem + código) pero no se pudo leer.
-        result.lineasIgnoradas.push(line);
-      }
-    }
-  }
-
-  return result;
-}
-
-// Parser para Cotización (mismo proveedor, formato de columnas distinto: sin
-// columna de "Valor IVA" en pesos, y el bloque de cliente/dirección/vendedor
-// está ordenado de forma distinta a la factura).
-function parseCotizacion(lines) {
-  const text = lines.join(" | ");
-  const result = {
-    tipo: "cotizacion",
-    numeroFactura: null,
-    cliente: null,
-    telefono: null,
-    telefonoContacto: null,
-    direccion: null,
-    vendedor: null,
-    total: null,
-    productos: [],
-    // Líneas que parecían producto pero el lector no pudo interpretar. Se le
-    // muestran al usuario para que no confíe en una lista incompleta.
-    lineasIgnoradas: [],
-  };
-
-  const numMatch = text.match(/COTIZACION No\.?\s*(\d+)/i);
-  if (numMatch) result.numeroFactura = numMatch[1];
-  result.fechaDocumento = fechaDocumentoDe(text);
-
-  // Anclado al inicio de línea, igual que el replace de abajo: sin ancla,
-  // una línea anterior con "CLIENTE" en el medio (p. ej. un encabezado
-  // fusionado) se elegía y quedaba entera como nombre del cliente.
-  const clienteLine = lines.find((l) => /^,?\s*CLIENTE\b/i.test(l));
-  if (clienteLine) {
-    let rest = clienteLine.replace(/^,?\s*CLIENTE\s*/i, "");
-    const cut = rest.search(/\bP[áa]gina\b/i);
-    if (cut !== -1) rest = rest.slice(0, cut);
-    result.cliente = rest.trim();
-  }
-
-  const headerIdx = lines.findIndex((l) => /DIRECCION/i.test(l) && /CIUDAD/i.test(l) && /TELEFONO/i.test(l));
-  if (headerIdx !== -1) {
-    for (let j = headerIdx + 1; j < Math.min(headerIdx + 4, lines.length); j++) {
-      const l = lines[j];
-      if (/No informada/i.test(l) || /\d{6,10}/.test(l)) {
-        const nums = l.match(/\d{6,10}/g);
-        if (nums) result.telefono = nums[nums.length - 1];
-        let rest = l.replace(/\d{6,10}\s*$/, "").trim();
-        const words = rest.split(/\s+/);
-        if (words.length > 1 && !/No informada/i.test(rest)) {
-          words.pop();
-          result.direccion = words.join(" ").trim();
-        } else {
-          result.direccion = rest;
-        }
-        break;
-      }
-    }
-  }
-
-  // Cuando el teléfono oficial no está registrado, a veces el asesor anota un
-  // celular de contacto real en la línea de "información extra" bajo el
-  // encabezado VENDEDOR/FORMA DE PAGO.
-  if (!result.telefono || result.telefono === "111111111") {
-    const celLine = lines.find((l) => /\bcel\b/i.test(l) && /\b3\d{9}\b/.test(l));
-    if (celLine) {
-      const celMatch = celLine.match(/\b3\d{9}\b/);
-      if (celMatch) result.telefonoContacto = celMatch[0];
-    }
-  }
-
-  const vendHeaderIdx = lines.findIndex((l) => /VENDEDOR/i.test(l) && /FORMA DE PAGO/i.test(l));
-  if (vendHeaderIdx !== -1) {
-    for (let j = vendHeaderIdx + 1; j < Math.min(vendHeaderIdx + 3, lines.length); j++) {
-      const m = lines[j].match(/^([A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑ\s]+?)\s+(Contado|Cr[ée]dito)\b/i);
-      if (m) {
-        result.vendedor = m[1].trim();
-        break;
-      }
-    }
-  }
-
-  const totalHeaderIdx = lines.findIndex((l) => /TOTAL PEDIDO/i.test(l));
-  if (totalHeaderIdx !== -1 && lines[totalHeaderIdx + 1]) {
-    const nums = lines[totalHeaderIdx + 1].match(/[\d.,]+/g);
-    if (nums && nums.length) {
-      const last = nums[nums.length - 1].replace(/\./g, "");
-      const parsed = parseInt(last, 10);
-      if (!isNaN(parsed) && parsed > 0) result.total = parsed;
-    }
-  }
-
-  // Igual que en la factura: se recorren TODOS los tramos (una cotización de
-  // varias páginas repite el encabezado y el pie en cada una).
-  const tramos = [];
-  lines.forEach((l, i) => {
-    if (/^CODIGO DESCRIPCION/i.test(l)) {
-      const fin = lines.findIndex((x, j) => j > i && /^CANT SUBTOTAL/i.test(x));
-      tramos.push([i, fin === -1 ? lines.length : fin]);
-    }
-  });
-  for (const [tableHeaderIdx, tableEndIdx] of tramos) {
-    // Igual que en la factura: la cantidad acepta separador de miles.
-    // La UNIDAD se lee genérica (cualquier palabra corta, con dígito opcional
-    // para m2/m3). Antes era una lista fija y cualquier unidad que no estuviera
-    // ahí hacía que la línea COMPLETA se descartara en silencio: "galon" fue el
-    // caso real (la lista tenía "Gal." y se atoraba con el "on"). Perder una
-    // línea sin avisar es peligroso — por eso además contamos las descartadas.
-    const productLineRegex = /^([A-Z0-9]{2,12})\s+(.+?)\s+(\d{1,3}(?:\.\d{3})+(?:,\d{1,2})?|\d{1,5}(?:[.,]\d{1,2})?)\s*([A-Za-zÁÉÍÓÚÜÑáéíóúüñ]{1,12}\d?\.?)\s+([\d.,]+)\s+(\d{1,2}%)\s+([\d.,]+)\s*$/i;
-    for (let i = tableHeaderIdx + 1; i < tableEndIdx; i++) {
-      const line = lines[i].trim();
-      if (!line) continue;
-      const m = line.match(productLineRegex);
-      if (m) {
-        result.productos.push({
-          codigo: m[1],
-          descripcion: m[2].trim(),
-          cantidad: m[3],
-          unidad: m[4],
-          total: m[7].replace(/\./g, ""),
-        });
-      } else if (/^[A-Z0-9]{2,12}\s+\S.*\d[\d.,]*\s*$/i.test(line) && /\d{1,2}%/.test(line)) {
-        // Parece una línea de producto (empieza con código, termina en número y
-        // trae el % de IVA) pero no se pudo leer: la registramos para avisarle
-        // al usuario en vez de perderla en silencio. El filtro es estricto a
-        // propósito para no marcar encabezados o pies de página.
-        result.lineasIgnoradas.push(line);
-      }
-    }
-  }
-
-  return result;
-}
-
-function parseDocumento(lines) {
-  const tipo = detectTipoDocumento(lines);
-  return tipo === "cotizacion" ? parseCotizacion(lines) : parseFactura(lines);
-}
 
 // Convierte la URL "data:" del PDF guardado en un Blob (archivo real). Los
 // navegadores de celular bloquean descargar/abrir directamente desde "data:",
@@ -799,8 +402,6 @@ function fileToDataUrl(file) {
 }
 
 export default function DespachoPedidos() {
-  const [libsReady, setLibsReady] = useState(false);
-  const [libsError, setLibsError] = useState(false);
   const [pedidos, setPedidos] = useState([]);
   const [historial, setHistorial] = useState([]);
   const [view, setView] = useState("despacho");
@@ -834,6 +435,14 @@ export default function DespachoPedidos() {
   const [confirmandoEntregaGrupo, setConfirmandoEntregaGrupo] = useState(null);
   const [toast, setToast] = useState(null);
   const [historyFilter, setHistoryFilter] = useState("");
+  // Resultados de buscar en TODO el historial contra el servidor. null = sin
+  // búsqueda activa (se muestra el historial precargado).
+  const [resultadosHistorial, setResultadosHistorial] = useState(null);
+  const [buscandoHistorial, setBuscandoHistorial] = useState(false);
+  // Columnas que faltan porque el SQL de la tanda no se ha corrido. Se avisa con
+  // un banner que dice qué hacer, en vez de dejar que reviente con "column does
+  // not exist" al crear una remisión.
+  const [faltaSql, setFaltaSql] = useState([]);
   // Texto del buscador de Despachos. Cuando tiene algo, el tablero por fecha se
   // reemplaza por una lista plana con los pedidos activos que coincidan (útil
   // cuando hay muchas facturas cargadas y no sabes en qué día quedó una).
@@ -877,40 +486,11 @@ export default function DespachoPedidos() {
     toastTimerRef.current = setTimeout(() => setToast(null), duracionMs);
   }
 
-  useEffect(() => {
-    if (window.pdfjsLib) {
-      setLibsReady(true);
-      return;
-    }
-    const src = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js";
-    // Si ya hay un <script> con este src (StrictMode monta el efecto dos
-    // veces en desarrollo), no se inyecta otro: solo nos colgamos de sus
-    // eventos. Y el cleanup quita los listeners para no llamar setState
-    // sobre un componente desmontado.
-    let script = document.querySelector(`script[src="${src}"]`);
-    const esNuevo = !script;
-    if (esNuevo) {
-      script = document.createElement("script");
-      script.src = src;
-    }
-    const onLoad = () => {
-      try {
-        window.pdfjsLib.GlobalWorkerOptions.workerSrc =
-          "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
-        setLibsReady(true);
-      } catch (e) {
-        setLibsError(true);
-      }
-    };
-    const onError = () => setLibsError(true);
-    script.addEventListener("load", onLoad);
-    script.addEventListener("error", onError);
-    if (esNuevo) document.head.appendChild(script);
-    return () => {
-      script.removeEventListener("load", onLoad);
-      script.removeEventListener("error", onError);
-    };
-  }, []);
+  // Antes acá se inyectaba un <script> de cdnjs para cargar pdf.js en tiempo de
+  // ejecución, con dos estados (libsReady/libsError) para saber si ya se podía
+  // subir un PDF. Ya no hace falta: pdf.js viaja en el bundle como dependencia
+  // de npm (ver pdfExtract.js), servido desde el mismo dominio. El lector está
+  // listo desde el primer render y no depende de que un CDN ajeno esté arriba.
 
   useEffect(() => {
     (async () => {
@@ -935,6 +515,13 @@ export default function DespachoPedidos() {
         showToast("No se pudieron cargar las cotizaciones. Recarga la página.", 5000);
       }
       setLoading(false);
+      // Se comprueba de último y sin bloquear: si el SQL de la tanda no se corrió,
+      // la app funciona igual pero hay que avisarlo con algo accionable.
+      try {
+        setFaltaSql(await columnasFaltantes());
+      } catch (e) {
+        /* si no se puede comprobar, no molestamos con un aviso */
+      }
     })();
   }, []);
 
@@ -1169,7 +756,14 @@ export default function DespachoPedidos() {
     setHistorial([entregado, ...historial]);
     showToast(entregado.estadoPago === "pagado" ? "Pedido entregado" : "Entregado — quedó debiendo");
     try {
-      await guardarPedido(entregado, "entregado");
+      // update, no upsert: si otro dispositivo ya borró este pedido, no lo
+      // resucitamos en el historial con los datos viejos que teníamos en memoria.
+      const movido = await moverPedidoAEstado(entregado, "entregado");
+      if (!movido) {
+        setPedidos(prevPedidos.filter((p) => p.id !== id));
+        setHistorial(prevHistorial);
+        showToast("Ese pedido ya no existe (lo borraron desde otro dispositivo).", 5000);
+      }
     } catch (e) {
       setPedidos(prevPedidos);
       setHistorial(prevHistorial);
@@ -1262,7 +856,9 @@ export default function DespachoPedidos() {
     setHistorial([...entregados, ...historial]);
     showToast(`${miembros.length} pedidos entregados.`);
     try {
-      for (const e of entregados) await guardarPedido(e, "entregado");
+      // update, no upsert (ver moverPedidoAEstado): no resucitamos pedidos
+      // que otro dispositivo haya borrado.
+      for (const e of entregados) await moverPedidoAEstado(e, "entregado");
     } catch (err) {
       setPedidos(prevPedidos);
       setHistorial(prevHistorial);
@@ -1314,7 +910,7 @@ export default function DespachoPedidos() {
       setHistorial([completada, ...historial]);
       showToast(`Material descontado. Factura ${madre.numeroFactura || ""} completada, pasó al historial.`, 4500);
       try {
-        await guardarPedido(completada, "entregado");
+        await moverPedidoAEstado(completada, "entregado");
       } catch (e) {
         setPedidos(prevPedidos);
         setHistorial(prevHistorial);
@@ -1339,7 +935,7 @@ export default function DespachoPedidos() {
     }
   }
 
-  function crearRemisionManual(data) {
+  async function crearRemisionManual(data) {
     const productos = (data.productos || [])
       .filter((p) => (p.descripcion || "").trim() && cantidadNum(p.cantidad) > 0)
       .map((p) => ({
@@ -1365,8 +961,9 @@ export default function DespachoPedidos() {
     const nuevo = {
       id: uid(),
       tipoDocumento: "remision",
-      numeroFactura: siguienteNumeroRemision(),
+      numeroFactura: await siguienteNumeroRemision(),
       remisionDe: null,
+      remisionDeId: null,
       cliente: (data.cliente || "").trim(),
       telefono: (data.telefono || "").trim(),
       direccion: (data.direccion || "").trim(),
@@ -1419,9 +1016,15 @@ export default function DespachoPedidos() {
     setPedidos([restaurado, ...pedidos]);
     showToast("Pedido devuelto a despacho");
     try {
-      // upsert con estado "activo": la fila ya existe (estaba entregada), así
-      // que solo cambia su estado y limpia la marca de entrega.
-      await guardarPedido(restaurado, "activo");
+      // update con estado "activo": la fila ya existe (estaba entregada), así
+      // que solo cambia su estado y limpia la marca de entrega. Con update y no
+      // upsert, un pedido que otro dispositivo borró no revive.
+      const movido = await moverPedidoAEstado(restaurado, "activo");
+      if (!movido) {
+        setPedidos(prevPedidos);
+        setHistorial(prevHistorial.filter((p) => p.id !== id));
+        showToast("Ese pedido ya no existe (lo borraron desde otro dispositivo).", 5000);
+      }
     } catch (e) {
       setPedidos(prevPedidos);
       setHistorial(prevHistorial);
@@ -1466,16 +1069,48 @@ export default function DespachoPedidos() {
   // Copia 4 de 6 -> saldo.js.
   const disponibleDe = saldoDe;
 
-  // Siguiente número correlativo de remisión (REM-0001, REM-0002...). Se saca
-  // del máximo que ya exista entre pedidos activos e historial. Con dos
-  // dispositivos el choque en el mismo segundo es posible pero muy improbable.
-  function siguienteNumeroRemision() {
-    let max = 0;
-    for (const p of [...pedidos, ...historial]) {
-      const m = /^REM-(\d+)$/i.exec((p.numeroFactura || "").trim());
-      if (m) max = Math.max(max, parseInt(m[1], 10));
+  // Siguiente número correlativo de remisión (REM-0001, REM-0002...).
+  //
+  // Se consulta contra la BASE, no contra la lista cargada en pantalla. Antes se
+  // sacaba del máximo de `pedidos + historial` en memoria, con dos problemas: dos
+  // dispositivos creando remisiones a la vez sacaban el mismo número, y —peor—
+  // desde que el historial se carga por ventana de 90 días, el máximo en memoria
+  // YA NO es el máximo real: los números se habrían reciclado en silencio.
+  //
+  // La unicidad final la garantiza el índice de la base (ver el SQL de la tanda):
+  // si dos dispositivos coinciden en el mismo segundo, la base rechaza el
+  // segundo y crearRemision reintenta con el siguiente.
+  async function siguienteNumeroRemision() {
+    const enLaBase = await maxNumeroRemision();
+    // Red de seguridad: si la consulta fallara, no bajar de lo que ya se ve en
+    // pantalla (nunca reutilizar un número visible).
+    const enPantalla = maxRemisionDeNumeros([...pedidos, ...historial].map((p) => p.numeroFactura));
+    return formatearNumeroRemision(Math.max(enLaBase, enPantalla) + 1);
+  }
+
+  // ¿Es el error de "ya existe ese número de remisión"? (violación del índice
+  // único). Es el caso de dos dispositivos creando remisión a la vez.
+  const esChoqueDeRemision = (e) =>
+    e && (e.code === "23505" || /duplicate key|numero_remision_unico/i.test(String(e.message || "")));
+
+  // Guarda una remisión y, si la base rechaza el número por duplicado (otro
+  // dispositivo lo tomó en el mismo instante), pide el siguiente y reintenta.
+  // El objeto se muta con el número definitivo para que la tirilla que se
+  // imprime muestre el que realmente quedó guardado.
+  async function guardarRemisionConReintento(child, intentos = 3) {
+    for (let i = 0; i < intentos; i++) {
+      try {
+        await guardarPedido(child, "activo");
+        return child.numeroFactura;
+      } catch (e) {
+        if (!esChoqueDeRemision(e) || i === intentos - 1) throw e;
+        const nuevo = await siguienteNumeroRemision();
+        child.numeroFactura = nuevo;
+        setPedidos((prev) => prev.map((p) => (p.id === child.id ? { ...p, numeroFactura: nuevo } : p)));
+        setTirillaDe((t) => (t && t.id === child.id ? { ...t, numeroFactura: nuevo } : t));
+        showToast(`Ese número de remisión ya se había usado; quedó como ${nuevo}.`, 4000);
+      }
     }
-    return `REM-${String(max + 1).padStart(4, "0")}`;
   }
 
   // Crea una remisión (parte de una factura grande). cantidades es un arreglo
@@ -1506,7 +1141,7 @@ export default function DespachoPedidos() {
       return;
     }
 
-    const numRemision = siguienteNumeroRemision();
+    const numRemision = await siguienteNumeroRemision();
     const totalChild = childProductos.reduce((s, p) => s + (parseInt(p.total, 10) || 0), 0);
     // Orden al final de la cola de su vehículo/fecha destino, para que no salte
     // de posición al recargar (misma lógica que usa updatePedido).
@@ -1518,7 +1153,13 @@ export default function DespachoPedidos() {
       id: uid(),
       tipoDocumento: "factura",
       numeroFactura: numRemision,
+      // El número se sigue guardando porque es lo que va impreso en la tirilla.
+      // El ENLACE de verdad es remisionDeId: el número puede cambiar (si alguien
+      // corrige la factura en "Editar") o repetirse ("s/n" en todas las que no
+      // tienen número), y con eso las remisiones quedaban huérfanas o cruzadas
+      // entre clientes distintos.
       remisionDe: madre.numeroFactura || "s/n",
+      remisionDeId: madre.id,
       cliente: madre.cliente,
       telefono: madre.telefono,
       telefonoContacto: madre.telefonoContacto,
@@ -1567,8 +1208,8 @@ export default function DespachoPedidos() {
       setTirillaDe(child);
       showToast(`Remisión ${numRemision} creada. Factura ${madre.numeroFactura || ""} completada, pasó al historial.`, 4500);
       try {
-        await guardarPedido(child, "activo");
-        await guardarPedido(madreCompletada, "entregado");
+        await guardarRemisionConReintento(child);
+        await moverPedidoAEstado(madreCompletada, "entregado");
       } catch (e) {
         setPedidos(prevPedidos);
         setHistorial(prevHistorial);
@@ -1590,7 +1231,7 @@ export default function DespachoPedidos() {
       setTirillaDe(child);
       showToast(`Remisión ${numRemision} creada y enviada a despacho.`, 4000);
       try {
-        await guardarPedido(child, "activo");
+        await guardarRemisionConReintento(child);
         await actualizarPedido(nuevaMadre);
       } catch (e) {
         setPedidos(prevPedidos);
@@ -1893,8 +1534,9 @@ export default function DespachoPedidos() {
       }
       const porcentajeEntregado = valorTotal > 0 ? Math.round((valorEntregado / valorTotal) * 100) : 0;
 
-      // Remisiones hechas contra esta factura (activas o ya entregadas).
-      const hijas = f.numeroFactura ? todos.filter((h) => h.remisionDe && h.remisionDe === f.numeroFactura) : [];
+      // Remisiones hechas contra esta factura (activas o ya entregadas). La regla
+      // del enlace vive en remisiones.js, con tests.
+      const hijas = remisionesDe(f, todos);
 
       // Última señal de movimiento: la remisión más reciente; si no hay
       // ninguna, la fecha en que se subió la factura.
@@ -2226,19 +1868,57 @@ export default function DespachoPedidos() {
     setSeleccionJuntar([]);
   }, [selectedDate]);
 
-  const filteredHistorial = useMemo(
-    () =>
-      historial.filter((h) => {
-        if (!historyFilter.trim()) return true;
-        const q = historyFilter.toLowerCase();
-        return (
-          (h.cliente || "").toLowerCase().includes(q) ||
-          (h.numeroFactura || "").toLowerCase().includes(q) ||
-          (h.fecha || "").toLowerCase().includes(q)
-        );
-      }),
-    [historial, historyFilter]
-  );
+  // Historial que se muestra. Sin búsqueda es el precargado (los últimos 90
+  // días); con búsqueda son los resultados que trae el servidor, que abarcan
+  // TODO el historial sin límite de fecha.
+  //
+  // Antes esto filtraba el arreglo en memoria, así que el buscador solo
+  // encontraba entre lo cargado — y como el historial se cargaba completo,
+  // "completo" iba a dejar de serlo en silencio al pasar de 1.000 filas. Ahora
+  // busca donde están los datos de verdad.
+  const filteredHistorial = useMemo(() => {
+    if (!historyFilter.trim()) return historial;
+    // Mientras llegan los resultados del servidor se muestra lo que ya hay
+    // filtrado localmente, para que la lista no parpadee en vacío.
+    if (resultadosHistorial === null) {
+      const q = normalizarTexto(historyFilter);
+      return historial.filter(
+        (h) => normalizarTexto(h.cliente).includes(q) || normalizarTexto(h.numeroFactura).includes(q)
+      );
+    }
+    return resultadosHistorial;
+  }, [historial, historyFilter, resultadosHistorial]);
+
+  // Consulta al servidor con freno (300 ms): sin esto se dispararía una consulta
+  // por cada tecla.
+  useEffect(() => {
+    const q = historyFilter.trim();
+    if (!q) {
+      setResultadosHistorial(null);
+      return;
+    }
+    let vivo = true;
+    setBuscandoHistorial(true);
+    const t = setTimeout(() => {
+      buscarHistorial(q)
+        .then((r) => {
+          if (!vivo) return;
+          setResultadosHistorial(r);
+          setBuscandoHistorial(false);
+        })
+        .catch(() => {
+          if (!vivo) return;
+          // Si la búsqueda en el servidor falla, se queda el filtro local: peor
+          // es dejar la pantalla en blanco.
+          setResultadosHistorial(null);
+          setBuscandoHistorial(false);
+        });
+    }, 300);
+    return () => {
+      vivo = false;
+      clearTimeout(t);
+    };
+  }, [historyFilter]);
 
   if (loading) {
     return (
@@ -2378,7 +2058,7 @@ export default function DespachoPedidos() {
             <input ref={fileInputRef} type="file" accept="application/pdf" onChange={handleFileSelected} style={{ display: "none" }} />
             <button
               onClick={() => fileInputRef.current && fileInputRef.current.click()}
-              disabled={!libsReady || uploadState === "reading"}
+              disabled={uploadState === "reading"}
               style={{
                 border: "none",
                 background: MARCA.azulMedio,
@@ -2391,7 +2071,7 @@ export default function DespachoPedidos() {
               }}
             >
               <i className="ti ti-file-upload" style={{ fontSize: 16, verticalAlign: "-2px", marginRight: 6 }} aria-hidden="true"></i>
-              {uploadState === "reading" ? "Leyendo PDF..." : libsReady ? "Subir factura o cotización" : "Preparando lector de PDF..."}
+              {uploadState === "reading" ? "Leyendo PDF..." : "Subir factura o cotización"}
             </button>
             <button
               onClick={() => setRemisionManualAbierta(true)}
@@ -2423,7 +2103,7 @@ export default function DespachoPedidos() {
             />
             <button
               onClick={() => cotizacionFileInputRef.current && cotizacionFileInputRef.current.click()}
-              disabled={!libsReady || uploadState === "reading"}
+              disabled={uploadState === "reading"}
               style={{
                 border: "none",
                 background: MARCA.azulMedio,
@@ -2436,15 +2116,39 @@ export default function DespachoPedidos() {
               }}
             >
               <i className="ti ti-file-upload" style={{ fontSize: 16, verticalAlign: "-2px", marginRight: 6 }} aria-hidden="true"></i>
-              {uploadState === "reading" ? "Leyendo PDF..." : libsReady ? "Subir cotización" : "Preparando lector de PDF..."}
+              {uploadState === "reading" ? "Leyendo PDF..." : "Subir cotización"}
             </button>
           </div>
         )}
       </div>
 
-      {libsError && (
-        <div style={{ fontSize: 13, color: "var(--color-text-danger)", marginBottom: 12 }}>
-          No se pudo cargar el lector de PDF. Revisa tu conexión a internet y recarga la página.
+
+
+      {faltaSql.length > 0 && (
+        <div
+          role="alert"
+          style={{
+            display: "flex",
+            alignItems: "flex-start",
+            gap: 9,
+            background: "var(--color-background-warning)",
+            border: "0.5px solid var(--color-border-warning)",
+            color: "var(--color-text-warning)",
+            fontSize: 13,
+            padding: "10px 14px",
+            borderRadius: "var(--border-radius-md)",
+            marginBottom: 12,
+          }}
+        >
+          <i className="ti ti-database-exclamation" style={{ fontSize: 17, flexShrink: 0, marginTop: 1 }} aria-hidden="true"></i>
+          <span>
+            <b>Falta un paso en la base de datos.</b> Corre{" "}
+            <code style={{ background: "#fff", padding: "1px 5px", borderRadius: 4 }}>sql/tanda2-historial-remisiones.sql</code>{" "}
+            en Supabase (SQL Editor → New query → pegar → Run). Mientras no lo hagas, crear remisiones va a fallar.
+            <span style={{ display: "block", fontSize: 11.5, marginTop: 3, opacity: 0.85 }}>
+              Falta: {faltaSql.join(", ")}
+            </span>
+          </span>
         </div>
       )}
 
@@ -3056,11 +2760,30 @@ export default function DespachoPedidos() {
         <div>
           <input
             type="text"
-            placeholder="Buscar por cliente, factura o fecha..."
+            placeholder="Buscar por cliente o número de factura..."
             value={historyFilter}
             onChange={(e) => setHistoryFilter(e.target.value)}
-            style={{ width: "100%", marginBottom: 12 }}
+            style={{ width: "100%", marginBottom: 6 }}
           />
+          {/* Se dice de dónde salen los resultados: sin búsqueda se ven los
+              últimos 90 días (lo precargado); buscando, se consulta TODO el
+              historial contra el servidor. Sin este aviso, alguien podía creer
+              que una entrega vieja se había perdido. */}
+          <div style={{ fontSize: 11.5, color: "var(--color-text-tertiary)", marginBottom: 12, minHeight: 16 }}>
+            {historyFilter.trim() ? (
+              buscandoHistorial ? (
+                "Buscando en todo el historial..."
+              ) : (
+                <>
+                  {filteredHistorial.length} {filteredHistorial.length === 1 ? "resultado" : "resultados"} en todo el historial
+                </>
+              )
+            ) : (
+              <>
+                Últimos {DIAS_HISTORIAL_PRECARGADO} días. Para ver entregas más viejas, búscalas por cliente o número.
+              </>
+            )}
+          </div>
           {filteredHistorial.length === 0 ? (
             <div style={{ fontSize: 14, color: "var(--color-text-tertiary)", padding: "1.5rem 0", textAlign: "center" }}>
               {historyFilter.trim()

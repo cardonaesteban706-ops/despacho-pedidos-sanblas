@@ -52,17 +52,54 @@ alter table public.cotizaciones
   add column if not exists pedido_id text;
 
 
--- 2) Prender Row Level Security
+-- 2) Borrar CUALQUIER política que ya exista en estas dos tablas
 -- ---------------------------------------------------------------------------
--- Con RLS prendido y sin política que aplique, el rol "anon" (el visitante sin
--- login) no ve ni escribe NADA. No hace falta revocar nada a mano: RLS niega
--- por defecto todo lo que ninguna política permita explícitamente.
+-- Esto es lo que faltaba en la primera versión de este archivo, y por eso la
+-- base seguía abierta después de correrlo.
+--
+-- Prender RLS no desactiva las políticas que ya estén creadas. Si en algún
+-- momento se creó desde el panel de Supabase una política permisiva —las
+-- plantillas de "Enable read access for all users" / "Enable all access" van al
+-- rol "public", que INCLUYE al anónimo—, esa política sigue abriendo la puerta
+-- aunque RLS esté prendido y aunque exista otra política más estricta al lado.
+-- Con RLS, las políticas se SUMAN: basta con que una permita, para que pase.
+--
+-- Como en esta app el único acceso que debe existir es "autenticado = todo",
+-- barremos con todas y volvemos a poner solo las dos que queremos. El bucle
+-- recorre pg_policies, así que no hay que saberse los nombres de antemano.
+
+do $$
+declare
+  pol record;
+begin
+  for pol in
+    select policyname, tablename
+      from pg_policies
+     where schemaname = 'public'
+       and tablename in ('pedidos', 'cotizaciones')
+  loop
+    execute format('drop policy %I on public.%I', pol.policyname, pol.tablename);
+    raise notice 'Política borrada: % en %', pol.policyname, pol.tablename;
+  end loop;
+end $$;
+
+
+-- 3) Prender Row Level Security
+-- ---------------------------------------------------------------------------
+-- Ya sin políticas viejas, RLS niega por defecto todo lo que ninguna política
+-- permita explícitamente. El rol "anon" (el visitante sin login) queda fuera.
 
 alter table public.pedidos      enable row level security;
 alter table public.cotizaciones enable row level security;
 
+-- Y por si acaso: "force" hace que RLS aplique incluso al dueño de la tabla.
+-- No cambia nada para la app (usa el rol authenticated), pero cierra el caso de
+-- que la tabla pertenezca a un rol que se saltaría las políticas.
+alter table public.pedidos      force row level security;
+alter table public.cotizaciones force row level security;
 
--- 3) Políticas: solo usuarios autenticados, y con acceso completo
+
+-- 4) Políticas: solo usuarios autenticados, y con acceso completo
 -- ---------------------------------------------------------------------------
 -- La operación es un mostrador de ferretería: quien entró con la credencial de
 -- la casa necesita ver y mover todo. No hay datos por usuario que separar, así
@@ -90,20 +127,32 @@ create policy "cotizaciones_authenticated_all"
   with check (true);
 
 
--- 4) Comprobación
+-- 5) Comprobación
 -- ---------------------------------------------------------------------------
--- Debe devolver rowsecurity = true en las dos filas, y una política por tabla
--- con roles = {authenticated}.
+-- El editor SQL de Supabase muestra el resultado de la ÚLTIMA consulta, así que
+-- va todo junto en una sola tabla. Debe salir exactamente esto:
+--
+--   tabla         | rls_prendido | politica                       | roles
+--   --------------+--------------+--------------------------------+----------------
+--   cotizaciones  | true         | cotizaciones_authenticated_all | {authenticated}
+--   pedidos       | true         | pedidos_authenticated_all      | {authenticated}
+--
+-- DOS filas, ni una más. Si aparece una política de más, o alguna con roles
+-- {public} o {anon}, la puerta sigue abierta.
 
-select tablename, rowsecurity
-  from pg_tables
- where schemaname = 'public'
-   and tablename in ('pedidos', 'cotizaciones');
-
-select tablename, policyname, roles, cmd
-  from pg_policies
- where schemaname = 'public'
-   and tablename in ('pedidos', 'cotizaciones');
+select
+  t.tablename                        as tabla,
+  t.rowsecurity                      as rls_prendido,
+  coalesce(p.policyname, '(ninguna)') as politica,
+  p.roles::text                      as roles,
+  p.cmd                              as operacion
+from pg_tables t
+left join pg_policies p
+       on p.schemaname = t.schemaname
+      and p.tablename  = t.tablename
+where t.schemaname = 'public'
+  and t.tablename in ('pedidos', 'cotizaciones')
+order by t.tablename, p.policyname;
 
 -- Y desde tu terminal, con la llave pública (debe pasar de 200 a 401):
 --
