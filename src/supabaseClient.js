@@ -8,10 +8,63 @@
 
 import { createClient } from "@supabase/supabase-js";
 
-const SUPABASE_URL = "https://algzltupasibksbnmlrg.supabase.co";
-const SUPABASE_ANON_KEY = "sb_publishable_qyROZeNMERQlLjHQqYJC0g_nIeW5i7c";
+// URL y llave pública. Se leen de variables de entorno si existen, y si no se
+// usan las de siempre, para que un despliegue sin configurar no rompa la app.
+//
+// Aclaración honesta: esto NO vuelve secreta la llave. Toda llave "publishable"
+// termina en el bundle del navegador y así debe ser — es pública por diseño. El
+// valor real de tenerla en variable de entorno es poder ROTARLA sin recompilar
+// el fuente, y que el repositorio deje de apuntar directo a tu proyecto.
+//
+// Lo que de verdad protege los datos son las políticas RLS de
+// sql/rls-politicas.sql más el login. Sin eso, la llave abre la puerta entera.
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || "https://algzltupasibksbnmlrg.supabase.co";
+const SUPABASE_ANON_KEY =
+  import.meta.env.VITE_SUPABASE_ANON_KEY || "sb_publishable_qyROZeNMERQlLjHQqYJC0g_nIeW5i7c";
 
-export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+  auth: {
+    // Estos tres son los que hacen que NO haya que escribir la clave cada vez:
+    // la sesión queda guardada en el navegador (persistSession) y el token se
+    // renueva solo en segundo plano antes de vencer (autoRefreshToken). El
+    // usuario entra UNA vez por dispositivo y no vuelve a ver el login, ni al
+    // refrescar (F5), ni al cerrar el navegador, ni al mes siguiente.
+    persistSession: true,
+    autoRefreshToken: true,
+    // La app no usa enlaces mágicos ni OAuth; no hay tokens que leer de la URL.
+    detectSessionInUrl: false,
+  },
+});
+
+// --- Sesión (login con cuenta compartida de la ferretería) ---
+
+// Devuelve la sesión guardada, o null. Se llama una vez al abrir la app para
+// decidir si mostrar el tablero o el login.
+export async function sesionActual() {
+  const { data, error } = await supabase.auth.getSession();
+  if (error) throw error;
+  return data.session || null;
+}
+
+// Avisa cuando la sesión cambia (entrar, salir, renovar token). Devuelve la
+// función para desuscribirse.
+export function alCambiarSesion(callback) {
+  const { data } = supabase.auth.onAuthStateChange((_evento, sesion) => callback(sesion));
+  return () => data.subscription.unsubscribe();
+}
+
+export async function entrar(correo, clave) {
+  const { data, error } = await supabase.auth.signInWithPassword({
+    email: String(correo || "").trim(),
+    password: String(clave || ""),
+  });
+  if (error) throw error;
+  return data.session;
+}
+
+export async function salir() {
+  await supabase.auth.signOut();
+}
 
 // Columnas que se cargan al abrir la app. Deliberadamente NO incluimos
 // "pdf_data_url": ese PDF va en base64 y pesa 1-3 MB por pedido, así que
@@ -23,7 +76,7 @@ export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 const COLUMNAS_PEDIDO =
   "id, tipo_documento, numero_factura, cliente, telefono, telefono_contacto, direccion, vendedor, total, productos, vehiculo, vehiculo_secundario, destino, entrega_pendiente, nota_pendiente, file_name, fecha, fecha_despacho, hora, orden, estado, estado_pago, entregado_en, fecha_entrega, tiene_pdf, remision_de, grupo_id, flete_externo";
 const COLUMNAS_COTIZACION =
-  "id, numero_cotizacion, cliente, telefono, telefono_contacto, direccion, vendedor, total, productos, file_name, fecha, estado, fecha_seguimiento, fecha_vencimiento, notas, motivo_rechazo, tiene_pdf, created_at";
+  "id, numero_cotizacion, cliente, telefono, telefono_contacto, direccion, vendedor, total, productos, file_name, fecha, estado, fecha_seguimiento, fecha_vencimiento, notas, motivo_rechazo, tiene_pdf, created_at, pedido_id";
 
 // Convierte una fila de la tabla "pedidos" (snake_case, como vive en la
 // base de datos) al formato que usa el componente React (camelCase).
@@ -184,6 +237,9 @@ function filaACotizacion(fila) {
     fechaVencimiento: fila.fecha_vencimiento,
     notas: fila.notas,
     motivoRechazo: fila.motivo_rechazo,
+    // Pedido de despacho que se generó desde esta cotización (botón "Aceptar y
+    // despachar"). null = todavía no ha pasado a despacho.
+    pedidoId: fila.pedido_id,
   };
 }
 
@@ -207,6 +263,7 @@ function cotizacionAFila(c) {
     fecha_vencimiento: c.fechaVencimiento || null,
     notas: c.notas || null,
     motivo_rechazo: c.motivoRechazo || null,
+    pedido_id: c.pedidoId || null,
     updated_at: new Date().toISOString(),
   };
   // Igual que en pedidos: solo escribimos el PDF si está en memoria, para no
@@ -215,13 +272,36 @@ function cotizacionAFila(c) {
   return fila;
 }
 
+// Igual que COLUMNAS_COTIZACION pero sin "pedido_id": es el respaldo para
+// cuando la app nueva se despliega ANTES de correr sql/rls-politicas.sql (que es
+// el que crea esa columna). Sin esto, el select entero falla con "column does
+// not exist" y el tablero de cotizaciones aparece vacío con un error — un
+// desplieque en el orden equivocado dejaba la pantalla caída.
+const COLUMNAS_COTIZACION_SIN_PEDIDO = COLUMNAS_COTIZACION.replace(", pedido_id", "");
+
 // Carga todas las cotizaciones.
 export async function cargarCotizaciones() {
   const { data, error } = await supabase
     .from("cotizaciones")
     .select(COLUMNAS_COTIZACION)
     .order("created_at", { ascending: false });
-  if (error) throw error;
+
+  if (error) {
+    // ¿Falta la columna pedido_id (SQL sin correr)? Reintentamos sin ella para
+    // que la pantalla siga sirviendo. El botón "Aceptar y despachar" sí va a
+    // fallar hasta que se corra el SQL, pero avisa y no daña nada.
+    const msg = String((error && error.message) || "");
+    if (/pedido_id/i.test(msg)) {
+      console.warn("Falta la columna pedido_id: corre sql/rls-politicas.sql. Cargando cotizaciones sin ella.");
+      const reintento = await supabase
+        .from("cotizaciones")
+        .select(COLUMNAS_COTIZACION_SIN_PEDIDO)
+        .order("created_at", { ascending: false });
+      if (reintento.error) throw reintento.error;
+      return (reintento.data || []).map(filaACotizacion);
+    }
+    throw error;
+  }
   return (data || []).map(filaACotizacion);
 }
 

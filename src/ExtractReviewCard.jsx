@@ -26,7 +26,7 @@ import {
  * `ack` (revisión de líneas no leídas), `verTodos` y `aviso` son estado de UI local,
  * no forman parte de `data`.
  */
-export default function ExtractReviewCard({ data, onChange, onConfirm, onCancel, seguimiento = false }) {
+export default function ExtractReviewCard({ data, onChange, onConfirm, onCancel, seguimiento = false, duplicado = null }) {
   // `seguimiento` decide el LAYOUT: true = interfaz de seguimiento de cotizaciones
   // (solo datos + fecha de seguimiento); false = interfaz de despacho (vehículo,
   // fecha de entrega, destino). Es INDEPENDIENTE del formato del PDF: una
@@ -37,6 +37,9 @@ export default function ExtractReviewCard({ data, onChange, onConfirm, onCancel,
   const tipoCotizacion = data.tipo === "cotizacion";
   const [aviso, setAviso] = useState("");
   const [ack, setAck] = useState(false);
+  // Confirmación aparte para el caso "este número ya existe". Va separada de
+  // `ack` (líneas no leídas) porque son dos riesgos distintos y pueden coincidir.
+  const [ackDup, setAckDup] = useState(false);
   const [verTodos, setVerTodos] = useState(false);
   const [otroDestino, setOtroDestino] = useState(
     !!data.destino && !DESTINOS.includes(data.destino)
@@ -128,6 +131,10 @@ export default function ExtractReviewCard({ data, onChange, onConfirm, onCancel,
       setAviso("Confirma que revisarás el material que no se pudo leer");
       return;
     }
+    if (duplicado && !ackDup) {
+      setAviso("Ese número ya existe: confirma que quieres guardarlo igual");
+      return;
+    }
     setAviso("");
     confirmadoRef.current = true;
     onConfirm();
@@ -161,6 +168,36 @@ export default function ExtractReviewCard({ data, onChange, onConfirm, onCancel,
           {tipoCotizacion ? "Cotización" : "Factura"}
         </span>
       </div>
+
+      {/* Aviso de documento repetido + confirmación obligatoria. Previene el
+          despacho doble de la misma factura, sin bloquear los casos legítimos. */}
+      {duplicado && (
+        <div style={{ margin: "16px 20px 0", border: "1px solid var(--color-border-warning)", background: "var(--color-background-warning)", borderRadius: "var(--border-radius-md)", padding: "14px 16px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <i className="ti ti-copy" style={{ fontSize: 20, color: "var(--color-text-warning)" }} aria-hidden="true"></i>
+            <span style={{ fontWeight: 700, fontSize: 15, color: "var(--color-text-warning)" }}>
+              Este documento ya está cargado
+            </span>
+          </div>
+          <div style={{ fontSize: 13, color: "var(--color-text-warning)", margin: "8px 0 10px" }}>
+            El N° <b>{duplicado.numero}</b>
+            {duplicado.cliente ? <> de <b>{duplicado.cliente}</b></> : null} {duplicado.donde}. Si lo
+            guardas otra vez quedan <b>dos pedidos iguales</b> y se puede despachar doble.
+          </div>
+          <label style={{ display: "flex", alignItems: "center", gap: 9, fontSize: 13.5, fontWeight: 600, color: "var(--color-text-warning)", cursor: "pointer" }}>
+            <input
+              type="checkbox"
+              checked={ackDup}
+              onChange={(e) => {
+                setAckDup(e.target.checked);
+                setAviso("");
+              }}
+              style={{ width: 18, height: 18, accentColor: "#b45309", cursor: "pointer" }}
+            />
+            Sé que está repetido, guardarlo igual
+          </label>
+        </div>
+      )}
 
       {/* Aviso destacado de líneas no leídas + confirmación obligatoria */}
       {hayIgnoradas && (

@@ -4,6 +4,15 @@ import { cargarCotizaciones, guardarCotizacion, eliminarCotizacion, cargarPdfCot
 import PanelResumen from "./PanelResumen.jsx";
 import PorEntregar from "./PorEntregar.jsx";
 import ExtractReviewCard, { ExtractReviewCardCotizacion } from "./ExtractReviewCard.jsx";
+import {
+  parseCantidad,
+  cantidadNum,
+  saldoDe,
+  entregadoParaPanelDe,
+  topeEditableDe,
+  valorInicialMaterialDe,
+  aplicarEntregadoDirecto,
+} from "./saldo.js";
 
 // capacidadKg: carga máxima del vehículo, para avisar cuando un pedido (o el
 // total de una columna) no cabe en un solo viaje. null = sin límite definido.
@@ -48,23 +57,10 @@ export function formatCOP(n) {
   return new Intl.NumberFormat("es-CO", { maximumFractionDigits: 0 }).format(n);
 }
 
-// Convierte una cantidad en formato colombiano a número. "1.500" y
-// "1.500,25" usan punto de miles y coma decimal (grupos de 3 dígitos);
-// "2.5" o "2,5" usan el separador como decimal.
-function parseCantidad(s) {
-  const str = String(s).trim();
-  if (/^\d{1,3}(?:\.\d{3})+(?:,\d{1,2})?$/.test(str)) {
-    return parseFloat(str.replace(/\./g, "").replace(",", ".")) || 0;
-  }
-  return parseFloat(str.replace(",", ".")) || 0;
-}
-
-// Cantidad como número. Los productos ya vienen parseados a número, pero si
-// acaso llega un string lo normalizamos con la misma lógica colombiana.
-function cantidadNum(v) {
-  if (typeof v === "number") return v;
-  return parseCantidad(v);
-}
+// parseCantidad / cantidadNum y toda la regla del saldo viven en saldo.js: es
+// la fuente ÚNICA de verdad. Antes esa regla estaba copiada en seis sitios y
+// cada desvío entre copias producía un bug de saldo (ver el encabezado de
+// saldo.js). Se importan arriba.
 
 function formatCantidad(n) {
   return new Intl.NumberFormat("es-CO", { maximumFractionDigits: 2 }).format(n);
@@ -221,12 +217,10 @@ function cerrarEntregaCompleta(productos) {
   });
 }
 
-function cantidadEntregadaDe(prod) {
-  if (prod && prod.cantidadEntregada !== undefined && prod.cantidadEntregada !== null) {
-    return cantidadNum(prod.cantidadEntregada);
-  }
-  return cantidadNum(prod && prod.cantidad) || 0;
-}
+// Copia 1 de 6 -> saldo.js. Ojo: para el Panel, una línea NUNCA tocada cuenta
+// como entregada completa (así el historial viejo no se vacía retroactivamente).
+// Esa asimetría está explicada en entregadoParaPanelDe().
+const cantidadEntregadaDe = entregadoParaPanelDe;
 
 // Kilos de una línea de producto: peso unitario de su categoría × cantidad
 // realmente entregada. (Solo se usa en el Panel, sobre el historial.)
@@ -289,17 +283,8 @@ function cargaDePedido(pedido) {
   return items.reduce((sum, p) => sum + pesoDeProducto(p), 0);
 }
 
-// Cuánto FALTA por entregar de una línea. Misma prioridad que en el resto de
-// la app: manda el saldo de remisiones; si no, lo facturado menos lo marcado a
-// mano; si no hay nada de eso, todo lo facturado.
-function cantidadPorEntregarDe(prod) {
-  if (!prod) return 0;
-  if (prod.cantidadRestante !== undefined && prod.cantidadRestante !== null) return Number(prod.cantidadRestante) || 0;
-  if (prod.cantidadEntregada !== undefined && prod.cantidadEntregada !== null) {
-    return Math.max(0, cantidadNum(prod.cantidad) - cantidadNum(prod.cantidadEntregada));
-  }
-  return cantidadNum(prod.cantidad);
-}
+// Copia 2 de 6 -> saldo.js.
+const cantidadPorEntregarDe = saldoDe;
 
 // Kilos de lo que TODAVÍA hay que subir al vehículo. Es el número de la
 // tarjeta y el que se compara contra la capacidad del camión: si ya salieron
@@ -336,20 +321,18 @@ function fechaEntregaISO(pedido) {
 // tocado devuelve lista vacía y se comporta como siempre.
 function faltantesDeProductos(productos) {
   return (productos || [])
-    .map((p) => {
-      // UNA sola fuente de verdad por línea:
-      // - si la factura ya tiene remisiones, manda el saldo (cantidadRestante);
-      // - si no, es lo facturado menos lo marcado a mano como entregado.
-      // Antes esto solo miraba cantidadEntregada e ignoraba las remisiones, así
-      // que el mensaje rojo seguía mostrando material que YA había salido.
-      if (p.cantidadRestante !== undefined && p.cantidadRestante !== null) {
-        return { ...p, faltan: Number(p.cantidadRestante) || 0 };
-      }
-      if (p.cantidadEntregada !== undefined && p.cantidadEntregada !== null) {
-        return { ...p, faltan: cantidadNum(p.cantidad) - cantidadNum(p.cantidadEntregada) };
-      }
-      return { ...p, faltan: 0 };
-    })
+    .map((p) => ({
+      ...p,
+      // Copia 3 de 6 -> saldo.js. OJO a la diferencia con saldoDe puro: una
+      // línea sin tocar NO cuenta como faltante (faltan: 0). El aviso rojo de
+      // "debe material" solo se prende con lo que alguien declaró faltando, no
+      // con un pedido que nadie ha marcado todavía.
+      faltan:
+        (p.cantidadRestante !== undefined && p.cantidadRestante !== null) ||
+        (p.cantidadEntregada !== undefined && p.cantidadEntregada !== null)
+          ? saldoDe(p)
+          : 0,
+    }))
     .filter((p) => p.faltan > 0);
 }
 
@@ -459,9 +442,23 @@ async function extractPdfLines(file) {
   return allLines;
 }
 
+// Decide qué parser usar. El orden importa y NO es intercambiable.
+//
+// Antes bastaba con que apareciera "COTIZACION No" en cualquier parte del texto
+// para tratar el documento como cotización. Pero en ferretería es normal que la
+// FACTURA referencie la cotización aprobada ("OBSERVACIONES: se despacha según
+// COTIZACION No. 8891"), y esa factura entraba por parseCotizacion: 0 productos,
+// total nulo y número mal leído. Peor: como parseCotizacion tampoco encontraba
+// su encabezado de tabla, lineasIgnoradas quedaba vacío y la alarma roja de
+// "líneas no leídas" NO se disparaba. Se perdía en silencio.
+//
+// Ahora manda la marca propia de la factura electrónica, que una cotización no
+// puede tener. Solo si no está se considera cotización. Un documento normal
+// (solo uno de los dos marcadores) se clasifica igual que antes.
 function detectTipoDocumento(lines) {
   const text = lines.join(" ");
-  if (/COTIZACION No/i.test(text)) return "cotizacion";
+  if (/FECV\s*No/i.test(text) || /FACTURA\s+ELECTR[ÓO]NICA/i.test(text)) return "factura";
+  if (/COTIZACION\s+No/i.test(text)) return "cotizacion";
   return "factura";
 }
 
@@ -570,10 +567,12 @@ function parseFactura(lines) {
         // En la factura (FECV), "Valor IVA" viene por unidad, no por línea.
         // El "Total" de la columna NO incluye IVA (es cantidad x valor unitario).
         // Para mostrar el precio con IVA incluido: total_linea_sin_iva + (valor_iva_unitario x cantidad).
-        const cantidadNum = parseCantidad(m[4]);
+        // Se llamaba "cantidadNum", igual que el helper importado, y lo tapaba
+        // dentro de este bloque. Renombrada para que no confunda.
+        const cantLinea = parseCantidad(m[4]);
         const valorIvaUnitario = parseInt(m[8].replace(/\./g, ""), 10) || 0;
         const totalSinIva = parseInt(m[9].replace(/\./g, ""), 10) || 0;
-        const ivaLinea = Math.round(valorIvaUnitario * cantidadNum);
+        const ivaLinea = Math.round(valorIvaUnitario * cantLinea);
         const totalConIva = totalSinIva + ivaLinea;
 
         result.productos.push({
@@ -1063,6 +1062,17 @@ export default function DespachoPedidos() {
       orden: maxOrden + 1,
     };
     persistPedidos([...pedidos, nuevo], [nuevo], { crear: true });
+
+    // Si el pedido nació de una cotización del otro tablero, la cerramos como
+    // aceptada y le dejamos el enlace al pedido. Así no se puede despachar dos
+    // veces y no se pierde el rastro de la venta.
+    if (data.desdeCotizacion) {
+      const cot = cotizaciones.find((c) => c.id === data.desdeCotizacion);
+      if (cot) {
+        updateCotizacion(cot.id, { estado: "aceptada", motivoRechazo: null, pedidoId: nuevo.id });
+      }
+    }
+
     setPendingExtract(null);
     // Llevamos la vista a donde cayó el pedido, para que se vea de inmediato.
     if (esViaje) setSelectedDate("viaje");
@@ -1453,13 +1463,8 @@ export default function DespachoPedidos() {
   //   marcado como entregado en "Material entregado" — sin este descuento,
   //   una factura con material ya entregado ofrecía el total completo para
   //   remisionar y se duplicaba material.
-  function disponibleDe(prod) {
-    if (prod && prod.cantidadRestante !== undefined && prod.cantidadRestante !== null) return Number(prod.cantidadRestante) || 0;
-    const original = cantidadNum(prod && prod.cantidad);
-    const yaEntregado =
-      prod && prod.cantidadEntregada !== undefined && prod.cantidadEntregada !== null ? cantidadNum(prod.cantidadEntregada) : 0;
-    return Math.max(0, original - yaEntregado);
-  }
+  // Copia 4 de 6 -> saldo.js.
+  const disponibleDe = saldoDe;
 
   // Siguiente número correlativo de remisión (REM-0001, REM-0002...). Se saca
   // del máximo que ya exista entre pedidos activos e historial. Con dos
@@ -1674,6 +1679,57 @@ export default function DespachoPedidos() {
     showToast("Cotización agregada");
   }
 
+  // Pasa una cotización (o una factura que se subió por error en este tablero)
+  // al flujo de despacho, SIN volver a subir el PDF: se trae de la base de
+  // datos, donde ya está guardado.
+  //
+  // Antes, "Aceptar" solo pintaba la tarjeta de verde y ahí moría: para
+  // despacharla había que ir a la pestaña Despacho y volver a subir un PDF que
+  // el vendedor a veces ya no tenía como archivo. La cotización verde PARECÍA
+  // atendida y nadie la auditaba: la venta se cerraba y el material no salía.
+  async function pasarCotizacionADespacho(cot) {
+    if (cot.pedidoId && pedidos.some((p) => p.id === cot.pedidoId)) {
+      showToast("Esta cotización ya está en despacho.");
+      return;
+    }
+    // El PDF no viene en la carga de listas (pesa megas); se pide bajo demanda.
+    let pdf = cot.pdfDataUrl;
+    if (pdf === undefined && cot.tienePdf) {
+      try {
+        pdf = await cargarPdfCotizacion(cot.id);
+      } catch (e) {
+        // Sin PDF se puede despachar igual: los datos ya están extraídos. Solo
+        // avisamos para que nadie crea que el respaldo quedó adjunto.
+        pdf = null;
+        showToast("No se pudo traer el PDF; el pedido se crea sin documento adjunto.", 4000);
+      }
+    }
+    setPendingExtract({
+      tipo: "cotizacion",
+      numeroFactura: cot.numeroFactura || "",
+      cliente: cot.cliente || "",
+      telefono: cot.telefono || "",
+      telefonoContacto: cot.telefonoContacto || "",
+      direccion: cot.direccion || "",
+      vendedor: cot.vendedor || "",
+      total: cot.total || null,
+      productos: cot.productos || [],
+      // Ya se revisaron al subirla; no hay líneas nuevas que reportar.
+      lineasIgnoradas: [],
+      // Se conserva la fecha impresa del documento, no la de hoy.
+      fechaDocumento: cot.fecha || null,
+      pdfDataUrl: pdf === undefined ? null : pdf,
+      fileName: cot.fileName,
+      vehiculo: "",
+      estadoPago: "pendiente",
+      // Marca de origen: al confirmar, confirmPendingExtract cierra la
+      // cotización como aceptada y le enlaza el pedido creado.
+      desdeCotizacion: cot.id,
+    });
+    // La tarjeta de revisión se dibuja en la vista de despacho.
+    setView("despacho");
+  }
+
   function deleteCotizacion(id) {
     const prev = cotizaciones;
     setCotizaciones(cotizaciones.filter((c) => c.id !== id));
@@ -1830,14 +1886,8 @@ export default function DespachoPedidos() {
       for (const p of productos) {
         const totalLinea = parseInt(String(p.total || "0").replace(/\./g, ""), 10) || 0;
         const cant = cantidadNum(p.cantidad);
-        // Mismo orden de prioridad que disponibleDe(): manda el saldo de
-        // remisiones; si no existe, lo marcado con "Material entregado"; si
-        // tampoco, no se ha entregado nada. Antes solo miraba cantidadRestante,
-        // así que las facturas marcadas a mano salían en 0%.
-        let resta;
-        if (p.cantidadRestante !== undefined && p.cantidadRestante !== null) resta = Number(p.cantidadRestante) || 0;
-        else if (p.cantidadEntregada !== undefined && p.cantidadEntregada !== null) resta = Math.max(0, cant - cantidadNum(p.cantidadEntregada));
-        else resta = cant;
+        // Copia inline (la séptima, la que se había desviado) -> saldo.js.
+        const resta = saldoDe(p);
         valorTotal += totalLinea;
         valorEntregado += cant > 0 ? (totalLinea * (cant - resta)) / cant : 0;
       }
@@ -1882,6 +1932,35 @@ export default function DespachoPedidos() {
       };
     });
   }, [pedidosPendientes, pedidos, historial, hoyIso]);
+
+  // ¿El documento que se está por guardar ya existe? Nada impedía subir la misma
+  // factura dos veces: quedaban dos tarjetas idénticas en dos columnas y se
+  // despachaba doble, o alguien perdía media hora averiguando cuál era la buena.
+  // Es un AVISO, no un bloqueo: hay casos legítimos (una nota de la misma
+  // factura, un número corregido a mano), y bloquear agregaría trabajo.
+  // En el caso normal —número nuevo— no aparece nada y no cuesta ningún toque.
+  const duplicadoPendiente = useMemo(() => {
+    const num = (pendingExtract && pendingExtract.numeroFactura ? String(pendingExtract.numeroFactura) : "").trim();
+    if (!num) return null;
+    // Un pedido que nació de esta misma cotización no es un duplicado.
+    const yaEs = pendingExtract.desdeCotizacion;
+    const existente =
+      pedidos.find((p) => (p.numeroFactura || "").trim() === num && p.id !== yaEs) ||
+      historial.find((p) => (p.numeroFactura || "").trim() === num);
+    if (!existente) return null;
+    const enHistorial = !pedidos.some((p) => p.id === existente.id);
+    let donde;
+    if (enHistorial) {
+      donde = `ya está entregada (historial${existente.fechaEntrega ? `, ${existente.fechaEntrega}` : ""})`;
+    } else {
+      const f = fechaDe(existente);
+      const veh = (VEHICULOS.find((v) => v.id === existente.vehiculo) || {}).label;
+      const cuando =
+        f === "pendiente" ? "Por entregar" : f === "viaje" ? "Por viaje" : etiquetaFecha(f, hoyIso);
+      donde = `ya está en despacho (${[veh, cuando].filter(Boolean).join(", ")})`;
+    }
+    return { numero: num, cliente: existente.cliente || "", donde };
+  }, [pendingExtract, pedidos, historial, hoyIso]);
 
   // Resultados del buscador de Despachos: pedidos activos (de cualquier fecha,
   // incluidos Pendientes y Por viaje) que coincidan por cliente, número de
@@ -2434,6 +2513,7 @@ export default function DespachoPedidos() {
       {pendingExtract && (
         <ExtractReviewCard
           data={pendingExtract}
+          duplicado={duplicadoPendiente}
           onChange={setPendingExtract}
           onConfirm={() => confirmPendingExtract(pendingExtract)}
           onCancel={() => setPendingExtract(null)}
@@ -3126,6 +3206,11 @@ export default function DespachoPedidos() {
                     onDelete={() => deleteCotizacion(c.id)}
                     onEdit={() => setEditingCotizacion(c)}
                     onVerPdf={() => setViewingPdfCotizacion(c)}
+                    onPasarADespacho={() => pasarCotizacionADespacho(c)}
+                    // "Ya está en despacho" solo si el pedido enlazado sigue
+                    // vivo: si alguien lo borró, la cotización vuelve a poder
+                    // mandarse (si no, quedaría trabada para siempre).
+                    yaEnDespacho={!!c.pedidoId && pedidos.some((p) => p.id === c.pedidoId)}
                     onCambiarEstado={(estado) => {
                       if (estado === "rechazada") {
                         setRechazandoCotizacion(c);
@@ -4571,12 +4656,24 @@ function NotaPendienteModal({ pedido, onClose, onGuardar, onQuitar }) {
 // todo. Guarda cantidadEntregada en cada producto. La nota de material
 // pendiente NO se crea aquí: se genera sola al pasar el pedido a despacho.
 function MaterialPorUnidadesModal({ pedido, onClose, onGuardar }) {
+  // Este modal declara lo que salió DIRECTO contra la factura (a mano, sin
+  // remisión). Por eso trabaja contra el TOPE EDITABLE (= facturado − lo que ya
+  // salió remisionado), no contra lo facturado.
+  //
+  // Antes usaba lo facturado como default y como techo, ignorando
+  // cantidadRestante: en una factura de 100 con remisión de 40, proponía 100 y
+  // dejaba guardar 100 aunque solo quedaran 60. Eso dejaba el par
+  // (cantidadEntregada, cantidadRestante) contradictorio: el modal decía
+  // "Completo", "Por entregar" decía "quedan 60", y al archivarse la factura el
+  // Panel sumaba 100 encima de los 40 ya contados por la remisión (7.000 kg
+  // donde salieron 5.000).
   const [items, setItems] = useState(() =>
     (pedido.productos || []).map((p) => ({
       ...p,
-      // Por defecto asumimos que se entregó todo; el usuario baja las que
-      // faltaron. Si ya se había tocado antes, respetamos ese valor.
-      entregadas: p.cantidadEntregada !== undefined && p.cantidadEntregada !== null ? cantidadNum(p.cantidadEntregada) : cantidadNum(p.cantidad),
+      // Sin remisiones: arranca en todo lo facturado (el caso normal es "salí
+      // con todo" y solo se baja lo que faltó). Con remisiones: arranca en 0,
+      // porque lo remisionado ya se contó aparte.
+      entregadas: valorInicialMaterialDe(p),
     }))
   );
 
@@ -4584,10 +4681,10 @@ function MaterialPorUnidadesModal({ pedido, onClose, onGuardar }) {
     setItems((prev) =>
       prev.map((it, i) => {
         if (i !== idx) return it;
-        const total = cantidadNum(it.cantidad);
+        const tope = topeEditableDe(it);
         let n = valor;
         if (isNaN(n) || n < 0) n = 0;
-        if (n > total) n = total;
+        if (n > tope) n = tope;
         return { ...it, entregadas: n };
       })
     );
@@ -4613,8 +4710,12 @@ function MaterialPorUnidadesModal({ pedido, onClose, onGuardar }) {
 
       <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 14 }}>
         {items.map((it, idx) => {
-          const total = cantidadNum(it.cantidad);
-          const falta = total - it.entregadas;
+          const facturado = cantidadNum(it.cantidad);
+          const tope = topeEditableDe(it);
+          // Lo que salió por remisiones: no es editable acá y se muestra para
+          // que el despachador entienda por qué el tope no es lo facturado.
+          const remisionado = Math.max(0, facturado - tope);
+          const falta = tope - it.entregadas;
           const completo = falta <= 0;
           return (
             <div
@@ -4626,20 +4727,26 @@ function MaterialPorUnidadesModal({ pedido, onClose, onGuardar }) {
               }}
             >
               <div style={{ fontSize: 13, marginBottom: 6 }}>
-                <b style={{ fontWeight: 500 }}>{formatCantidad(total)} {it.unidad}</b> — {it.descripcion}
+                <b style={{ fontWeight: 500 }}>{formatCantidad(facturado)} {it.unidad}</b> — {it.descripcion}
               </div>
+              {remisionado > 0 && (
+                <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 6 }}>
+                  <i className="ti ti-arrows-split" style={{ fontSize: 12, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
+                  Ya salieron {formatCantidad(remisionado)} por remisión · acá solo se marca lo que queda ({formatCantidad(tope)})
+                </div>
+              )}
               <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                 <span style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>Entregadas:</span>
                 <input
                   type="number"
                   inputMode="decimal"
                   min={0}
-                  max={total}
+                  max={tope}
                   value={it.entregadas}
                   onChange={(e) => setEntregadas(idx, parseCantidad(e.target.value))}
                   style={{ width: 80 }}
                 />
-                <button onClick={() => setEntregadas(idx, total)} style={{ fontSize: 12, padding: "6px 10px", minHeight: 36 }}>
+                <button onClick={() => setEntregadas(idx, tope)} style={{ fontSize: 12, padding: "6px 10px", minHeight: 36 }}>
                   Todo
                 </button>
                 <button onClick={() => setEntregadas(idx, 0)} style={{ fontSize: 12, padding: "6px 10px", minHeight: 36 }}>
@@ -4664,7 +4771,10 @@ function MaterialPorUnidadesModal({ pedido, onClose, onGuardar }) {
       <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
         <button onClick={onClose} style={{ fontSize: 13 }}>Cancelar</button>
         <button
-          onClick={() => onGuardar(items.map(({ entregadas, ...rest }) => ({ ...rest, cantidadEntregada: entregadas })))}
+          // aplicarEntregadoDirecto deja el par (cantidadEntregada,
+          // cantidadRestante) coherente. A una factura SIN remisiones no le
+          // inventa cantidadRestante: sigue con la forma de dato de siempre.
+          onClick={() => onGuardar(items.map(({ entregadas, ...rest }) => aplicarEntregadoDirecto(rest, entregadas)))}
           style={{ fontSize: 13, fontWeight: 500, background: "var(--color-background-info)", color: "var(--color-text-info)", border: "0.5px solid var(--color-border-info)" }}
         >
           Guardar
@@ -4680,13 +4790,8 @@ function MaterialPorUnidadesModal({ pedido, onClose, onGuardar }) {
 // como pedido activo en la fecha elegida. Ver crearRemision() en el componente.
 function RemisionModal({ pedido, hoyIso, onClose, onCrear }) {
   const productos = pedido.productos || [];
-  // Igual que disponibleDe() del componente: el saldo manda si existe; si no,
-  // lo original menos lo ya marcado como entregado a mano.
-  const dispo = (p) => {
-    if (p.cantidadRestante !== undefined && p.cantidadRestante !== null) return Number(p.cantidadRestante) || 0;
-    const entregado = p.cantidadEntregada !== undefined && p.cantidadEntregada !== null ? cantidadNum(p.cantidadEntregada) : 0;
-    return Math.max(0, cantidadNum(p.cantidad) - entregado);
-  };
+  // Copia 5 de 6 -> saldo.js.
+  const dispo = saldoDe;
 
   const [cantidades, setCantidades] = useState(() => productos.map(() => 0));
   const [fechaOpcion, setFechaOpcion] = useState("hoy");
@@ -4873,11 +4978,8 @@ function RemisionModal({ pedido, hoyIso, onClose, onCrear }) {
 // RemisionModal pero sin fecha ni vehículo: aquí nada sale a despacho.
 function DescontarMaterialModal({ pedido, onClose, onDescontar }) {
   const productos = pedido.productos || [];
-  const dispo = (p) => {
-    if (p.cantidadRestante !== undefined && p.cantidadRestante !== null) return Number(p.cantidadRestante) || 0;
-    const entregado = p.cantidadEntregada !== undefined && p.cantidadEntregada !== null ? cantidadNum(p.cantidadEntregada) : 0;
-    return Math.max(0, cantidadNum(p.cantidad) - entregado);
-  };
+  // Copia 6 de 6 -> saldo.js.
+  const dispo = saldoDe;
   const [cantidades, setCantidades] = useState(() => productos.map(() => 0));
 
   const setCantidad = (idx, valor) => {
@@ -5644,7 +5746,7 @@ const ESTADOS_COTIZACION_BADGE = {
 
 const ESTADOS_COTIZACION_BADGE_KEYS = ["pendiente", "aceptada", "rechazada"];
 
-function CotizacionCard({ cotizacion, hoyIso, onDelete, onEdit, onVerPdf, onCambiarEstado }) {
+function CotizacionCard({ cotizacion, hoyIso, onDelete, onEdit, onVerPdf, onCambiarEstado, onPasarADespacho, yaEnDespacho = false }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const badge = ESTADOS_COTIZACION_BADGE[cotizacion.estado || "pendiente"];
   const iniciales = (cotizacion.cliente || "?")
@@ -5803,10 +5905,36 @@ function CotizacionCard({ cotizacion, hoyIso, onDelete, onEdit, onVerPdf, onCamb
           Editar
         </button>
 
+        {/* Ya pasó a despacho: no se ofrece volver a mandarla (evita duplicar
+            el pedido) y se deja claro que la venta está andando. */}
+        {yaEnDespacho && (
+          <span
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 5,
+              fontSize: 12.5,
+              fontWeight: 500,
+              color: "var(--color-text-success)",
+              background: "var(--color-background-success)",
+              border: "0.5px solid var(--color-border-success)",
+              borderRadius: "var(--border-radius-md)",
+              padding: "9px 12px",
+              minHeight: 40,
+            }}
+          >
+            <i className="ti ti-truck-delivery" style={{ fontSize: 14 }} aria-hidden="true"></i>
+            Ya está en despacho
+          </span>
+        )}
+
         {cotizacion.estado === "pendiente" && (
           <>
+            {/* Antes este botón solo pintaba la tarjeta de verde. Ahora además
+                arma el pedido con el PDF que ya está guardado: se elige vehículo
+                y fecha, y listo. No hay que volver a subir nada. */}
             <button
-              onClick={() => onCambiarEstado("aceptada")}
+              onClick={onPasarADespacho}
               style={{
                 flex: 1,
                 minWidth: 90,
@@ -5823,8 +5951,8 @@ function CotizacionCard({ cotizacion, hoyIso, onDelete, onEdit, onVerPdf, onCamb
                 gap: 4,
               }}
             >
-              <i className="ti ti-check" style={{ fontSize: 14 }} aria-hidden="true"></i>
-              Aceptar
+              <i className="ti ti-truck-delivery" style={{ fontSize: 14 }} aria-hidden="true"></i>
+              Aceptar y despachar
             </button>
             <button
               onClick={() => onCambiarEstado("rechazada")}
@@ -5848,6 +5976,27 @@ function CotizacionCard({ cotizacion, hoyIso, onDelete, onEdit, onVerPdf, onCamb
               Rechazar
             </button>
           </>
+        )}
+
+        {/* Rescate: una cotización aceptada que nunca llegó a despacho (o una
+            FACTURA que se subió por error en este tablero) se manda al flujo de
+            despacho desde acá, sin borrarla ni volver a subir el PDF. */}
+        {cotizacion.estado !== "pendiente" && !yaEnDespacho && (
+          <button
+            onClick={onPasarADespacho}
+            style={{
+              fontSize: 12.5,
+              padding: "9px 12px",
+              minHeight: 40,
+              background: MARCA.azulClaro,
+              color: MARCA.azulOscuro,
+              border: `0.5px solid ${MARCA.azulMedio}`,
+              fontWeight: 500,
+            }}
+          >
+            <i className="ti ti-truck-delivery" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
+            Pasar a despacho
+          </button>
         )}
 
         {cotizacion.estado !== "pendiente" && (

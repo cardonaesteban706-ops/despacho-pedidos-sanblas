@@ -3,6 +3,10 @@ dist
 .vercel
 .claude
 
+# Variables de entorno locales (.env.example sí se versiona, .env no)
+.env
+.env.local
+
 # Skills de desarrollo (Supabase, Postgres) — herramientas del agente, no del producto
 .agents
 skills-lock.json

@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { cantidadNum, saldoDe } from "./saldo.js";
 
 /**
  * Pendientes — backlog de facturas de obra abiertas.
@@ -74,35 +75,19 @@ const parseFecha = (f) => {
   return new Date(y, m - 1, d).getTime();
 };
 
-// Cantidad como número, con la MISMA lógica colombiana que `parseCantidad` del
-// núcleo: acepta coma decimal ("6,00" -> 6) y separador de miles
-// ("1.500,00" -> 1500). Antes se usaba Number() crudo, y Number("6,00") = NaN
-// hacía que el saldo por producto mostrara "Quedan NaN de NaN".
-const numCant = (v) => {
-  if (typeof v === "number") return v;
-  const str = String(v ?? "").trim();
-  if (/^\d{1,3}(?:\.\d{3})+(?:,\d{1,2})?$/.test(str)) {
-    return parseFloat(str.replace(/\./g, "").replace(",", ".")) || 0;
-  }
-  return parseFloat(str.replace(",", ".")) || 0;
-};
+// El parseo colombiano y la regla del saldo vienen de saldo.js (fuente única).
+// Antes este archivo tenía su propia copia de las dos cosas.
+const numCant = cantidadNum;
 const fmtCant = (n) => new Intl.NumberFormat("es-CO", { maximumFractionDigits: 2 }).format(n);
 
 function enrich(f) {
   const pct = Math.max(0, Math.min(100, f.porcentajeEntregado ?? 0));
   const productos = (f.productos || []).map((p) => {
     const cant = numCant(p.cantidad);
-    // Saldo de la línea, en orden de prioridad:
-    //  1) cantidadRestante — lo deja el sistema de remisiones;
-    //  2) cantidad - cantidadEntregada — lo deja "Material entregado" (el
-    //     sistema anterior, que todavía tienen las facturas viejas);
-    //  3) si no hay ninguno, no se ha entregado nada.
-    // Sin el paso 2, las facturas marcadas con el sistema viejo aparecían
-    // como si no se hubiera entregado nada.
-    let rest;
-    if (p.cantidadRestante != null) rest = numCant(p.cantidadRestante);
-    else if (p.cantidadEntregada != null) rest = Math.max(0, cant - numCant(p.cantidadEntregada));
-    else rest = cant;
+    // Copia del saldo eliminada: ahora viene de saldo.js, igual que en el
+    // núcleo y en los modales. Así esta pantalla nunca puede discrepar de lo
+    // que dice la tarjeta o el modal de remisión.
+    const rest = saldoDe(p);
     const ent = cant - rest;
     const pctL = cant ? Math.round((ent / cant) * 100) : 0;
     const done = rest <= 0;
