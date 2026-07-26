@@ -13,7 +13,13 @@
 import * as pdfjsNS from "pdfjs-dist/build/pdf.js";
 // pdf.js v3 solo publica UMD. Según cómo lo envuelva el bundler, la API queda en
 // la raíz del namespace o bajo .default; se resuelve una sola vez acá.
-const pdfjsLib = pdfjsNS.getDocument ? pdfjsNS : pdfjsNS.default;
+//
+// Se EXPORTA porque el visor de documentos (PdfCanvasViewer) también necesita
+// pdf.js para dibujar el PDF en un canvas. Antes lo tomaba de window.pdfjsLib,
+// que existía porque el <script> del CDN la dejaba como variable global. Al pasar
+// a dependencia de npm esa global desapareció y el visor quedó roto: hay que
+// importar la librería, no buscarla en window.
+export const pdfjsLib = pdfjsNS.getDocument ? pdfjsNS : pdfjsNS.default;
 
 // El worker se importa como URL de asset: Vite lo copia al build y lo sirve
 // desde el mismo dominio. Sin worker, pdf.js corre en el hilo principal y

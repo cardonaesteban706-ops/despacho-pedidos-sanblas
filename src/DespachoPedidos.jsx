@@ -35,7 +35,7 @@ import {
 // Lectura y parseo de PDF (antes acá arriba, ~340 líneas). El parseo vive en un
 // módulo puro y testeado (pdfParser.test.mjs, `npm test`); la lectura del PDF
 // está aparte porque es la única parte que necesita pdf.js.
-import { extractPdfLines } from "./pdfExtract.js";
+import { extractPdfLines, pdfjsLib } from "./pdfExtract.js";
 import { parseDocumento } from "./pdfParser.js";
 // Reglas de remisión (enlace madre-hija y correlativo REM), con tests.
 import { remisionesDe, maxRemisionDeNumeros, formatearNumeroRemision } from "./remisiones.js";
@@ -3738,7 +3738,9 @@ function PdfCanvasViewer({ dataUrl }) {
     let cancelled = false;
     let loadingTask = null;
     async function load() {
-      if (!window.pdfjsLib) {
+      // pdf.js viene importado (antes se leía de window.pdfjsLib, que existía
+      // solo porque el <script> del CDN la dejaba como variable global).
+      if (!pdfjsLib || !pdfjsLib.getDocument) {
         setStatus("error");
         return;
       }
@@ -3748,7 +3750,7 @@ function PdfCanvasViewer({ dataUrl }) {
         const bytes = new Uint8Array(binary.length);
         for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
 
-        loadingTask = window.pdfjsLib.getDocument({ data: bytes });
+        loadingTask = pdfjsLib.getDocument({ data: bytes });
         const pdf = await loadingTask.promise;
         if (cancelled) return;
         pdfRef.current = pdf;
