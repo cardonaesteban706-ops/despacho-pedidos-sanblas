@@ -74,10 +74,24 @@ const parseFecha = (f) => {
   return new Date(y, m - 1, d).getTime();
 };
 
+// Cantidad como número, con la MISMA lógica colombiana que `parseCantidad` del
+// núcleo: acepta coma decimal ("6,00" -> 6) y separador de miles
+// ("1.500,00" -> 1500). Antes se usaba Number() crudo, y Number("6,00") = NaN
+// hacía que el saldo por producto mostrara "Quedan NaN de NaN".
+const numCant = (v) => {
+  if (typeof v === "number") return v;
+  const str = String(v ?? "").trim();
+  if (/^\d{1,3}(?:\.\d{3})+(?:,\d{1,2})?$/.test(str)) {
+    return parseFloat(str.replace(/\./g, "").replace(",", ".")) || 0;
+  }
+  return parseFloat(str.replace(",", ".")) || 0;
+};
+const fmtCant = (n) => new Intl.NumberFormat("es-CO", { maximumFractionDigits: 2 }).format(n);
+
 function enrich(f) {
   const pct = Math.max(0, Math.min(100, f.porcentajeEntregado ?? 0));
   const productos = (f.productos || []).map((p) => {
-    const cant = Number(p.cantidad);
+    const cant = numCant(p.cantidad);
     // Saldo de la línea, en orden de prioridad:
     //  1) cantidadRestante — lo deja el sistema de remisiones;
     //  2) cantidad - cantidadEntregada — lo deja "Material entregado" (el
@@ -86,15 +100,15 @@ function enrich(f) {
     // Sin el paso 2, las facturas marcadas con el sistema viejo aparecían
     // como si no se hubiera entregado nada.
     let rest;
-    if (p.cantidadRestante != null) rest = Number(p.cantidadRestante) || 0;
-    else if (p.cantidadEntregada != null) rest = Math.max(0, cant - (Number(p.cantidadEntregada) || 0));
+    if (p.cantidadRestante != null) rest = numCant(p.cantidadRestante);
+    else if (p.cantidadEntregada != null) rest = Math.max(0, cant - numCant(p.cantidadEntregada));
     else rest = cant;
     const ent = cant - rest;
     const pctL = cant ? Math.round((ent / cant) * 100) : 0;
     const done = rest <= 0;
     return {
       desc: p.descripcion,
-      label: done ? `Completo · ${cant} ${p.unidad}` : `Quedan ${rest} de ${cant} ${p.unidad}`,
+      label: done ? `Completo · ${fmtCant(cant)} ${p.unidad}` : `Quedan ${fmtCant(rest)} de ${fmtCant(cant)} ${p.unidad}`,
       labelColor: done ? "#15803d" : "#b45309",
       pctWidth: pctL + "%",
       barColor: done ? "#16a34a" : "#378ADD",
