@@ -124,6 +124,25 @@ export function etiquetaFecha(iso, hoyIso) {
   return formatFechaCorta(iso);
 }
 
+// Compara dos pedidos por su posición en la columna del tablero.
+//
+// El desempate por `id` no es decorativo: `orden` se calcula como "el máximo de
+// la columna + 1" sobre el estado que tiene CADA dispositivo en memoria, así que
+// dos personas agregando pedidos al mismo vehículo y día a la vez producen el
+// MISMO número de orden. Cuando eso pasa, `a.orden - b.orden` devuelve 0 y el
+// resultado dependía del orden en que la base hubiera devuelto las filas — que
+// no está garantizado. Efecto visible: las dos tarjetas se intercambiaban de
+// posición entre recargas.
+//
+// Con el desempate, un empate de `orden` se resuelve siempre igual. No evita el
+// empate (eso pediría generar el orden en el servidor), pero sí que la pantalla
+// deje de moverse sola, que es el síntoma que se ve.
+export function compararOrden(a, b) {
+  const d = (a.orden || 0) - (b.orden || 0);
+  if (d !== 0) return d;
+  return String(a.id) < String(b.id) ? -1 : String(a.id) > String(b.id) ? 1 : 0;
+}
+
 export function nowTimeStr() {
   const d = new Date();
   return d.toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit" });

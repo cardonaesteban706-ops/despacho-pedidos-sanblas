@@ -76,9 +76,30 @@ export function fechaDocumentoDe(text) {
       return `${m2[1].padStart(2, "0")}/${mes}/${anio}`;
     }
   }
-  // Cualquier fecha DD/MM/AAAA como último recurso.
-  const m3 = text.match(/(\d{2}\/\d{2}\/\d{4})/);
-  return m3 ? m3[1] : null;
+  // Último recurso: no hay etiqueta reconocible, así que se juntan TODAS las
+  // fechas DD/MM/AAAA del documento y se toma la MÁS ANTIGUA.
+  //
+  // Antes se tomaba la primera que apareciera. El problema: la factura trae
+  // "FECHA FACTURA" y "FECHA VENCIMIENTO" pegadas, y la fecha de expedición
+  // SIEMPRE es anterior o igual al vencimiento — pero el orden en que salen del
+  // PDF depende de la reconstrucción por coordenadas, no está garantizado. Si
+  // salía primero el vencimiento, la app creía que la factura era de un mes
+  // después y no la marcaba "Estancada" cuando debía.
+  const todas = text.match(/\d{2}\/\d{2}\/\d{4}/g);
+  if (!todas || todas.length === 0) return null;
+  let masAntigua = null;
+  let claveMin = null;
+  for (const f of todas) {
+    const [d, mm, a] = f.split("/");
+    // Clave AAAAMMDD para comparar sin construir objetos Date (que dependerían
+    // de la zona horaria).
+    const clave = `${a}${mm}${d}`;
+    if (claveMin === null || clave < claveMin) {
+      claveMin = clave;
+      masAntigua = f;
+    }
+  }
+  return masAntigua;
 }
 
 // Decide qué parser usar. El orden importa y NO es intercambiable.

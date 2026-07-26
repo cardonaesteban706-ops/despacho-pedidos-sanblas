@@ -163,6 +163,23 @@ test("fechaDocumentoDe lee la fecha de la factura y la de la cotización", () =>
   assert.equal(fechaDocumentoDe(COTIZACION.join(" | ")), "13/07/2026");
 });
 
+test("fechaDocumentoDe: sin etiqueta, toma la fecha MÁS ANTIGUA", () => {
+  // La expedición siempre es anterior o igual al vencimiento, pero el orden en
+  // que salen del PDF depende de la reconstrucción por coordenadas. Antes se
+  // tomaba la primera que apareciera: si salía primero el vencimiento, la app
+  // creía que la factura era de un mes después y no la marcaba "Estancada".
+  assert.equal(fechaDocumentoDe("algo 23/08/2026 y antes 23/07/2026"), "23/07/2026");
+  assert.equal(fechaDocumentoDe("algo 23/07/2026 y luego 23/08/2026"), "23/07/2026");
+  // Cruzando año, para confirmar que compara por fecha y no por texto.
+  assert.equal(fechaDocumentoDe("01/02/2027 | 31/12/2026"), "31/12/2026");
+  assert.equal(fechaDocumentoDe("sin fechas aqui"), null);
+  // Con la etiqueta presente, manda la etiqueta y no la más antigua.
+  assert.equal(
+    fechaDocumentoDe("01/01/2020 | FECHA FACTURA FECHA VENCIMIENTO | 23/07/2026 23/08/2026"),
+    "23/07/2026"
+  );
+});
+
 test("parseFactura saca los datos de cabecera", () => {
   const r = parseFactura(FACTURA);
   assert.equal(r.numeroFactura, "62781");

@@ -31,6 +31,7 @@ import {
   formatFechaCorta,
   etiquetaFecha,
   nowTimeStr,
+  compararOrden,
 } from "./constants.js";
 // Lectura y parseo de PDF (antes acá arriba, ~340 líneas). El parseo vive en un
 // módulo puro y testeado (pdfParser.test.mjs, `npm test`); la lectura del PDF
@@ -80,7 +81,15 @@ const ESTADOS_COTIZACION = [
 // los números, NO una seguridad real: la app usa la llave pública de Supabase,
 // así que alguien con conocimiento técnico podría saltárselo. Para blindarlo de
 // verdad habría que migrar a login por usuario. Cambia el valor por el que quieras.
-const PIN_PANEL = "1234";
+// Se puede cambiar sin tocar el código, poniendo VITE_PIN_PANEL en Vercel
+// (Project Settings -> Environment Variables). Si no está, queda "1234".
+//
+// Sigue siendo una BARRERA VISUAL, no seguridad: el PIN termina en el bundle del
+// navegador y alguien con conocimiento técnico lo encuentra. Su trabajo es que el
+// personal no vea los números del Panel de refilón, y para eso alcanza —ahora que
+// RLS está cerrado, nadie de afuera puede sacar los datos por otra vía.
+// Blindarlo de verdad pediría usuarios con roles distintos.
+const PIN_PANEL = import.meta.env.VITE_PIN_PANEL || "1234";
 
 // Peso (en kg) de UNA unidad de material tal como sale en la factura —un bulto,
 // una varilla, un bloque…—, según fichas técnicas colombianas. La "carga" del
@@ -1462,12 +1471,12 @@ export default function DespachoPedidos() {
     );
     const colItems = pedidos
       .filter((p) => !setArrastrados.has(p.id) && fechaDe(p) === dragFecha && p.vehiculo === vehiculoId)
-      .sort((a, b) => a.orden - b.orden);
+      .sort(compararOrden);
 
     // El bloque arrastrado (uno o varios si es grupo), en su orden interno.
     const bloque = pedidos
       .filter((p) => setArrastrados.has(p.id))
-      .sort((a, b) => a.orden - b.orden)
+      .sort(compararOrden)
       .map((p) => {
         const m = { ...p, vehiculo: vehiculoId };
         if (m.vehiculoSecundario === vehiculoId) m.vehiculoSecundario = null;
@@ -1823,7 +1832,7 @@ export default function DespachoPedidos() {
           const fa = fechaDe(a);
           const fb = fechaDe(b);
           if (fa !== fb) return fa < fb ? -1 : 1;
-          return a.orden - b.orden;
+          return compararOrden(a, b);
         }),
     }));
   }, [pedidos, selectedDate, hoyIso]);
