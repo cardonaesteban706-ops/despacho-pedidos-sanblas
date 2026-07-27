@@ -3305,7 +3305,7 @@ const CARD_CSS = `
    Con px la tirilla salía mucho más angosta y con letra más pequeña que las
    del sistema de facturación. */
 .tr{background:#fff;color:#000;font-family:ui-monospace,'Courier New',monospace;
-  font-size:12px;line-height:1.35;width:240px;padding:10px 9px 14px;font-weight:600;
+  font-size:13px;line-height:1.35;width:300px;padding:10px 9px 14px;font-weight:600;
   border:0.5px solid var(--color-border-tertiary);}
 .tr-tit{font-size:1.15em;font-weight:800;text-align:center;line-height:1.2;}
 .tr-sub{font-size:0.82em;text-align:center;line-height:1.3;}
@@ -3324,23 +3324,26 @@ const CARD_CSS = `
 .tr-nota{text-align:center;font-size:0.75em;line-height:1.3;}
 
 /* Al imprimir se oculta toda la página y solo queda la tirilla.
-   - print-color-adjust:exact evita que el navegador "aclare" el negro: sin esto
-     el texto sale gris/flojo en la térmica (el defecto que se veía).
-   - font-weight 700 + negro puro = letra sólida, legible como la de World Office.
-   - @page margin:0 y size 58mm auto dejan la tirilla en UNA sola hoja, para que
-     la cuchilla automática no la parta en varios pedazos. */
+   - Papel: Gprinter 80 mm (72 mm imprimibles) x 297 mm de largo de página. El
+     tamaño @page va IGUAL al del driver: así la tirilla sale en UNA sola hoja y
+     la cuchilla la corta una vez (antes, con 58mm/auto, no cuadraba con el papel
+     y salían varios pedazos).
+   - Contenido a 72 mm centrado en los 80 (4 mm de margen a cada lado, que es el
+     área que la Gprinter no imprime).
+   - print-color-adjust:exact + font-weight 700 = negro sólido, no gris.
+   - font-size en mm = tamaño físico de la letra, más grande que en 58mm porque
+     ahora hay ancho de sobra y se pidió más legible. */
 @media print{
   html,body{margin:0 !important;padding:0 !important;}
   body *{visibility:hidden !important;}
-  #tirilla-print,#tirilla-print *{visibility:visible !important;
-    color:#000 !important;
+  #tirilla-print,#tirilla-print *{visibility:visible !important;color:#000 !important;
     -webkit-print-color-adjust:exact !important;print-color-adjust:exact !important;}
-  #tirilla-print{position:fixed !important;left:0 !important;top:0 !important;
-    width:100% !important;font-size:2.4mm !important;font-weight:700 !important;
+  #tirilla-print{position:fixed !important;left:4mm !important;top:0 !important;
+    width:72mm !important;font-size:2.9mm !important;font-weight:700 !important;
     margin:0 !important;padding:0 !important;border:none !important;box-shadow:none !important;}
   #tirilla-print .tr-tit,#tirilla-print .tr-enc,#tirilla-print .tr-num,
   #tirilla-print .tr-qty,#tirilla-print .tr-tot{font-weight:800 !important;}
-  @page{size:58mm auto;margin:0;}
+  @page{size:80mm 297mm;margin:0;}
 }
 /* Columnas angostas: el riel se pasa abajo como fila para que el nombre del
    cliente y el total no queden espichados. */
