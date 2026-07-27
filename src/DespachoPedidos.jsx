@@ -3305,33 +3305,42 @@ const CARD_CSS = `
    Con px la tirilla salía mucho más angosta y con letra más pequeña que las
    del sistema de facturación. */
 .tr{background:#fff;color:#000;font-family:ui-monospace,'Courier New',monospace;
-  font-size:12px;line-height:1.35;width:240px;padding:10px 9px 14px;
+  font-size:12px;line-height:1.35;width:240px;padding:10px 9px 14px;font-weight:600;
   border:0.5px solid var(--color-border-tertiary);}
-.tr-tit{font-size:1.15em;font-weight:700;text-align:center;line-height:1.2;}
+.tr-tit{font-size:1.15em;font-weight:800;text-align:center;line-height:1.2;}
 .tr-sub{font-size:0.82em;text-align:center;line-height:1.3;}
-.tr-enc{font-size:1em;font-weight:700;text-align:center;letter-spacing:0.04em;}
-.tr-num{font-size:1.5em;font-weight:700;text-align:center;margin:1px 0;}
-.tr-sep{border-top:1px dashed #000;margin:0.45em 0;}
-.tr-solid{border-top:1px solid #000;margin:0.2em 0 0.35em;}
+.tr-enc{font-size:1em;font-weight:800;text-align:center;letter-spacing:0.04em;}
+.tr-num{font-size:1.5em;font-weight:800;text-align:center;margin:1px 0;}
+.tr-sep{border-top:1.5px dashed #000;margin:0.45em 0;}
+.tr-solid{border-top:1.5px solid #000;margin:0.2em 0 0.35em;}
 .tr-row{display:flex;gap:0.35em;line-height:1.35;}
-.tr-lab{width:4.6em;flex-shrink:0;}
+.tr-lab{width:4.6em;flex-shrink:0;font-weight:700;}
 .tr-item{display:flex;gap:0.35em;margin-bottom:0.25em;line-height:1.3;}
-.tr-qty{width:4.6em;flex-shrink:0;font-weight:700;}
+.tr-qty{width:4.6em;flex-shrink:0;font-weight:800;}
 .tr-desc{flex:1;word-break:break-word;}
-.tr-tot{display:flex;justify-content:space-between;font-weight:700;}
-.tr-firma{margin-top:2.4em;border-top:1px solid #000;padding-top:0.25em;
+.tr-tot{display:flex;justify-content:space-between;font-weight:800;}
+.tr-firma{margin-top:2em;border-top:1.5px solid #000;padding-top:0.25em;
   text-align:center;font-size:0.82em;}
 .tr-nota{text-align:center;font-size:0.75em;line-height:1.3;}
 
-/* Al imprimir se oculta toda la página y solo queda la tirilla. El
-   font-size en mm es lo que hace que la letra salga del tamaño correcto. */
+/* Al imprimir se oculta toda la página y solo queda la tirilla.
+   - print-color-adjust:exact evita que el navegador "aclare" el negro: sin esto
+     el texto sale gris/flojo en la térmica (el defecto que se veía).
+   - font-weight 700 + negro puro = letra sólida, legible como la de World Office.
+   - @page margin:0 y size 58mm auto dejan la tirilla en UNA sola hoja, para que
+     la cuchilla automática no la parta en varios pedazos. */
 @media print{
+  html,body{margin:0 !important;padding:0 !important;}
   body *{visibility:hidden !important;}
-  #tirilla-print,#tirilla-print *{visibility:visible !important;}
+  #tirilla-print,#tirilla-print *{visibility:visible !important;
+    color:#000 !important;
+    -webkit-print-color-adjust:exact !important;print-color-adjust:exact !important;}
   #tirilla-print{position:fixed !important;left:0 !important;top:0 !important;
-    width:100% !important;font-size:2.3mm !important;margin:0 !important;
-    padding:0 !important;border:none !important;box-shadow:none !important;}
-  @page{size:58mm auto;margin:2mm;}
+    width:100% !important;font-size:2.4mm !important;font-weight:700 !important;
+    margin:0 !important;padding:0 !important;border:none !important;box-shadow:none !important;}
+  #tirilla-print .tr-tit,#tirilla-print .tr-enc,#tirilla-print .tr-num,
+  #tirilla-print .tr-qty,#tirilla-print .tr-tot{font-weight:800 !important;}
+  @page{size:58mm auto;margin:0;}
 }
 /* Columnas angostas: el riel se pasa abajo como fila para que el nombre del
    cliente y el total no queden espichados. */

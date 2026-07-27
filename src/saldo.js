@@ -132,19 +132,15 @@ export function topeEditableDe(prod) {
 }
 
 // Valor con el que ARRANCA el input del modal de "Material entregado".
-// No es lo mismo que el tope: acá manda la costumbre operativa.
-//   - ya se marcó antes  -> ese valor, para poder corregirlo;
-//   - factura sin remisiones y sin marcar -> todo lo facturado, porque el caso
-//     normal es "salí con todo" y el despachador solo baja lo que faltó
-//     (comportamiento de siempre, no le agregamos toques);
-//   - factura CON remisiones y sin marcar -> 0, porque lo que ya salió lo
-//     contaron las remisiones y acá solo se declara lo que salió directo.
+// Arranca en CERO: el despachador marca desde abajo lo que SÍ salió (igual que
+// "Descontar material"), en vez de bajar desde "todo entregado". Es más claro y
+// evita el error de dejar marcado de más sin querer. El caso "salió completo"
+// NO pasa por aquí: lo resuelve el botón "Entregado".
+//   - ya se marcó antes -> ese valor, para poder corregirlo;
+//   - cualquier otro caso (con o sin remisiones) -> 0.
 export function valorInicialMaterialDe(prod) {
   if (prod && prod.cantidadEntregada !== undefined && prod.cantidadEntregada !== null) {
     return cantidadNum(prod.cantidadEntregada);
-  }
-  if (prod && (prod.cantidadRestante === undefined || prod.cantidadRestante === null)) {
-    return facturadoDe(prod);
   }
   return 0;
 }
