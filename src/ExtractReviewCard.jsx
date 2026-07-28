@@ -3,6 +3,9 @@ import { useState, useRef } from "react";
 // archivo: una importación circular. Ahora todo sale de constants.js y la
 // cadena va en una sola dirección.
 import { formatCOP, esLineaFlete, todayISO, addDaysISO, VEHICULOS, DESTINOS } from "./constants.js";
+// Estado derivado y guardas de guardado. Separados para poder probar la matriz
+// documento (factura/cotización) × flujo (despacho/seguimiento).
+import { revisarExtraccion, motivoBloqueo } from "./extractRevision.js";
 
 /**
  * ExtractReviewCard — formulario de confirmación tras subir el PDF.
@@ -24,10 +27,13 @@ export default function ExtractReviewCard({ data, onChange, onConfirm, onCancel,
   // (solo datos + fecha de seguimiento); false = interfaz de despacho (vehículo,
   // fecha de entrega, destino). Es INDEPENDIENTE del formato del PDF: una
   // cotización subida desde el tablero de despachos entra en modo despacho.
-  const esCotizacion = seguimiento;
   // `tipoCotizacion` es el FORMATO del documento leído (factura vs cotización).
   // Solo afecta etiquetas ("N° cotización", badge), nunca el layout.
-  const tipoCotizacion = data.tipo === "cotizacion";
+  //
+  // El cálculo vive en extractRevision.js para poder probar la matriz
+  // documento × flujo, que es donde se cruzan estos dos booleanos parecidos.
+  const { esCotizacion, tipoCotizacion, missing, lineasIgnoradas, hayIgnoradas, alarmaSinProductos } =
+    revisarExtraccion(data, seguimiento);
   const [aviso, setAviso] = useState("");
   const [ack, setAck] = useState(false);
   // Confirmación aparte para el caso "este número ya existe". Va separada de
@@ -43,17 +49,6 @@ export default function ExtractReviewCard({ data, onChange, onConfirm, onCancel,
     setAviso("");
     onChange({ ...data, ...patch });
   };
-
-  // ---- estado derivado ----
-  const missing = [];
-  if (!data.cliente) missing.push("cliente");
-  if (!data.numeroFactura) missing.push(tipoCotizacion ? "número" : "N° documento");
-  if (!data.telefono) missing.push("teléfono");
-  if (!data.vendedor) missing.push("vendedor");
-  if (!data.total) missing.push("total");
-
-  const lineasIgnoradas = data.lineasIgnoradas || [];
-  const hayIgnoradas = lineasIgnoradas.length > 0;
 
   const today = todayISO();
   const esViaje = data.fechaDespacho === "viaje";
@@ -112,20 +107,10 @@ export default function ExtractReviewCard({ data, onChange, onConfirm, onCancel,
 
   const handleConfirm = () => {
     if (confirmadoRef.current) return; // evita doble clic mientras la tarjeta se cierra
-    if (!esCotizacion && !data.sinFechaDefinida && !data.vehiculo) {
-      setAviso("Selecciona un vehículo antes de guardar");
-      return;
-    }
-    if (!data.cliente || !data.cliente.trim()) {
-      setAviso("Escribe el nombre del cliente antes de guardar");
-      return;
-    }
-    if (hayIgnoradas && !ack) {
-      setAviso("Confirma que revisarás el material que no se pudo leer");
-      return;
-    }
-    if (duplicado && !ackDup) {
-      setAviso("Ese número ya existe: confirma que quieres guardarlo igual");
+    // Las guardas (y su orden) viven en extractRevision.js, con test.
+    const bloqueo = motivoBloqueo(data, { seguimiento, ack, ackDup, duplicado });
+    if (bloqueo) {
+      setAviso(bloqueo);
       return;
     }
     setAviso("");
@@ -188,6 +173,27 @@ export default function ExtractReviewCard({ data, onChange, onConfirm, onCancel,
               style={{ width: 18, height: 18, accentColor: "#b45309", cursor: "pointer" }}
             />
             Sé que está repetido, guardarlo igual
+          </label>
+        </div>
+      )}
+
+      {/* Aviso de que no se leyó NI UN material. Antes este caso pasaba callado. */}
+      {alarmaSinProductos && (
+        <div style={{ margin: "16px 20px 0", border: "1px solid var(--color-border-danger)", background: "var(--color-background-danger)", borderRadius: "var(--border-radius-md)", padding: "14px 16px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <i className="ti ti-alert-triangle" style={{ fontSize: 20, color: "var(--color-text-danger)" }} aria-hidden="true"></i>
+            <span style={{ fontWeight: 700, fontSize: 15, color: "var(--color-text-danger)" }}>
+              No se leyó ningún material
+            </span>
+          </div>
+          <div style={{ fontSize: 13, color: "var(--color-text-danger)", margin: "8px 0 10px" }}>
+            El documento se abrió, pero el lector <b>no reconoció la tabla de productos</b>. Suele pasar cuando el
+            formato del PDF cambió. Los demás datos ({tipoCotizacion ? "cliente, número, total" : "cliente, factura, total"})
+            pueden estar bien, pero <b>este pedido quedará sin materiales</b>. Abre el PDF y agrégalos a mano antes de despachar.
+          </div>
+          <label style={{ display: "flex", alignItems: "center", gap: 9, fontSize: 13.5, fontWeight: 600, color: "var(--color-text-danger)", cursor: "pointer" }}>
+            <input type="checkbox" checked={ack} onChange={(e) => { setAck(e.target.checked); setAviso(""); }} style={{ width: 18, height: 18, accentColor: "#dc2626", cursor: "pointer" }} />
+            Lo revisaré: entiendo que el pedido va sin materiales
           </label>
         </div>
       )}

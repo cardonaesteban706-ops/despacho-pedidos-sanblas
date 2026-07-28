@@ -3324,23 +3324,24 @@ const CARD_CSS = `
 .tr-nota{text-align:center;font-size:0.75em;line-height:1.3;}
 
 /* Al imprimir se oculta toda la página y solo queda la tirilla.
-   - Papel: Gprinter 80 mm (72 mm imprimibles) x 297 mm de largo de página. El
-     tamaño @page va IGUAL al del driver: así la tirilla sale en UNA sola hoja y
-     la cuchilla la corta una vez (antes, con 58mm/auto, no cuadraba con el papel
-     y salían varios pedazos).
-   - Contenido a 72 mm centrado en los 80 (4 mm de margen a cada lado, que es el
-     área que la Gprinter no imprime).
-   - print-color-adjust:exact + font-weight 700 = negro sólido, no gris.
-   - font-size en mm = tamaño físico de la letra, más grande que en 58mm porque
-     ahora hay ancho de sobra y se pidió más legible. */
+   - Papel: Gprinter 80 mm (72 mm imprimibles) x 297 mm.
+   - OJO con @page: la versión vieja decía "size:58mm auto", que NO es CSS válido
+     (no se puede mezclar una medida con "auto"). El navegador la descartaba y
+     terminaba escalando la tirilla por su cuenta. Por eso "antes" se veía de un
+     tamaño que nosotros no controlábamos. Ahora está fijada en milímetros
+     reales, así que el tamaño de la letra hay que pedirlo explícito.
+   - font-size va en mm = tamaño FÍSICO de la letra en el papel. 4mm es letra
+     bien legible en tirilla (la vieja pedía 2.3mm).
+   - print-color-adjust:exact + font-weight 700 = negro sólido, no gris. */
 @media print{
   html,body{margin:0 !important;padding:0 !important;}
   body *{visibility:hidden !important;}
   #tirilla-print,#tirilla-print *{visibility:visible !important;color:#000 !important;
     -webkit-print-color-adjust:exact !important;print-color-adjust:exact !important;}
   #tirilla-print{position:fixed !important;left:4mm !important;top:0 !important;
-    width:72mm !important;font-size:2.9mm !important;font-weight:700 !important;
+    width:72mm !important;font-size:4mm !important;font-weight:700 !important;
     margin:0 !important;padding:0 !important;border:none !important;box-shadow:none !important;}
+  #tirilla-print .tr-lab,#tirilla-print .tr-qty{width:4.3em !important;}
   #tirilla-print .tr-tit,#tirilla-print .tr-enc,#tirilla-print .tr-num,
   #tirilla-print .tr-qty,#tirilla-print .tr-tot{font-weight:800 !important;}
   @page{size:80mm 297mm;margin:0;}

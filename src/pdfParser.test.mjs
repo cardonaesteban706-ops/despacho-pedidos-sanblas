@@ -342,3 +342,127 @@ test("ningún parser explota con entradas vacías o basura", () => {
     assert.equal(c.total, null);
   }
 });
+
+// ---------------------------------------------------------------------
+// BLINDAJE: los casos que hacían PERDER PRODUCTOS EN SILENCIO.
+//
+// Todos estos se comprobaron ejecutando el parser: devolvían 0 productos Y 0
+// lineasIgnoradas, así que no había nada que mostrarle al usuario. La tarjeta
+// se veía normal, con un discreto "Productos (0)", y el camión salía vacío.
+// El silencio es el problema: una línea que no se puede leer y SE AVISA es un
+// inconveniente; una que desaparece sin rastro es un despacho equivocado.
+// ---------------------------------------------------------------------
+
+test("BLINDAJE: encabezado de tabla con otros nombres de columna", () => {
+  // World Office puede cambiar los rótulos. Antes se exigía literalmente que la
+  // línea empezara con "codigo descripcion": con "Item Referencia Detalle" no se
+  // encontraba el tramo de la tabla y se perdía el documento entero.
+  const r = parseFactura([
+    "Item Referencia Detalle Cant Und Vr.Unit IVA Vr.IVA Total",
+    "1 LAD01 LADRILLO TOLETE 100,00 Und. 900 19% 171 90.000",
+    "TOTAL ITÉM CANT. SUBTOTAL DESCUENTO IVA RETEFUENTE TOTAL FACTURA",
+  ]);
+  assert.equal(r.productos.length, 1);
+  assert.equal(r.productos[0].codigo, "LAD01");
+});
+
+test("BLINDAJE: el PIE de la tabla NO se confunde con un encabezado", () => {
+  // El pie ("TOTAL ITÉM CANT. SUBTOTAL DESCUENTO IVA RETEFUENTE TOTAL FACTURA")
+  // también trae palabras de columna. Si el encabezado tolerante lo aceptara, se
+  // abriría un tramo de más y los productos se leerían DOS VECES: material
+  // duplicado en el camión y kilos duplicados en el Panel.
+  const r = parseFactura(FACTURA);
+  assert.equal(r.productos.length, 7, "ni una línea de más");
+  assert.equal(r.lineasIgnoradas.length, 0);
+});
+
+test("BLINDAJE: código de producto con guion o punto", () => {
+  // El regex exigía [A-Z0-9] puro. Un código "TUB-061" no matcheaba NI el regex
+  // de producto NI el de rescate: se perdía sin dejar rastro.
+  const r = parseFactura([
+    "Código Descripción Cantidad U Medida Valor Unitario IVA Valor IVA Total",
+    '1 TUB-061 SIFON SANITARIO 2" 2,00 Und. 3.782 19% 718 7.563',
+    "2 CER.22 CERAMICA SANTA MARTA 12,50 M2 35.000 19% 6.650 437.500",
+    "TOTAL ITÉM CANT. SUBTOTAL DESCUENTO IVA RETEFUENTE TOTAL FACTURA",
+  ]);
+  assert.deepEqual(r.productos.map((p) => p.codigo), ["TUB-061", "CER.22"]);
+  assert.equal(r.lineasIgnoradas.length, 0);
+});
+
+test("BLINDAJE: cotización con código con guion", () => {
+  const r = parseCotizacion([
+    "CODIGO DESCRIPCION CANT UND VR UNITARIO IVA TOTAL",
+    "BLQ-12 BLOQUE No 4 500 Und 1.400 19% 833.000",
+    "CANT SUBTOTAL",
+  ]);
+  assert.equal(r.productos.length, 1);
+  assert.equal(r.productos[0].codigo, "BLQ-12");
+});
+
+test("BLINDAJE: una COTIZACIÓN que menciona la factura electrónica sigue siendo cotización", () => {
+  // Es el reverso del caso ya cubierto arriba. Muchas cotizaciones traen en el
+  // pie legal una nota tipo "este documento no es una factura electrónica".
+  // Con eso, detectTipoDocumento la mandaba a parseFactura, que no entiende sus
+  // columnas: 0 productos y 0 líneas ignoradas. El desempate es el pie de la
+  // tabla, que sí es propio de cada formato ("TOTAL PEDIDO" vs "TOTAL FACTURA").
+  const conNotaLegal = [
+    ...COTIZACION,
+    "Este documento no constituye FACTURA ELECTRONICA DE VENTA",
+  ];
+  assert.equal(detectTipoDocumento(conNotaLegal), "cotizacion");
+  const r = parseDocumento(conNotaLegal);
+  assert.equal(r.tipo, "cotizacion");
+  assert.equal(r.numeroFactura, "8891");
+  assert.equal(r.productos.length, 3, "sus 3 productos, no cero");
+});
+
+test("BLINDAJE: cantidad de 6 dígitos sin separador de miles", () => {
+  // 123.456 ladrillos se escribe con puntos, pero si el PDF los omite el regex
+  // se caía (aceptaba hasta 5 dígitos). Avisaba, pero perdía la línea.
+  const r = parseFactura([
+    "Código Descripción Cantidad U Medida Valor Unitario IVA Valor IVA Total",
+    "1 LAD01 LADRILLO TOLETE 123456 Und. 900 19% 171 111.110.400",
+    "TOTAL ITÉM CANT. SUBTOTAL DESCUENTO IVA RETEFUENTE TOTAL FACTURA",
+  ]);
+  assert.equal(r.productos.length, 1);
+  assert.equal(r.productos[0].cantidad, "123456");
+});
+
+test("BLINDAJE: una línea suelta no se pega a la descripción del producto anterior", () => {
+  // Las descripciones largas vienen partidas en dos líneas y hay que reunirlas,
+  // pero el filtro se tragaba cualquier texto corto. "Observaciones" terminaba
+  // dentro del nombre del material, y eso se imprime en la tirilla que firma el
+  // cliente.
+  const r = parseFactura([
+    "Código Descripción Cantidad U Medida Valor Unitario IVA Valor IVA Total",
+    "1 LAD01 LADRILLO TOLETE 100,00 Und. 900 19% 171 90.000",
+    "Observaciones",
+    "TOTAL ITÉM CANT. SUBTOTAL DESCUENTO IVA RETEFUENTE TOTAL FACTURA",
+  ]);
+  assert.equal(r.productos[0].descripcion, "LADRILLO TOLETE");
+});
+
+test("BLINDAJE: las continuaciones de verdad SÍ se siguen pegando", () => {
+  // La red de arriba no puede romper el caso que sí funciona.
+  const r = parseFactura([
+    "Código Descripción Cantidad U Medida Valor Unitario IVA Valor IVA Total",
+    "1 SAN01 SANITARIO LINEA 100,00 Und. 900 19% 171 90.000",
+    "ATLANTIS",
+    "TOTAL ITÉM CANT. SUBTOTAL DESCUENTO IVA RETEFUENTE TOTAL FACTURA",
+  ]);
+  assert.equal(r.productos[0].descripcion, "SANITARIO LINEA ATLANTIS");
+});
+
+test("BLINDAJE: sin tramo de tabla, las líneas de producto quedan como ignoradas", () => {
+  // Última red: si ni siquiera se reconoce el encabezado, que la pérdida quede
+  // registrada en vez de desaparecer. lineasIgnoradas solo se llenaba DENTRO de
+  // un tramo encontrado, así que sin encabezado no había tramo y no había rastro.
+  const r = parseFactura([
+    "FECV No. 999",
+    "CLIENTE ALGUIEN",
+    "1 LAD01 LADRILLO TOLETE 100,00 Und. 900 19% 171 90.000",
+    "2 CEM01 CEMENTO GRIS 50 KG 20,00 Und. 28.000 19% 5.320 560.000",
+  ]);
+  assert.equal(r.productos.length, 0, "sin tabla no se inventan productos");
+  assert.equal(r.lineasIgnoradas.length, 2, "pero la pérdida SÍ queda registrada");
+});

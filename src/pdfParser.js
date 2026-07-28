@@ -26,8 +26,53 @@ import { normalizarTexto } from "./constants.js";
 //
 // Normalizar en vez de enumerar variantes cubre "ÍTEM", "ITÉM", "ITEM", "Ítem"
 // y cualquier combinación que decida escribir el generador del PDF.
-const esEncabezadoTabla = (l) => /^codigo\s+descripcion/.test(normalizarTexto(l));
 const esPieTablaFactura = (l) => /total\s*item/.test(normalizarTexto(l));
+
+// Grupos de rótulos de columna. Cada grupo es UNA columna con sus sinónimos: lo
+// que importa es cuántas columnas distintas se reconocen, no cuántas palabras.
+const COLUMNAS_TABLA = [
+  /\b(codigo|referencia|ref)\b/,
+  /\b(descripcion|detalle|producto|articulo|item)\b/,
+  /\b(cantidad|cant)\b/,
+  /\b(unidad|und|u\s*medida|medida)\b/,
+  /\b(valor|vr|precio)\b/,
+  /\biva\b/,
+  /\b(total|subtotal|importe)\b/,
+];
+
+// ¿Esta línea es el encabezado de la tabla de productos?
+//
+// Antes se exigía literalmente que empezara con "codigo descripcion". Eso ató el
+// parser a UN juego de rótulos: con "Item Referencia Detalle Cant..." no se
+// encontraba el tramo de la tabla y se perdía el documento COMPLETO —cero
+// productos y cero líneas ignoradas, sin nada que mostrarle al usuario—.
+//
+// Ahora se cuentan columnas reconocidas. Las dos guardias no son opcionales:
+//
+//   - SIN DÍGITOS: un encabezado nunca trae cantidades ni precios. Es lo que
+//     impide que una línea de producto se tome por encabezado.
+//   - NO ES EL PIE: "TOTAL ITÉM CANT. SUBTOTAL DESCUENTO IVA RETEFUENTE TOTAL
+//     FACTURA" reconoce cuatro columnas y no tiene dígitos, así que pasaría el
+//     filtro. Si se aceptara, se abriría un tramo de más y los productos se
+//     leerían DOS VECES: material duplicado en el camión y kilos duplicados en
+//     el Panel. Ese bug ya ocurrió una vez por otra vía (ver el comentario del
+//     pie más abajo) y no puede volver.
+const esEncabezadoTabla = (l) => {
+  const n = normalizarTexto(l);
+  if (/^codigo\s+descripcion/.test(n)) return true; // el formato de siempre
+  if (/\d/.test(n)) return false;
+  if (esPieTablaFactura(l) || /^cant\s+subtotal/.test(n)) return false;
+  return COLUMNAS_TABLA.filter((re) => re.test(n)).length >= 3;
+};
+
+// ¿Esta línea PARECE una línea de producto de factura (N° de ítem + código),
+// aunque el parser no haya podido leerla? Es el filtro de rescate: lo que caiga
+// acá se le muestra al usuario en vez de desaparecer.
+//
+// Acepta las mismas formas de código que el regex de producto. Cuando eran
+// distintos (el rescate exigía [A-Z0-9] puro), un código con guion fallaba en
+// los dos y se perdía sin rastro: la peor combinación posible.
+const esPosibleLineaProductoFactura = (l) => /^\d{1,4}\s+[A-Z0-9][A-Z0-9.\-]{1,11}\s+\S/i.test(l);
 
 // Reconstruye filas reales a partir de los fragmentos de texto del PDF,
 // agrupándolos por su posición vertical (Y) y no por su orden de aparición en el
@@ -115,10 +160,27 @@ export function fechaDocumentoDe(text) {
 // Ahora manda la marca propia de la factura electrónica, que una cotización no
 // puede tener. Solo si no está se considera cotización. Un documento normal
 // (solo uno de los dos marcadores) se clasifica igual que antes.
+// ...pero la marca de factura tampoco puede ganar SIEMPRE, y ese era el hueco
+// que quedaba: muchas cotizaciones traen en el pie legal una nota del tipo
+// "este documento no constituye FACTURA ELECTRÓNICA DE VENTA". Con eso la
+// cotización se iba por parseFactura, que no entiende sus columnas, y volvía a
+// pasar exactamente lo mismo: 0 productos y 0 líneas ignoradas, en silencio.
+//
+// Cuando aparecen las DOS marcas desempata el pie de la tabla, que sí es propio
+// de cada formato y no se cita de pasada: "TOTAL PEDIDO" solo lo imprime una
+// cotización; "TOTAL FACTURA" / "TOTAL ÍTEM", solo una factura. Un documento
+// normal (una sola marca) se clasifica igual que siempre.
 export function detectTipoDocumento(lines) {
   const text = lines.join(" ");
-  if (/FECV\s*No/i.test(text) || /FACTURA\s+ELECTR[ÓO]NICA/i.test(text)) return "factura";
-  if (/COTIZACION\s+No/i.test(text)) return "cotizacion";
+  const marcaFactura = /FECV\s*No/i.test(text) || /FACTURA\s+ELECTR[ÓO]NICA/i.test(text);
+  const marcaCotizacion = /COTIZACION\s+No/i.test(text);
+  if (marcaFactura && marcaCotizacion) {
+    const pieFactura = /TOTAL\s+FACTURA/i.test(text) || lines.some(esPieTablaFactura);
+    if (/TOTAL\s+PEDIDO/i.test(text) && !pieFactura) return "cotizacion";
+    return "factura";
+  }
+  if (marcaFactura) return "factura";
+  if (marcaCotizacion) return "cotizacion";
   return "factura";
 }
 
@@ -221,7 +283,11 @@ export function parseFactura(lines) {
     // lee genérica (cualquier palabra corta + dígito opcional para m2/m3) en
     // vez de una lista fija: cualquier unidad no listada descartaba la línea
     // COMPLETA en silencio.
-    const productLineRegex = /^(\d{1,4})\s+([A-Z0-9]{2,12})\s+(.+?)\s+(\d{1,3}(?:\.\d{3})+(?:,\d{1,2})?|\d{1,5}(?:[.,]\d{1,2})?)\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ]{1,12}\d?\.?)\s+([\d.,]+)\s+(\d{1,2}%)\s+([\d.,]+)\s+([\d.,]+)\s*$/i;
+    // El CÓDIGO admite guion y punto ("TUB-061", "CER.22"): con [A-Z0-9] puro
+    // esas líneas no matcheaban NI acá NI en el filtro de rescate de abajo, así
+    // que el material se perdía sin dejar rastro. La CANTIDAD llega a 6 dígitos
+    // por lo mismo: 123456 unidades sin separador de miles se descartaba.
+    const productLineRegex = /^(\d{1,4})\s+([A-Z0-9][A-Z0-9.\-]{1,11})\s+(.+?)\s+(\d{1,3}(?:\.\d{3})+(?:,\d{1,2})?|\d{1,6}(?:[.,]\d{1,2})?)\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ]{1,12}\d?\.?)\s+([\d.,]+)\s+(\d{1,2}%)\s+([\d.,]+)\s+([\d.,]+)\s*$/i;
     let pending = null;
     for (let i = tableHeaderIdx + 1; i < tableEndIdx; i++) {
       const line = lines[i].trim();
@@ -252,14 +318,34 @@ export function parseFactura(lines) {
         // Con PDFs de varias páginas, entre el final de una página y el inicio
         // de la otra aparecen pies/encabezados repetidos ("Página 1 de 2",
         // "Código Descripción...", NIT, etc.) que no son continuación de nada.
-        !/p[áa]gina|c[óo]digo|descripci[óo]n|nit\b|fecv|cliente|tel[ée]fono/i.test(line)
+        // "Observaciones", "Son:", "VALOR EN LETRA"... son rótulos del documento,
+        // no continuación de nada. Terminaban DENTRO del nombre del material
+        // ("LADRILLO TOLETE Observaciones") y eso se imprime en la tirilla que
+        // firma el cliente.
+        !/p[áa]gina|c[óo]digo|descripci[óo]n|nit\b|fecv|cliente|tel[ée]fono/i.test(line) &&
+        !/^(observaci|son:|valor en letra|total|subtotal|direcci|vendedor|forma de pago|ciudad)/i.test(line)
       ) {
         // Continuación de una descripción larga partida en 2 líneas (ej: "3H", "ATLANTIS")
         pending.descripcion = pending.descripcion + " " + line;
-      } else if (/^\d{1,4}\s+[A-Z0-9]{2,12}\s+\S/i.test(line)) {
+      } else if (esPosibleLineaProductoFactura(line)) {
         // Parece línea de producto (N° ítem + código) pero no se pudo leer.
         result.lineasIgnoradas.push(line);
       }
+    }
+  }
+
+  // ÚLTIMA RED. Todo lo de arriba ocurre DENTRO de un tramo encontrado: si no se
+  // reconoció ningún encabezado de tabla, no hay tramo, no se recorre nada y
+  // lineasIgnoradas queda vacío. Ese era el silencio más peligroso — el
+  // documento entero desaparecía sin una sola señal.
+  //
+  // Acá se barre el documento completo y se registra lo que parezca producto.
+  // No se intenta parsearlo (sin encabezado no se sabe qué columna es cuál):
+  // la gracia es que el usuario VEA que había material y que no se leyó.
+  if (tramos.length === 0) {
+    for (const l of lines) {
+      const line = l.trim();
+      if (esPosibleLineaProductoFactura(line)) result.lineasIgnoradas.push(line);
     }
   }
 
@@ -371,7 +457,9 @@ export function parseCotizacion(lines) {
     // ahí hacía que la línea COMPLETA se descartara en silencio: "galon" fue el
     // caso real (la lista tenía "Gal." y se atoraba con el "on"). Perder una
     // línea sin avisar es peligroso — por eso además contamos las descartadas.
-    const productLineRegex = /^([A-Z0-9]{2,12})\s+(.+?)\s+(\d{1,3}(?:\.\d{3})+(?:,\d{1,2})?|\d{1,5}(?:[.,]\d{1,2})?)\s*([A-Za-zÁÉÍÓÚÜÑáéíóúüñ]{1,12}\d?\.?)\s+([\d.,]+)\s+(\d{1,2}%)\s+([\d.,]+)\s*$/i;
+    // Mismo criterio que en la factura: el código admite guion y punto, y la
+    // cantidad llega a 6 dígitos.
+    const productLineRegex = /^([A-Z0-9][A-Z0-9.\-]{1,11})\s+(.+?)\s+(\d{1,3}(?:\.\d{3})+(?:,\d{1,2})?|\d{1,6}(?:[.,]\d{1,2})?)\s*([A-Za-zÁÉÍÓÚÜÑáéíóúüñ]{1,12}\d?\.?)\s+([\d.,]+)\s+(\d{1,2}%)\s+([\d.,]+)\s*$/i;
     for (let i = tableHeaderIdx + 1; i < tableEndIdx; i++) {
       const line = lines[i].trim();
       if (!line) continue;
@@ -384,7 +472,7 @@ export function parseCotizacion(lines) {
           unidad: m[4],
           total: m[7].replace(/\./g, ""),
         });
-      } else if (/^[A-Z0-9]{2,12}\s+\S.*\d[\d.,]*\s*$/i.test(line) && /\d{1,2}%/.test(line)) {
+      } else if (/^[A-Z0-9][A-Z0-9.\-]{1,11}\s+\S.*\d[\d.,]*\s*$/i.test(line) && /\d{1,2}%/.test(line)) {
         // Parece una línea de producto (empieza con código, termina en número y
         // trae el % de IVA) pero no se pudo leer: la registramos para avisarle
         // al usuario en vez de perderla en silencio. El filtro es estricto a
