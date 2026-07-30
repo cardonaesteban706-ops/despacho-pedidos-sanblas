@@ -1,3 +1,5 @@
+import { formatCantidad } from "./constants.js";
+
 // saldo.js
 //
 // FUENTE ÚNICA DE VERDAD del saldo de una línea de producto.
@@ -163,4 +165,84 @@ export function aplicarEntregadoDirecto(prod, entregadoDirecto) {
     out.cantidadRestante = Math.max(0, tope - n);
   }
   return out;
+}
+
+// Igual que aplicarEntregadoDirecto, pero recibe un INCREMENTO en vez del total.
+//
+// Existe porque son dos preguntas distintas y confundirlas costaba material:
+//   - "Material entregado" pregunta el TOTAL que lleva salido    -> aplicarEntregadoDirecto
+//   - "Descontar material" pregunta cuánto se llevó AHORA MISMO  -> esta
+//
+// Al sumar sobre lo ya marcado, el par (cantidadEntregada, cantidadRestante)
+// queda coherente aunque se descuente varias veces seguidas.
+export function sumarEntregadoDirecto(prod, usadoAhora) {
+  return aplicarEntregadoDirecto(prod, marcadoAManoDe(prod) + Math.max(0, cantidadNum(usadoAhora)));
+}
+
+// Cierra una línea como "salió todo lo que faltaba" (botón "Entregado").
+//
+// Vivía suelta en DespachoPedidos.jsx: era la SÉPTIMA copia de la regla del
+// saldo y la única que quedó fuera de este archivo. Ahora está acá, con test.
+export function cerrarEntregaCompleta(productos) {
+  return (productos || []).map((p) => {
+    // Factura con remisiones: lo que sale HOY es solo el saldo que quedaba
+    // (lo demás ya se contó al entregar cada remisión). Se deja el saldo en
+    // cero para que no vuelva a contarse.
+    if (p.cantidadRestante !== undefined && p.cantidadRestante !== null) {
+      // topeEditableDe = saldo + lo marcado a mano, o sea TODO lo que salió
+      // directo contra esta fila (sin lo remisionado, que ya se contó aparte).
+      //
+      // Antes acá iba `cantidadRestante` a secas, y eso PISABA lo marcado a
+      // mano en vez de sumárselo: en una factura de 100 con remisión de 40 y 20
+      // entregados en el mostrador, al cerrar quedaba cantidadEntregada = 40 y
+      // los 20 del mostrador desaparecían de los kilos del Panel para siempre.
+      //
+      // El Math.min es para las filas viejas inconsistentes (un cantidadRestante
+      // mayor que lo facturado): sin él, el Panel inflaba kilos que nunca
+      // salieron. Es el mismo blindaje que ya tiene saldoDe.
+      return {
+        ...p,
+        cantidadEntregada: Math.min(facturadoDe(p), topeEditableDe(p)),
+        cantidadRestante: 0,
+      };
+    }
+    return { ...p, cantidadEntregada: p.cantidad };
+  });
+}
+
+// ---------------------------------------------------------------------
+// Faltantes: qué material quedó debiendo un pedido.
+// ---------------------------------------------------------------------
+// Vivían en DespachoPedidos.jsx. Son reglas de saldo puras y ya leían de
+// acá, así que su sitio es este archivo: PedidoCard las necesita para
+// pintar el aviso rojo, y dejarlas en el monolito lo habría amarrado.
+
+// Seguimiento de material por unidades: un producto "tocado" tiene el campo
+// cantidadEntregada. Devuelve los productos donde se entregaron MENOS unidades
+// que las de la factura (con cuántas faltan). Un pedido sin ningún producto
+// tocado devuelve lista vacía y se comporta como siempre.
+export function faltantesDeProductos(productos) {
+  return (productos || [])
+    .map((p) => ({
+      ...p,
+      // Copia 3 de 6 -> saldo.js. OJO a la diferencia con saldoDe puro: una
+      // línea sin tocar NO cuenta como faltante (faltan: 0). El aviso rojo de
+      // "debe material" solo se prende con lo que alguien declaró faltando, no
+      // con un pedido que nadie ha marcado todavía.
+      faltan:
+        (p.cantidadRestante !== undefined && p.cantidadRestante !== null) ||
+        (p.cantidadEntregada !== undefined && p.cantidadEntregada !== null)
+          ? saldoDe(p)
+          : 0,
+    }))
+    .filter((p) => p.faltan > 0);
+}
+
+// Nota de texto (mismo formato de siempre: "2 tejas; 1 bulto cemento") armada
+// a partir de los faltantes por unidades. Se usa al pasar un pedido de
+// "Pendientes" a despacho, para no tener que reescribir la nota a mano.
+export function notaDesdeFaltantes(productos) {
+  const faltan = faltantesDeProductos(productos);
+  if (faltan.length === 0) return "";
+  return faltan.map((p) => `${formatCantidad(p.faltan)} ${p.unidad || ""} ${p.descripcion || ""}`.replace(/\s+/g, " ").trim()).join("; ");
 }

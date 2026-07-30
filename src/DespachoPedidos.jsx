@@ -1,10 +1,27 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { cargarPedidosActivos, cargarHistorial, guardarPedido, actualizarPedido, eliminarPedido, cargarPdfPedido } from "./supabaseClient";
 import { cargarCotizaciones, guardarCotizacion, eliminarCotizacion, cargarPdfCotizacion } from "./supabaseClient";
-import { buscarHistorial, maxNumeroRemision, columnasFaltantes, moverPedidoAEstado, DIAS_HISTORIAL_PRECARGADO } from "./supabaseClient";
+import { buscarHistorial, maxNumeroRemision, columnasFaltantes, moverPedidoAEstado, salir, DIAS_HISTORIAL_PRECARGADO } from "./supabaseClient";
 import PanelResumen from "./PanelResumen.jsx";
 import PorEntregar from "./PorEntregar.jsx";
 import ExtractReviewCard, { ExtractReviewCardCotizacion } from "./ExtractReviewCard.jsx";
+// Modales y tarjetas extraídos del monolito. Son componentes hoja: reciben props
+// simples y no tocan el estado de despacho, así que salir de acá no cambió nada
+// de lo que hacen. TirillaModal se llevó además su propio CSS de impresión, y
+// PedidoCard su CARD_CSS (que se sigue inyectando UNA sola vez desde acá: con 50
+// pedidos, una etiqueta de estilos por tarjeta serían 50 copias en el DOM).
+import ModalOverlay from "./ModalOverlay.jsx";
+import TirillaModal from "./TirillaModal.jsx";
+import MotivoRechazoModal from "./MotivoRechazoModal.jsx";
+import MaterialPorUnidadesModal from "./MaterialPorUnidadesModal.jsx";
+import DescontarMaterialModal from "./DescontarMaterialModal.jsx";
+import PdfModal from "./PdfModal.jsx";
+import RemisionManualModal from "./RemisionManualModal.jsx";
+import DestinoSelector from "./DestinoSelector.jsx";
+import PedidoCard, { CARD_CSS } from "./PedidoCard.jsx";
+import GrupoCard from "./GrupoCard.jsx";
+import HistorialRow from "./HistorialRow.jsx";
+import CotizacionCard, { ESTADOS_COTIZACION_BADGE, ESTADOS_COTIZACION_BADGE_KEYS } from "./CotizacionCard.jsx";
 import {
   parseCantidad,
   cantidadNum,
@@ -13,7 +30,17 @@ import {
   topeEditableDe,
   valorInicialMaterialDe,
   aplicarEntregadoDirecto,
+  sumarEntregadoDirecto,
+  cerrarEntregaCompleta,
+  faltantesDeProductos,
+  notaDesdeFaltantes,
 } from "./saldo.js";
+// Kilos: lógica pura y testeada (peso.test.mjs). Salió del monolito porque las
+// tarjetas la necesitaban y las tenía amarradas acá.
+import { cargaDePedido, cargaPorEntregar, categoriaDeProducto, pesoDeProducto, cantidadEntregadaDe } from "./peso.js";
+// Deshacer un cambio optimista con operaciones RELATIVAS al estado actual, en
+// vez de restaurar una foto de la lista entera. Ver la cabecera de listas.js.
+import { quitarPorId, reponerPorId, reemplazarPorId } from "./listas.js";
 // Constantes y helpers puros (antes acá arriba). Se movieron a constants.js para
 // romper la importación circular con ExtractReviewCard.jsx.
 import {
@@ -36,7 +63,7 @@ import {
 // Lectura y parseo de PDF (antes acá arriba, ~340 líneas). El parseo vive en un
 // módulo puro y testeado (pdfParser.test.mjs, `npm test`); la lectura del PDF
 // está aparte porque es la única parte que necesita pdf.js.
-import { extractPdfLines, pdfjsLib } from "./pdfExtract.js";
+import { extractPdfLines } from "./pdfExtract.js";
 import { parseDocumento } from "./pdfParser.js";
 // Reglas de remisión (enlace madre-hija y correlativo REM), con tests.
 import { remisionesDe, maxRemisionDeNumeros, formatearNumeroRemision } from "./remisiones.js";
@@ -97,76 +124,11 @@ const PIN_PANEL = import.meta.env.VITE_PIN_PANEL || "1234";
 // categorías cuando haga falta. El ORDEN importa: se usa la primera categoría
 // cuya palabra clave aparezca en la descripción, así que las más específicas
 // (bloque, ladrillo, pegante) van antes que las genéricas (cemento).
-const PESO_POR_DEFECTO = 1; // material desconocido: cuenta 1 kg (no lo dejamos en 0)
-const CATEGORIAS_PESO = [
-  { nombre: "Pegante / mortero seco", kg: 25, claves: ["pegante", "pegacor", "mega pega", "megapega", "mortero seco", "concreto seco"] },
-  { nombre: "Bloque", kg: 12, claves: ["bloque", "bloquelon", "adoquin"] },
-  { nombre: "Ladrillo", kg: 3, claves: ["ladrillo", "tolete", "adobe", "farol"] },
-  // Cubiertas / tejas. Van ANTES de "Varilla / hierro" a propósito: si una hoja
-  // de zinc viene descrita como "corrugada", esa palabra (clave de hierro) le
-  // ganaría y la clasificaría mal. Los pesos son estimados de ficha técnica —
-  // ajústalos si quieres afinar el Panel. El ORDEN dentro del bloque también
-  // importa: las específicas (eternit, arquitectónica, zinc) antes que la
-  // genérica "teja".
-  { nombre: "Teja fibrocemento (Eternit / Ruralit)", kg: 22, claves: ["eternit", "ruralit", "fibrocemento", "fibrocement"] },
-  { nombre: "Teja arquitectónica metálica", kg: 12, claves: ["arquitectonic"] },
-  { nombre: "Zinc / hoja de zinc", kg: 5, claves: ["zinc"] },
-  { nombre: "Metaldeck / steel deck", kg: 20, claves: ["metaldeck", "metal deck", "steeldeck", "steel deck"] },
-  { nombre: "Teja (otra)", kg: 10, claves: ["teja"] },
-  { nombre: "Varilla / hierro", kg: 5, claves: ["varilla", "hierro", "figurado", "estribo", "fleje", "corrugad"] },
-  // Alambre negro es para amarre (no es varilla), clave específica para no
-  // mezclarlo con alambre galvanizado u otros que pesan distinto.
-  { nombre: "Alambre negro (amarre)", kg: 1, claves: ["alambre negro"] },
-  // Malla electrosoldada: dos calibres/cuadrículas distintas, cada una con su
-  // propio peso por lámina. Claves con varias variantes de escritura por si
-  // la factura no dice "elect" completo.
-  { nombre: "Malla electrosoldada 15x15", kg: 45, claves: ["malla elect 4mm 15x15", "malla electrosoldada 4mm 15x15", "malla 15x15"] },
-  { nombre: "Malla electrosoldada 25x25", kg: 28, claves: ["malla elect 4mm 25x25", "malla electrosoldada 4mm 25x25", "malla 25x25"] },
-  { nombre: "Cerámica / piso", kg: 20, claves: ["ceramica", "porcelanato", "baldosa", "enchape"] },
-  // Estas dos son de línea SANTA MARTA / MANAURE, que se venden por M² (no por
-  // caja) — por eso llevan su propio peso por m², distinto del genérico de
-  // arriba. Van con nombre propio para que el Panel diga cuál es cuál.
-  { nombre: "Cerámica Santa Marta (por m²)", kg: 18, claves: ["santa marta"] },
-  { nombre: "Piso Manaure (por m²)", kg: 18, claves: ["manaure"] },
-  { nombre: "Placa yesocartón (drywall)", kg: 22, claves: ["yesocarton", "yeso carton", "drywall", "dry wall"] },
-  { nombre: "Arena / gravilla / áridos", kg: 40, claves: ["arena", "gravilla", "triturado", "recebo", "balastro", "arenilla"] },
-  // Tubo galvanizado ANTES de "Tubería PVC" para que "tubería galvanizada" no
-  // caiga como PVC. Claves específicas ("tubo/tubería galvaniz") para no atrapar
-  // otros galvanizados (puntilla, malla, alambre) que no pesan lo mismo.
-  { nombre: "Tubo galvanizado", kg: 8, claves: ["tubo galvaniz", "tuberia galvaniz"] },
-  // Tubo estructural rectangular (cerrajería/estructuras), NEGRO — no es el
-  // mismo producto que "tubo galvanizado". Se diferencia por calibre: el
-  // calibre 16 es más grueso (más pesado) que el calibre 18.
-  { nombre: "Tubo rectangular estructural (cal. 16)", kg: 19, claves: ["cal16"] },
-  { nombre: "Tubo rectangular estructural (cal. 18)", kg: 13, claves: ["cal18"] },
-  // Tubo presión y sanitario son PVC pero de línea distinta a "Tubería PVC"
-  // genérica de abajo — claves específicas para que no se mezclen entre sí.
-  { nombre: "Tubo PVC presión", kg: 2, claves: ["tubo presion"] },
-  { nombre: "Tubo sanitario PVC", kg: 8, claves: ["tubo sanitario"] },
-  { nombre: "Tubería PVC", kg: 3, claves: ["tuberia", "novafort"] },
-  // Tanques de agua, por capacidad — el peso es del tanque VACÍO.
-  { nombre: "Tanque de agua 500L", kg: 16, claves: ["tanque 500"] },
-  { nombre: "Tanque de agua 1000L", kg: 28, claves: ["tanque 1000", "tanque 1.000", "tanque 1,000"] },
-  { nombre: "Tanque de agua 2000L", kg: 48, claves: ["tanque 2000", "tanque 2.000", "tanque 2,000"] },
-  { nombre: "Accesorios / menores", kg: 0.2, claves: ["codo", "adaptador", "registro", "tornillo", "puntilla", "silicona", "sifon", "abrazadera", "reduccion"] },
-  // Boquilla (lechada de cerámica) siempre viene por bulto de 2kg, y acronal
-  // (adhesivo acrílico para pintura/impermeabilización) por kg.
-  { nombre: "Boquilla (lechada cerámica)", kg: 2, claves: ["boquilla"] },
-  { nombre: "Acronal (adhesivo acrílico)", kg: 1, claves: ["acronal"] },
-  { nombre: "Cemento", kg: 50, claves: ["cemento"] },
-];
 
 
 
 
 
-function categoriaDeProducto(descripcion) {
-  const d = normalizarTexto(descripcion);
-  for (const cat of CATEGORIAS_PESO) {
-    if (cat.claves.some((k) => d.includes(k))) return cat;
-  }
-  return null;
-}
 
 
 
@@ -181,22 +143,10 @@ function categoriaDeProducto(descripcion) {
 // número el día del cierre, perdiendo el resto para siempre. Las facturas
 // madre (las que llevan saldo de remisiones) NO se tocan: su material ya se
 // contó al salir cada remisión.
-function cerrarEntregaCompleta(productos) {
-  return (productos || []).map((p) => {
-    // Factura con remisiones: lo que sale HOY es solo el saldo que quedaba
-    // (lo demás ya se contó al entregar cada remisión). Se deja el saldo en
-    // cero para que no vuelva a contarse.
-    if (p.cantidadRestante !== undefined && p.cantidadRestante !== null) {
-      return { ...p, cantidadEntregada: Number(p.cantidadRestante) || 0, cantidadRestante: 0 };
-    }
-    return { ...p, cantidadEntregada: p.cantidad };
-  });
-}
 
 // Copia 1 de 6 -> saldo.js. Ojo: para el Panel, una línea NUNCA tocada cuenta
 // como entregada completa (así el historial viejo no se vacía retroactivamente).
 // Esa asimetría está explicada en entregadoParaPanelDe().
-const cantidadEntregadaDe = entregadoParaPanelDe;
 
 // Kilos de una línea de producto: peso unitario de su categoría × cantidad
 // realmente entregada. (Solo se usa en el Panel, sobre el historial.)
@@ -208,67 +158,15 @@ const cantidadEntregadaDe = entregadoParaPanelDe;
 //   2) varilla: se calcula el peso real del acero con su diámetro y su largo,
 //      así no hay que mantener una lista de calibres.
 //   3) si no, el peso por categoría de CATEGORIAS_PESO (aproximado).
-function pesoUnitarioDe(prod) {
-  const desc = normalizarTexto(prod && prod.descripcion);
 
-  // 1) Kilos escritos en la descripción.
-  const mKg = desc.match(/(\d+(?:[.,]\d+)?)\s*(?:kgs?|kilos?)\b/);
-  if (mKg) {
-    const n = parseFloat(mKg[1].replace(",", "."));
-    if (n > 0 && n < 2000) return n;
-  }
-
-  const cat = categoriaDeProducto(prod && prod.descripcion);
-
-  // 2) Varilla por diámetro. El acero pesa 0,006165 kg por metro y por mm² de
-  //    diámetro (densidad 7850 kg/m³), fórmula estándar de la industria.
-  //    Solo se aplica si la categoría resuelta es varilla/hierro, para que un
-  //    "MALLA ELECT 4mm" no se confunda con una varilla de 4 mm.
-  if (cat && cat.nombre === "Varilla / hierro") {
-    let diametro = null;
-    const mMm = desc.match(/(\d+(?:[.,]\d+)?)\s*mm\b/);
-    if (mMm) diametro = parseFloat(mMm[1].replace(",", "."));
-    else {
-      // Algunas vienen sin la palabra "mm" ("VARILLA 3/8 X 6Mts 7.0"): se toma
-      // el último número suelto si cae en un rango plausible de diámetro.
-      const sueltos = desc.match(/(\d+(?:[.,]\d+)?)(?!\s*(?:m|mt|mts|metros|kg|"|''))/g);
-      if (sueltos && sueltos.length) {
-        const ultimo = parseFloat(sueltos[sueltos.length - 1].replace(",", "."));
-        if (ultimo >= 3 && ultimo <= 40) diametro = ultimo;
-      }
-    }
-    if (diametro) {
-      const mLargo = desc.match(/x\s*(\d+(?:[.,]\d+)?)\s*m(?:t|ts|etros)?\b/);
-      const largo = mLargo ? parseFloat(mLargo[1].replace(",", ".")) : 6; // 6 m es el estándar
-      const kg = 0.006165 * diametro * diametro * largo;
-      if (kg > 0 && kg < 500) return kg;
-    }
-  }
-
-  // 3) Aproximado por categoría.
-  return cat ? cat.kg : PESO_POR_DEFECTO;
-}
-
-function pesoDeProducto(prod) {
-  return pesoUnitarioDe(prod) * cantidadEntregadaDe(prod);
-}
 
 // Kilos totales de un pedido: suma de todas sus líneas.
-function cargaDePedido(pedido) {
-  const items = pedido && pedido.productos ? pedido.productos : [];
-  return items.reduce((sum, p) => sum + pesoDeProducto(p), 0);
-}
 
 // Copia 2 de 6 -> saldo.js.
-const cantidadPorEntregarDe = saldoDe;
 
 // Kilos de lo que TODAVÍA hay que subir al vehículo. Es el número de la
 // tarjeta y el que se compara contra la capacidad del camión: si ya salieron
 // remisiones, ese peso ya no cuenta porque ese material no está en la bodega.
-function cargaPorEntregar(pedido) {
-  const items = pedido && pedido.productos ? pedido.productos : [];
-  return items.reduce((sum, p) => sum + pesoUnitarioDe(p) * cantidadPorEntregarDe(p), 0);
-}
 
 // Día local de Colombia (YYYY-MM-DD) en que se entregó el pedido. Preferimos
 // entregadoEn (timestamp exacto); si es un pedido viejo sin ese dato, caemos a
@@ -295,31 +193,10 @@ function fechaEntregaISO(pedido) {
 // cantidadEntregada. Devuelve los productos donde se entregaron MENOS unidades
 // que las de la factura (con cuántas faltan). Un pedido sin ningún producto
 // tocado devuelve lista vacía y se comporta como siempre.
-function faltantesDeProductos(productos) {
-  return (productos || [])
-    .map((p) => ({
-      ...p,
-      // Copia 3 de 6 -> saldo.js. OJO a la diferencia con saldoDe puro: una
-      // línea sin tocar NO cuenta como faltante (faltan: 0). El aviso rojo de
-      // "debe material" solo se prende con lo que alguien declaró faltando, no
-      // con un pedido que nadie ha marcado todavía.
-      faltan:
-        (p.cantidadRestante !== undefined && p.cantidadRestante !== null) ||
-        (p.cantidadEntregada !== undefined && p.cantidadEntregada !== null)
-          ? saldoDe(p)
-          : 0,
-    }))
-    .filter((p) => p.faltan > 0);
-}
 
 // Nota de texto (mismo formato de siempre: "2 tejas; 1 bulto cemento") armada
 // a partir de los faltantes por unidades. Se usa al pasar un pedido de
 // "Pendientes" a despacho, para no tener que reescribir la nota a mano.
-function notaDesdeFaltantes(productos) {
-  const faltan = faltantesDeProductos(productos);
-  if (faltan.length === 0) return "";
-  return faltan.map((p) => `${formatCantidad(p.faltan)} ${p.unidad || ""} ${p.descripcion || ""}`.replace(/\s+/g, " ").trim()).join("; ");
-}
 
 
 
@@ -354,52 +231,11 @@ function notaDesdeFaltantes(productos) {
 // Convierte la URL "data:" del PDF guardado en un Blob (archivo real). Los
 // navegadores de celular bloquean descargar/abrir directamente desde "data:",
 // así que todo lo que sea abrir, descargar o compartir pasa por aquí.
-function dataUrlABlob(dataUrl) {
-  const [cabecera, base64] = String(dataUrl).split(",");
-  const mime = (cabecera.match(/data:([^;]+)/) || [])[1] || "application/pdf";
-  const binario = atob(base64 || "");
-  const bytes = new Uint8Array(binario.length);
-  for (let i = 0; i < binario.length; i++) bytes[i] = binario.charCodeAt(i);
-  return new Blob([bytes], { type: mime });
-}
 
-function abrirPdf(dataUrl) {
-  try {
-    const url = URL.createObjectURL(dataUrlABlob(dataUrl));
-    window.open(url, "_blank", "noopener");
-    // No se revoca de inmediato: la pestaña nueva todavía lo está cargando.
-    setTimeout(() => URL.revokeObjectURL(url), 60000);
-  } catch (e) {
-    window.open(dataUrl, "_blank", "noopener");
-  }
-}
 
 // Descarga el PDF. En celular usa el menú nativo de compartir (permite
 // "Guardar en Archivos", mandarlo por WhatsApp, etc.); en computador hace la
 // descarga normal.
-async function descargarPdf(dataUrl, fileName) {
-  const nombre = fileName || "documento.pdf";
-  try {
-    const blob = dataUrlABlob(dataUrl);
-    const archivo = new File([blob], nombre, { type: blob.type });
-    if (navigator.canShare && navigator.canShare({ files: [archivo] }) && navigator.share) {
-      await navigator.share({ files: [archivo], title: nombre });
-      return;
-    }
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = nombre;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    setTimeout(() => URL.revokeObjectURL(url), 10000);
-  } catch (e) {
-    // Si el usuario cancela el menú de compartir no es un error real.
-    if (e && e.name === "AbortError") return;
-    abrirPdf(dataUrl);
-  }
-}
 
 function fileToDataUrl(file) {
   return new Promise((resolve, reject) => {
@@ -434,6 +270,17 @@ export default function DespachoPedidos() {
   // Pedido borrado que todavía se puede deshacer (ver deletePedido).
   const [borradoPendiente, setBorradoPendiente] = useState(null);
   const borradoRef = useRef(null);
+
+  // Botón "Salir": el primer toque lo arma, el segundo cierra la sesión. Se
+  // desarma solo para que no quede cebado esperando un roce en la tablet.
+  const [confirmandoSalir, setConfirmandoSalir] = useState(false);
+  const salirRef = useRef(null);
+  function pedirConfirmacionSalir() {
+    setConfirmandoSalir(true);
+    clearTimeout(salirRef.current);
+    salirRef.current = setTimeout(() => setConfirmandoSalir(false), 4000);
+  }
+  useEffect(() => () => clearTimeout(salirRef.current), []);
   const [dragId, setDragId] = useState(null);
   const [dragOverCol, setDragOverCol] = useState(null);
   // Modo "juntar pedidos": al activarlo, las tarjetas del tablero se vuelven
@@ -892,12 +739,20 @@ export default function DespachoPedidos() {
     const hoyMov = new Date().toLocaleDateString("en-CA", { timeZone: "America/Bogota" });
     const nuevosProductos = productosMadre.map((p, i) => {
       const usado = Number(cantidades[i]) || 0;
-      const base = { ...p, cantidadRestante: Math.max(0, disponibleDe(p) - usado) };
+      // sumarEntregadoDirecto ACUMULA en cantidadEntregada además de bajar el
+      // saldo. Antes acá solo se tocaba cantidadRestante, y por eso el material
+      // que el cliente se llevaba en el mostrador NO aparecía nunca en los
+      // kilos del Panel: al archivarse la factura, entregadoParaPanelDe leía
+      // cantidadEntregada (que había quedado en 0) y contaba cero.
+      const base = usado > 0 ? sumarEntregadoDirecto(p, usado) : p;
       // Descontar material también es movimiento sobre la factura: se guarda
       // la fecha para que no se marque "estancada" si se le está restando.
       return usado > 0 ? { ...base, fechaMovimiento: hoyMov } : base;
     });
-    const saldoTotal = nuevosProductos.reduce((s, p) => s + (Number(p.cantidadRestante) || 0), 0);
+    // Con saldoDe y no con cantidadRestante: a una factura SIN remisiones no se
+    // le inventa ese campo (sigue con la forma de dato de siempre), así que
+    // sumar cantidadRestante daba 0 y la archivaba de una al primer descuento.
+    const saldoTotal = nuevosProductos.reduce((s, p) => s + saldoDe(p), 0);
     const prevPedidos = pedidos;
     const prevHistorial = historial;
 
@@ -915,14 +770,16 @@ export default function DespachoPedidos() {
         entregadoEn: new Date().toISOString(),
         fechaEntrega: todayStr(),
       };
-      setPedidos(pedidos.filter((p) => p.id !== madre.id));
-      setHistorial([completada, ...historial]);
+      setPedidos((prev) => quitarPorId(prev, madre.id));
+      setHistorial((prev) => [completada, ...prev]);
       showToast(`Material descontado. Factura ${madre.numeroFactura || ""} completada, pasó al historial.`, 4500);
       try {
         await moverPedidoAEstado(completada, "entregado");
       } catch (e) {
-        setPedidos(prevPedidos);
-        setHistorial(prevHistorial);
+        // Deshacer = devolver la madre a despacho y sacarla del historial, sin
+        // pisar lo que haya cambiado durante el await (ver listas.js).
+        setPedidos((prev) => reponerPorId(prev, madre));
+        setHistorial((prev) => quitarPorId(prev, madre.id));
         showToast("No se pudo guardar. Nada cambió.", 5000);
       }
     } else {
@@ -933,12 +790,14 @@ export default function DespachoPedidos() {
         entregaPendiente: !!notaNueva,
         notaPendiente: notaNueva,
       };
-      setPedidos(pedidos.map((p) => (p.id === madre.id ? actualizada : p)));
+      setPedidos((prev) => reemplazarPorId(prev, actualizada));
       showToast("Material descontado del saldo.");
       try {
         await actualizarPedido(actualizada);
       } catch (e) {
-        setPedidos(prevPedidos);
+        // Deshacer = volver a dejar la versión ANTERIOR de la madre. Si otro
+        // dispositivo la borró mientras tanto, reemplazarPorId no la resucita.
+        setPedidos((prev) => reemplazarPorId(prev, madre));
         showToast("No se pudo guardar. Nada cambió.", 5000);
       }
     }
@@ -1019,10 +878,8 @@ export default function DespachoPedidos() {
       return copia;
     });
     const restaurado = { ...pedido, productos: productosLimpios, entregadoEn: null, fechaEntrega: null };
-    const prevPedidos = pedidos;
-    const prevHistorial = historial;
-    setHistorial(historial.filter((p) => p.id !== id));
-    setPedidos([restaurado, ...pedidos]);
+    setHistorial((prev) => quitarPorId(prev, id));
+    setPedidos((prev) => [restaurado, ...prev]);
     showToast("Pedido devuelto a despacho");
     try {
       // update con estado "activo": la fila ya existe (estaba entregada), así
@@ -1030,13 +887,15 @@ export default function DespachoPedidos() {
       // upsert, un pedido que otro dispositivo borró no revive.
       const movido = await moverPedidoAEstado(restaurado, "activo");
       if (!movido) {
-        setPedidos(prevPedidos);
-        setHistorial(prevHistorial.filter((p) => p.id !== id));
+        // Ya no existe en la base: se saca de despacho y NO se repone en el
+        // historial (justamente porque lo borraron).
+        setPedidos((prev) => quitarPorId(prev, id));
         showToast("Ese pedido ya no existe (lo borraron desde otro dispositivo).", 5000);
       }
     } catch (e) {
-      setPedidos(prevPedidos);
-      setHistorial(prevHistorial);
+      // Deshacer = sacarlo de despacho y devolverlo al historial (ver listas.js).
+      setPedidos((prev) => quitarPorId(prev, id));
+      setHistorial((prev) => reponerPorId(prev, pedido));
       showToast("No se pudo devolver el pedido. Sigue en el historial.", 5000);
     }
   }
@@ -1190,11 +1049,12 @@ export default function DespachoPedidos() {
       const usado = Number(cantidades[i]) || 0;
       return { ...p, cantidadRestante: Math.max(0, disponibleDe(p) - usado) };
     });
-    const saldoTotal = nuevosProductosMadre.reduce((s, p) => s + (Number(p.cantidadRestante) || 0), 0);
+    // Mismo criterio que en descontarMaterialMadre: se pregunta por saldoDe, no
+    // por el campo crudo. Acá da idéntico (esta rama siempre escribe
+    // cantidadRestante), pero leer el campo a mano es justo lo que dejó suelta
+    // la copia que se desvió.
+    const saldoTotal = nuevosProductosMadre.reduce((s, p) => s + saldoDe(p), 0);
     const madreAgotada = saldoTotal <= 0;
-
-    const prevPedidos = pedidos;
-    const prevHistorial = historial;
 
     if (madreAgotada) {
       const madreCompletada = {
@@ -1212,16 +1072,19 @@ export default function DespachoPedidos() {
         entregadoEn: new Date().toISOString(),
         fechaEntrega: todayStr(),
       };
-      setPedidos([child, ...pedidos.filter((p) => p.id !== madre.id)]);
-      setHistorial([madreCompletada, ...historial]);
+      setPedidos((prev) => [child, ...quitarPorId(prev, madre.id)]);
+      setHistorial((prev) => [madreCompletada, ...prev]);
       setTirillaDe(child);
       showToast(`Remisión ${numRemision} creada. Factura ${madre.numeroFactura || ""} completada, pasó al historial.`, 4500);
       try {
         await guardarRemisionConReintento(child);
         await moverPedidoAEstado(madreCompletada, "entregado");
       } catch (e) {
-        setPedidos(prevPedidos);
-        setHistorial(prevHistorial);
+        // Deshacer = quitar la remisión que se había pintado, devolver la madre
+        // a despacho y sacarla del historial. Todo relativo al estado actual
+        // (ver listas.js): durante el await pudo pasar cualquier otra cosa.
+        setPedidos((prev) => reponerPorId(quitarPorId(prev, child.id), madre));
+        setHistorial((prev) => quitarPorId(prev, madre.id));
         showToast("No se pudo guardar la remisión. Nada cambió.", 5000);
       }
     } else {
@@ -1235,7 +1098,7 @@ export default function DespachoPedidos() {
         entregaPendiente: !!notaNueva,
         notaPendiente: notaNueva,
       };
-      setPedidos([child, ...pedidos.map((p) => (p.id === madre.id ? nuevaMadre : p))]);
+      setPedidos((prev) => [child, ...reemplazarPorId(prev, nuevaMadre)]);
       // Se abre la tirilla de una: es el momento en que se necesita imprimir.
       setTirillaDe(child);
       showToast(`Remisión ${numRemision} creada y enviada a despacho.`, 4000);
@@ -1243,7 +1106,9 @@ export default function DespachoPedidos() {
         await guardarRemisionConReintento(child);
         await actualizarPedido(nuevaMadre);
       } catch (e) {
-        setPedidos(prevPedidos);
+        // Deshacer = quitar la remisión y devolverle a la madre su saldo
+        // anterior, sin tocar nada más de la lista (ver listas.js).
+        setPedidos((prev) => reemplazarPorId(quitarPorId(prev, child.id), madre));
         showToast("No se pudo guardar la remisión. Nada cambió.", 5000);
       }
     }
@@ -1594,9 +1459,19 @@ export default function DespachoPedidos() {
     const num = (pendingExtract && pendingExtract.numeroFactura ? String(pendingExtract.numeroFactura) : "").trim();
     if (!num) return null;
     // Un pedido que nació de esta misma cotización no es un duplicado.
-    const yaEs = pendingExtract.desdeCotizacion;
+    // Acá había una guardia que pretendía excluir "el pedido que nació de esta
+    // misma cotización": comparaba `pendingExtract.desdeCotizacion` (un id de
+    // COTIZACIÓN) contra `p.id` (un id de PEDIDO). Son dominios distintos, así
+    // que nunca coincidían y la condición era siempre verdadera: no excluía
+    // nada. Se quitó en vez de "arreglarla" porque lo que quería proteger ya
+    // está cubierto, y mejor, en pasarCotizacionADespacho: si la cotización ya
+    // tiene un pedido ACTIVO, ni siquiera se llega hasta aquí.
+    //
+    // El único caso que sí llega es que ese pedido ya se haya entregado, y ahí
+    // avisar es lo correcto: "esta factura ya está en el historial" es
+    // justamente lo que hay que saber antes de despacharla otra vez.
     const existente =
-      pedidos.find((p) => (p.numeroFactura || "").trim() === num && p.id !== yaEs) ||
+      pedidos.find((p) => (p.numeroFactura || "").trim() === num) ||
       historial.find((p) => (p.numeroFactura || "").trim() === num);
     if (!existente) return null;
     const enHistorial = !pedidos.some((p) => p.id === existente.id);
@@ -1988,6 +1863,40 @@ export default function DespachoPedidos() {
           <div style={{ fontSize: 17, fontWeight: 500, lineHeight: 1.2, color: MARCA.azulMuyOscuro }}>Ferromateriales San Blas</div>
           <div style={{ fontSize: 12, color: MARCA.azulMedio, fontWeight: 500, lineHeight: 1.3 }}>Despacho de pedidos</div>
         </div>
+
+        {/* Salir. Hasta ahora salir() existía en supabaseClient.js y no la
+            llamaba nadie: la sesión se guarda en el navegador y se renueva sola,
+            así que la tablet del mostrador quedaba dentro PARA SIEMPRE y no
+            había forma de sacarla desde la app. Si el equipo se pierde o alguien
+            sale de la empresa, tocaba cambiar la clave compartida en Supabase y
+            eso tumba a todo el mundo.
+
+            Pide dos toques a propósito: un clic accidental en plena jornada
+            dejaría al despachador escribiendo correo y clave otra vez. Se
+            desarma solo a los 4 segundos para que el botón no quede cebado. */}
+        <button
+          onClick={confirmandoSalir ? salir : pedirConfirmacionSalir}
+          title={confirmandoSalir ? "Toca otra vez para salir" : "Cerrar sesión en este dispositivo"}
+          style={{
+            marginLeft: "auto",
+            flexShrink: 0,
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            fontSize: 13,
+            fontWeight: 500,
+            minHeight: 40,
+            padding: "8px 12px",
+            borderRadius: "var(--border-radius-md)",
+            cursor: "pointer",
+            background: confirmandoSalir ? "var(--color-background-danger)" : "transparent",
+            color: confirmandoSalir ? "var(--color-text-danger)" : "var(--color-text-secondary)",
+            border: confirmandoSalir ? "0.5px solid var(--color-border-danger)" : "0.5px solid var(--color-border-tertiary)",
+          }}
+        >
+          <i className="ti ti-logout" style={{ fontSize: 15 }} aria-hidden="true"></i>
+          {confirmandoSalir ? "¿Salir?" : "Salir"}
+        </button>
       </div>
 
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "1.25rem", gap: 12, flexWrap: "wrap" }}>
@@ -3206,990 +3115,27 @@ function Field({ label, value, onChange, type = "text", inputMode, spellCheck })
 // Selector de destino: Corozal / Morroa / Otro (con campo manual). Guarda el
 // nombre del lugar en "value" (un string): para los presets es su nombre; para
 // "Otro" es lo que se escriba a mano.
-function DestinoSelector({ value, onChange }) {
-  const esPreset = DESTINOS.includes(value);
-  const [otroManual, setOtroManual] = useState(!!value && !esPreset);
-  const mostrarOtro = otroManual || (!!value && !esPreset);
-  const opcion = (activo) => ({
-    flex: 1,
-    fontSize: 12.5,
-    padding: "8px 4px",
-    minHeight: 40,
-    borderRadius: "var(--border-radius-md)",
-    border: activo ? "2px solid var(--color-border-info)" : "0.5px solid var(--color-border-tertiary)",
-    background: activo ? "var(--color-background-info)" : "var(--color-background-primary)",
-    color: activo ? "var(--color-text-info)" : "var(--color-text-primary)",
-    fontWeight: activo ? 500 : 400,
-  });
-  return (
-    <div>
-      <span style={{ fontSize: 12, color: "var(--color-text-secondary)", display: "block", marginBottom: 4 }}>
-        ¿Para dónde va? <span style={{ color: "var(--color-text-tertiary)" }}>(opcional)</span>
-      </span>
-      <div style={{ display: "flex", gap: 6 }}>
-        {DESTINOS.map((d) => (
-          <button
-            key={d}
-            aria-pressed={value === d}
-            onClick={() => {
-              setOtroManual(false);
-              onChange(d);
-            }}
-            style={opcion(value === d)}
-          >
-            {d}
-          </button>
-        ))}
-        <button
-          aria-pressed={mostrarOtro}
-          onClick={() => {
-            setOtroManual(true);
-            if (esPreset) onChange("");
-          }}
-          style={opcion(mostrarOtro)}
-        >
-          Otro
-        </button>
-      </div>
-      {mostrarOtro && (
-        <input
-          type="text"
-          autoComplete="off"
-          placeholder="Escribe el lugar"
-          value={esPreset ? "" : value || ""}
-          onChange={(e) => onChange(e.target.value)}
-          style={{ width: "100%", marginTop: 8 }}
-        />
-      )}
-    </div>
-  );
-}
 
 // Estilos de la tarjeta. Se inyectan UNA sola vez desde el componente
 // principal (no por tarjeta): con 50 pedidos en pantalla, una etiqueta de
 // estilos por tarjeta serían 50 copias idénticas en el DOM.
-const CARD_CSS = `
-/* Sin overflow:hidden — recortaba el menú cuando la tarjeta era más corta
-   que el desplegable. La franja de color es un border, no un hijo, así que
-   no necesita recorte para respetar las esquinas redondeadas. */
-.pc-card{display:flex;background:var(--color-background-primary);border:0.5px solid var(--color-border-tertiary);
-  border-radius:var(--border-radius-md);margin-bottom:8px;position:relative;}
-/* Con el menú abierto la tarjeta se pone por encima de las de abajo, si no
-   el desplegable queda tapado por la tarjeta siguiente. */
-.pc-card.pc-abierta{z-index:40;}
-.pc-body{flex:1;min-width:0;padding:11px 12px;}
-.pc-rail{display:flex;flex-direction:column;justify-content:space-between;gap:8px;width:112px;flex-shrink:0;
-  border-left:0.5px solid var(--color-border-tertiary);padding:10px;position:relative;}
-.pc-menu-btn{width:100%;min-height:38px;font-size:12.5px;padding:8px 6px;background:transparent;
-  color:var(--color-text-secondary);border:0.5px solid var(--color-border-tertiary);
-  border-radius:var(--border-radius-md);cursor:pointer;}
-.pc-menu-btn:hover{background:var(--color-background-secondary);}
-.pc-primary{border:none;color:#fff;font-weight:500;font-size:12.5px;border-radius:var(--border-radius-md);
-  padding:10px 6px;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:3px;line-height:1.15;
-  min-height:56px;}
-.pc-pop{position:absolute;top:50px;right:0;background:var(--color-background-primary);
-  border:0.5px solid var(--color-border-secondary);border-radius:var(--border-radius-lg);
-  box-shadow:0 8px 24px rgba(4,44,83,.16);padding:6px;width:212px;z-index:30;}
-.pc-item{display:flex;align-items:center;gap:10px;padding:10px;border-radius:var(--border-radius-sm);
-  font-size:13px;color:var(--color-text-primary);cursor:pointer;background:none;border:none;width:100%;
-  text-align:left;min-height:42px;}
-.pc-item:hover{background:var(--color-background-secondary);}
-.pc-item.danger{color:var(--color-text-danger);}
-/* Si la tarjeta está al final de la pantalla, el menú se abre hacia arriba
-   para no quedar cortado por el borde inferior. */
-.pc-pop.pc-arriba{top:auto;bottom:50px;}
 
-/* Tirilla térmica de 58 mm. Todo el tamaño interno va en "em" y se controla
-   con el font-size del contenedor: en pantalla se ve en px (vista previa) y al
-   imprimir se cambia a milímetros, que es lo único que la impresora respeta.
-   Con px la tirilla salía mucho más angosta y con letra más pequeña que las
-   del sistema de facturación. */
-.tr{background:#fff;color:#000;font-family:ui-monospace,'Courier New',monospace;
-  font-size:13px;line-height:1.35;width:300px;padding:10px 9px 14px;font-weight:600;
-  border:0.5px solid var(--color-border-tertiary);}
-.tr-tit{font-size:1.15em;font-weight:800;text-align:center;line-height:1.2;}
-.tr-sub{font-size:0.82em;text-align:center;line-height:1.3;}
-.tr-enc{font-size:1em;font-weight:800;text-align:center;letter-spacing:0.04em;}
-.tr-num{font-size:1.5em;font-weight:800;text-align:center;margin:1px 0;}
-.tr-sep{border-top:1.5px dashed #000;margin:0.45em 0;}
-.tr-solid{border-top:1.5px solid #000;margin:0.2em 0 0.35em;}
-.tr-row{display:flex;gap:0.35em;line-height:1.35;}
-.tr-lab{width:4.6em;flex-shrink:0;font-weight:700;}
-.tr-item{display:flex;gap:0.35em;margin-bottom:0.25em;line-height:1.3;}
-.tr-qty{width:4.6em;flex-shrink:0;font-weight:800;}
-.tr-desc{flex:1;word-break:break-word;}
-.tr-tot{display:flex;justify-content:space-between;font-weight:800;}
-.tr-firma{margin-top:2em;border-top:1.5px solid #000;padding-top:0.25em;
-  text-align:center;font-size:0.82em;}
-.tr-nota{text-align:center;font-size:0.75em;line-height:1.3;}
-
-/* Al imprimir se oculta toda la página y solo queda la tirilla.
-   - Papel: Gprinter 80 mm (72 mm imprimibles) x 297 mm.
-   - OJO con @page: la versión vieja decía "size:58mm auto", que NO es CSS válido
-     (no se puede mezclar una medida con "auto"). El navegador la descartaba y
-     terminaba escalando la tirilla por su cuenta. Por eso "antes" se veía de un
-     tamaño que nosotros no controlábamos. Ahora está fijada en milímetros
-     reales, así que el tamaño de la letra hay que pedirlo explícito.
-   - font-size va en mm = tamaño FÍSICO de la letra en el papel. 4mm es letra
-     bien legible en tirilla (la vieja pedía 2.3mm).
-   - print-color-adjust:exact + font-weight 700 = negro sólido, no gris. */
-@media print{
-  html,body{margin:0 !important;padding:0 !important;}
-  body *{visibility:hidden !important;}
-  #tirilla-print,#tirilla-print *{visibility:visible !important;color:#000 !important;
-    -webkit-print-color-adjust:exact !important;print-color-adjust:exact !important;}
-  #tirilla-print{position:fixed !important;left:4mm !important;top:0 !important;
-    width:72mm !important;font-size:4mm !important;font-weight:700 !important;
-    margin:0 !important;padding:0 !important;border:none !important;box-shadow:none !important;}
-  #tirilla-print .tr-lab,#tirilla-print .tr-qty{width:4.3em !important;}
-  #tirilla-print .tr-tit,#tirilla-print .tr-enc,#tirilla-print .tr-num,
-  #tirilla-print .tr-qty,#tirilla-print .tr-tot{font-weight:800 !important;}
-  @page{size:80mm 297mm;margin:0;}
-}
-/* Columnas angostas: el riel se pasa abajo como fila para que el nombre del
-   cliente y el total no queden espichados. */
-@media (max-width:1100px){
-  .pc-card{flex-direction:column;}
-  .pc-rail{width:auto;flex-direction:row;border-left:none;border-top:0.5px solid var(--color-border-tertiary);}
-  .pc-menu-btn{width:auto;flex:1;}
-  .pc-primary{flex:2;flex-direction:row;justify-content:center;min-height:44px;}
-  .pc-pop{top:auto;bottom:52px;left:10px;right:auto;}
-}
-`;
-
-function PedidoCard({ pedido, posicion, esSecundario, isDragging, onDragStart, onDragEnd, onDragOverItem, onDropItem, onDelete, onEntregado, onEdit, onVerPdf, onNotaPendiente, atrasadoDesde, onMoverAHoy, onProgramar, onMaterialUnidades, onCrearRemision, onDescontarMaterial, onImprimirTirilla }) {
-  const [menuAbierto, setMenuAbierto] = useState(false);
-  // Si el menú debe abrirse hacia arriba (no cabe abajo en la pantalla).
-  const [menuArriba, setMenuArriba] = useState(false);
-  const railRef = useRef(null);
-  const [confirmDelete, setConfirmDelete] = useState(false);
-  const [verProductos, setVerProductos] = useState(false);
-  // Si la lista de material pendiente está desplegada completa.
-  const [verFaltantes, setVerFaltantes] = useState(false);
-  const productos = pedido.productos || [];
-  const pagado = pedido.estadoPago === "pagado";
-  const pendiente = !!pedido.entregaPendiente;
-  const vehiculoPrincipal = VEHICULOS.find((v) => v.id === pedido.vehiculo);
-  // Es una factura madre que ya generó remisiones (sus productos llevan saldo
-  // restante). Mientras tenga saldo no se entrega entera: solo genera remisiones.
-  const esMadreConSaldo = productos.some((p) => p.cantidadRestante !== undefined && p.cantidadRestante !== null);
-  // Es una remisión: puede venir de una factura grande (remisionDe) o ser
-  // manual (tipoDocumento "remision", sin factura de origen).
-  const esRemision = !!pedido.remisionDe || pedido.tipoDocumento === "remision";
-  const faltan = faltantesDeProductos(productos);
-  // Peso de lo que hay que subir al vehículo, y si por sí solo ya no cabe.
-  const carga = cargaPorEntregar(pedido);
-  const capacidad = vehiculoPrincipal && vehiculoPrincipal.capacidadKg;
-  const excedeCapacidad = !!capacidad && carga > capacidad;
-
-  // Franja de color a la izquierda: el estado del pedido de un vistazo, sin
-  // tener que leer las insignias.
-  const franja = atrasadoDesde || pendiente
-    ? "var(--color-border-danger)"
-    : esMadreConSaldo
-    ? "var(--color-border-warning)"
-    : pagado
-    ? "var(--color-border-success)"
-    : MARCA.azulMedio;
-
-  const cerrarMenu = () => {
-    setMenuAbierto(false);
-    setConfirmDelete(false);
-  };
-
-  // Acciones secundarias. Solo aparecen las que aplican a esta vista: en el
-  // tablero del día no hay "Mover a despacho", y "Crear remisión" ya no llega
-  // aquí (vive en la pantalla "Por entregar").
-  const acciones = [
-    onProgramar && { label: "Mover a despacho", icon: "ti-truck-delivery", fn: onProgramar },
-    onCrearRemision && { label: "Crear remisión", icon: "ti-arrows-split", fn: onCrearRemision },
-    esMadreConSaldo && onDescontarMaterial && { label: "Descontar material", icon: "ti-checklist", fn: onDescontarMaterial },
-    onMaterialUnidades && !esMadreConSaldo && {
-      label: faltan.length > 0 ? "Editar material entregado" : "Material entregado",
-      icon: "ti-package-import",
-      fn: onMaterialUnidades,
-      alerta: faltan.length > 0,
-    },
-    !esSecundario && onNotaPendiente && { label: pendiente ? "Editar pendiente" : "Quedó pendiente", icon: "ti-note", fn: onNotaPendiente },
-    esRemision && onImprimirTirilla && { label: "Imprimir tirilla", icon: "ti-printer", fn: onImprimirTirilla },
-    (pedido.tienePdf || pedido.pdfDataUrl) && onVerPdf && { label: "Ver documento", icon: "ti-file-text", fn: onVerPdf },
-    onEdit && { label: "Editar", icon: "ti-pencil", fn: onEdit },
-  ].filter(Boolean);
-
-  return (
-    <div
-      className={`pc-card${menuAbierto ? " pc-abierta" : ""}`}
-      draggable={!esSecundario && !menuAbierto}
-      onDragStart={esSecundario ? undefined : onDragStart}
-      onDragEnd={esSecundario ? undefined : onDragEnd}
-      onDragOver={esSecundario ? undefined : onDragOverItem}
-      onDrop={esSecundario ? undefined : onDropItem}
-      style={{
-        borderLeft: `4px solid ${franja}`,
-        cursor: esSecundario ? "default" : "grab",
-        opacity: isDragging ? 0.4 : 1,
-      }}
-    >
-      <div className="pc-body">
-        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-          <span
-            style={{
-              width: 26,
-              height: 26,
-              borderRadius: "50%",
-              background: MARCA.azulClaro,
-              color: MARCA.azulOscuro,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              fontSize: 12,
-              fontWeight: 500,
-              flexShrink: 0,
-            }}
-          >
-            {posicion !== null ? posicion : <i className="ti ti-help-circle" style={{ fontSize: 13 }} aria-hidden="true"></i>}
-          </span>
-          <span style={{ fontWeight: 500, fontSize: 14.5, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-            {pedido.cliente}
-          </span>
-          {pedido.total ? (
-            <span style={{ fontSize: 14.5, fontWeight: 500, color: MARCA.azulOscuro, flexShrink: 0 }}>${formatCOP(pedido.total)}</span>
-          ) : null}
-          {!esSecundario && (
-            <i className="ti ti-grip-vertical" style={{ fontSize: 14, color: "var(--color-text-tertiary)", flexShrink: 0 }} aria-hidden="true"></i>
-          )}
-        </div>
-
-        {/* Línea de estado: lo más importante primero (atrasado > remisión >
-            pago), y al lado el resto de datos en gris. */}
-        <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 7, flexWrap: "wrap" }}>
-          {atrasadoDesde ? (
-            <span style={{ fontSize: 12, fontWeight: 500, color: "var(--color-text-danger)" }}>
-              <i className="ti ti-alert-triangle" style={{ fontSize: 12, verticalAlign: "-2px", marginRight: 3 }} aria-hidden="true"></i>
-              Atrasado · era para {formatFechaCorta(atrasadoDesde)}
-            </span>
-          ) : esMadreConSaldo ? (
-            <span style={{ fontSize: 12, fontWeight: 500, color: "var(--color-text-warning)" }}>
-              <i className="ti ti-package" style={{ fontSize: 12, verticalAlign: "-2px", marginRight: 3 }} aria-hidden="true"></i>
-              Factura con remisiones
-            </span>
-          ) : (
-            <span style={{ fontSize: 12, fontWeight: 500, color: pagado ? "var(--color-text-success)" : "var(--color-text-warning)" }}>
-              <i className={pagado ? "ti ti-circle-check" : "ti ti-clock"} style={{ fontSize: 12.5, verticalAlign: "-2px", marginRight: 3 }} aria-hidden="true"></i>
-              {pagado ? "Pagado" : "Paga al recibir"}
-            </span>
-          )}
-          {esRemision && pedido.numeroFactura && (
-            <span style={{ fontSize: 11.5, fontWeight: 500, background: "var(--color-background-info)", color: "var(--color-text-info)", borderRadius: "var(--border-radius-sm)", padding: "2px 7px" }}>
-              <i className="ti ti-arrows-split" style={{ fontSize: 11, verticalAlign: "-1px", marginRight: 3 }} aria-hidden="true"></i>
-              {pedido.remisionDe ? `${pedido.numeroFactura} · de Factura ${pedido.remisionDe}` : `${pedido.numeroFactura} · manual`}
-            </span>
-          )}
-          <span style={{ fontSize: 12, color: "var(--color-text-tertiary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-            {[
-              !esRemision && pedido.numeroFactura ? `${pedido.tipoDocumento === "cotizacion" ? "Cotización" : "Factura"} ${pedido.numeroFactura}` : null,
-              pedido.destino && pedido.destino.trim() ? pedido.destino : null,
-              pedido.hora || null,
-            ]
-              .filter(Boolean)
-              .join(" · ")}
-          </span>
-          {/* Peso del pedido: sirve para saber si cabe en un viaje. Si el
-              pedido por sí solo pasa de la capacidad del vehículo, se avisa. */}
-          {carga > 0 && (
-            <span
-              style={{
-                fontSize: 12,
-                fontWeight: 500,
-                color: excedeCapacidad ? "var(--color-text-danger)" : "var(--color-text-secondary)",
-                whiteSpace: "nowrap",
-              }}
-            >
-              <i className="ti ti-weight" style={{ fontSize: 12.5, verticalAlign: "-2px", marginRight: 3 }} aria-hidden="true"></i>
-              {formatCOP(Math.round(carga))} kg
-              {excedeCapacidad ? " · no cabe en un viaje" : ""}
-            </span>
-          )}
-        </div>
-
-        {esSecundario && (
-          <div style={{ marginBottom: 7 }}>
-            <span style={{ fontSize: 11.5, background: "var(--color-background-secondary)", color: "var(--color-text-secondary)", borderRadius: "var(--border-radius-sm)", padding: "2px 7px" }}>
-              <i className="ti ti-arrows-split" style={{ fontSize: 11, verticalAlign: "-1px", marginRight: 3 }} aria-hidden="true"></i>
-              Parte de este pedido va aquí — el principal está en {vehiculoPrincipal ? vehiculoPrincipal.label : "otro vehículo"}
-            </span>
-          </div>
-        )}
-
-        {productos.length > 0 && (
-          <div style={{ marginBottom: pendiente || (atrasadoDesde && onMoverAHoy) ? 8 : 0 }}>
-            {productos.length === 1 ? (
-              <div style={{ fontSize: 12.5, color: "var(--color-text-secondary)" }}>
-                <b style={{ color: "var(--color-text-primary)", fontWeight: 500 }}>
-                  {productos[0].cantidad} {productos[0].unidad}
-                </b>{" "}
-                — {productos[0].descripcion}
-                {productos[0].cantidadRestante !== undefined && productos[0].cantidadRestante !== null && (
-                  <span style={{ color: "var(--color-text-warning)", fontWeight: 500 }}>
-                    {" "}· quedan {formatCantidad(productos[0].cantidadRestante)} de {formatCantidad(cantidadNum(productos[0].cantidad))}
-                  </span>
-                )}
-              </div>
-            ) : (
-              <>
-                <button
-                  onClick={() => setVerProductos(!verProductos)}
-                  style={{ fontSize: 12.5, padding: "6px 0", minHeight: 34, border: "none", background: "transparent", color: "var(--color-text-secondary)", textAlign: "left", cursor: "pointer" }}
-                >
-                  {verProductos ? "Ocultar productos" : `${productos[0].descripcion} +${productos.length - 1} más`}
-                  <i className={verProductos ? "ti ti-chevron-up" : "ti ti-chevron-down"} style={{ fontSize: 13, verticalAlign: "-2px", marginLeft: 4, color: MARCA.azulMedio }} aria-hidden="true"></i>
-                </button>
-                {verProductos && (
-                  <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 6 }}>
-                    {productos.map((p, i) => (
-                      <div key={i} style={{ display: "flex", gap: 8, fontSize: 12.5 }}>
-                        <span style={{ fontWeight: 500, color: "var(--color-text-primary)", flexShrink: 0, minWidth: 58 }}>
-                          {p.cantidad} {p.unidad}
-                        </span>
-                        <span style={{ color: "var(--color-text-secondary)" }}>
-                          {p.descripcion}
-                          {p.cantidadRestante !== undefined && p.cantidadRestante !== null && (
-                            <span style={{ color: "var(--color-text-warning)", fontWeight: 500 }}>
-                              {" "}· quedan {formatCantidad(p.cantidadRestante)} de {formatCantidad(cantidadNum(p.cantidad))}
-                            </span>
-                          )}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </>
-            )}
-          </div>
-        )}
-
-        {/* Material pendiente. Antes se pintaba la nota completa como un
-            párrafo rojo corrido y con 6 materiales era ilegible. Ahora se usa
-            la lista estructurada (cantidad · unidad · descripción), una línea
-            por material, mostrando 2 y el resto detrás de "+N más". */}
-        {pendiente && (
-          <div
-            style={{
-              fontSize: 12.5,
-              color: "var(--color-text-danger)",
-              background: "var(--color-background-danger)",
-              borderRadius: "var(--border-radius-sm)",
-              padding: "7px 9px",
-              marginBottom: atrasadoDesde && onMoverAHoy ? 8 : 0,
-            }}
-          >
-            <div style={{ display: "flex", alignItems: "center", gap: 6, fontWeight: 500 }}>
-              <i className="ti ti-alert-triangle" style={{ fontSize: 12.5, flexShrink: 0 }} aria-hidden="true"></i>
-              {faltan.length > 0
-                ? `Debe ${faltan.length} ${faltan.length === 1 ? "material" : "materiales"}`
-                : "Debe material"}
-            </div>
-            {faltan.length > 0 ? (
-              <div style={{ marginTop: 5 }}>
-                {(verFaltantes ? faltan : faltan.slice(0, 2)).map((f, i) => (
-                  <div
-                    key={i}
-                    style={{ display: "flex", gap: 6, padding: "2px 0", lineHeight: 1.35 }}
-                  >
-                    <span style={{ fontWeight: 500, flexShrink: 0, whiteSpace: "nowrap" }}>
-                      {formatCantidad(f.faltan)} {f.unidad}
-                    </span>
-                    <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                      {f.descripcion}
-                    </span>
-                  </div>
-                ))}
-                {faltan.length > 2 && (
-                  <button
-                    onClick={() => setVerFaltantes(!verFaltantes)}
-                    style={{
-                      fontSize: 12,
-                      fontWeight: 500,
-                      padding: "4px 0",
-                      minHeight: 30,
-                      border: "none",
-                      background: "transparent",
-                      color: "var(--color-text-danger)",
-                      cursor: "pointer",
-                    }}
-                  >
-                    {verFaltantes ? "Ver menos" : `+${faltan.length - 2} más`}
-                    <i
-                      className={verFaltantes ? "ti ti-chevron-up" : "ti ti-chevron-down"}
-                      style={{ fontSize: 12, verticalAlign: "-2px", marginLeft: 3 }}
-                      aria-hidden="true"
-                    ></i>
-                  </button>
-                )}
-              </div>
-            ) : (
-              pedido.notaPendiente &&
-              pedido.notaPendiente.trim() && (
-                <div style={{ marginTop: 4, lineHeight: 1.35 }}>{pedido.notaPendiente}</div>
-              )
-            )}
-          </div>
-        )}
-
-        {atrasadoDesde && onMoverAHoy && (
-          <div>
-            <button
-              onClick={onMoverAHoy}
-              style={{
-                fontSize: 12.5,
-                padding: "7px 11px",
-                minHeight: 36,
-                fontWeight: 500,
-                background: "var(--color-background-warning)",
-                color: "var(--color-text-warning)",
-                border: "0.5px solid var(--color-border-warning)",
-              }}
-            >
-              <i className="ti ti-calendar-up" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
-              Mover a hoy
-            </button>
-          </div>
-        )}
-      </div>
-
-      {/* Riel de acción: el menú arriba y "Entregado" siempre abajo, en el
-          mismo sitio en todas las tarjetas. */}
-      <div className="pc-rail" ref={railRef}>
-        <button
-          className="pc-menu-btn"
-          onClick={() => {
-            if (menuAbierto) {
-              cerrarMenu();
-              return;
-            }
-            const r = railRef.current && railRef.current.getBoundingClientRect();
-            // ~64px por opción es suficiente margen para el alto del menú.
-            setMenuArriba(!!r && window.innerHeight - r.bottom < acciones.length * 44 + 90);
-            setMenuAbierto(true);
-          }}
-          aria-haspopup="true"
-          aria-expanded={menuAbierto}
-        >
-          <i className="ti ti-dots" style={{ fontSize: 16, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
-          Menú
-          {faltan.length > 0 && (
-            <span style={{ display: "inline-block", width: 6, height: 6, borderRadius: "50%", background: "var(--color-text-danger)", marginLeft: 5, verticalAlign: "middle" }}></span>
-          )}
-        </button>
-
-        {menuAbierto && (
-          <>
-            <div style={{ position: "fixed", inset: 0, zIndex: 20 }} onClick={cerrarMenu}></div>
-            <div className={`pc-pop${menuArriba ? " pc-arriba" : ""}`}>
-              {acciones.map((a) => (
-                <button
-                  key={a.label}
-                  className="pc-item"
-                  onClick={() => {
-                    a.fn();
-                    cerrarMenu();
-                  }}
-                >
-                  <i className={`ti ${a.icon}`} style={{ fontSize: 17, width: 20, color: a.alerta ? "var(--color-text-warning)" : "var(--color-text-tertiary)" }} aria-hidden="true"></i>
-                  {a.label}
-                </button>
-              ))}
-              {onDelete && (
-                <>
-                  <div style={{ height: 1, background: "var(--color-border-tertiary)", margin: "4px 6px" }}></div>
-                  {/* Eliminar pide confirmación dentro del propio menú: un clic
-                      suelto no puede borrar. Si aun así se va, queda la barra
-                      de "Deshacer" del componente principal. */}
-                  {confirmDelete ? (
-                    <button
-                      className="pc-item danger"
-                      onClick={() => {
-                        onDelete();
-                        cerrarMenu();
-                      }}
-                      style={{ fontWeight: 500, background: "var(--color-background-danger)" }}
-                    >
-                      <i className="ti ti-trash" style={{ fontSize: 17, width: 20 }} aria-hidden="true"></i>
-                      Sí, eliminar
-                    </button>
-                  ) : (
-                    <button className="pc-item danger" onClick={() => setConfirmDelete(true)}>
-                      <i className="ti ti-trash" style={{ fontSize: 17, width: 20 }} aria-hidden="true"></i>
-                      Eliminar
-                    </button>
-                  )}
-                </>
-              )}
-            </div>
-          </>
-        )}
-
-        {/* La factura con remisiones también se puede entregar: cuando se
-            programa a un día es justamente para llevar lo que quedaba. Al
-            entregarla solo se cuenta ese saldo, no la factura completa. */}
-        {!esSecundario && (
-          <button className="pc-primary" style={{ background: "#639922" }} onClick={onEntregado}>
-            <i className="ti ti-check" style={{ fontSize: 22 }} aria-hidden="true"></i>
-            Entregado
-          </button>
-        )}
-      </div>
-    </div>
-  );
-}
 // Renderiza el PDF como imagen usando PDF.js + canvas, en vez de un iframe.
 // Esto evita los bloqueos de visor nativo que impedían ver el PDF dentro
 // del artifact.
-function PdfCanvasViewer({ dataUrl }) {
-  const containerRef = useRef(null);
-  const pdfRef = useRef(null);
-  const canvasRefs = useRef([]);
-  const [status, setStatus] = useState("loading");
-  const [numPages, setNumPages] = useState(0);
-  const [zoom, setZoom] = useState(1);
-
-  // Fase 1: cargar el documento (una sola vez por PDF) y saber cuántas
-  // páginas tiene. La página real se dibuja en la Fase 2, cuando ya existen
-  // los <canvas> en el DOM.
-  useEffect(() => {
-    let cancelled = false;
-    let loadingTask = null;
-    async function load() {
-      // pdf.js viene importado (antes se leía de window.pdfjsLib, que existía
-      // solo porque el <script> del CDN la dejaba como variable global).
-      if (!pdfjsLib || !pdfjsLib.getDocument) {
-        setStatus("error");
-        return;
-      }
-      try {
-        const base64 = dataUrl.split(",")[1];
-        const binary = atob(base64);
-        const bytes = new Uint8Array(binary.length);
-        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-
-        loadingTask = pdfjsLib.getDocument({ data: bytes });
-        const pdf = await loadingTask.promise;
-        if (cancelled) return;
-        pdfRef.current = pdf;
-        setNumPages(pdf.numPages);
-        setStatus("ready");
-      } catch (e) {
-        if (!cancelled) setStatus("error");
-      }
-    }
-    load();
-    return () => {
-      cancelled = true;
-      pdfRef.current = null;
-      // Libera el documento y su memoria en el worker de pdf.js. Sin esto,
-      // cada apertura del modal dejaba un documento vivo y la pestaña
-      // acumulaba memoria durante toda la jornada.
-      if (loadingTask) loadingTask.destroy().catch(() => {});
-    };
-  }, [dataUrl]);
-
-  // Fase 2: dibujar cada página ajustada al ancho del modal (no a una escala
-  // fija, que en computador se veía pequeña) y a la densidad real de píxeles
-  // de la pantalla, para que el texto salga nítido y no pixelado. El zoom
-  // multiplica ese ajuste.
-  useEffect(() => {
-    if (status !== "ready" || !pdfRef.current || !numPages) return;
-    let cancelled = false;
-    const tasks = [];
-    (async () => {
-      const pdf = pdfRef.current;
-      const contenedor = containerRef.current;
-      const anchoDisponible = contenedor ? contenedor.clientWidth - 4 : 800;
-      const dpr = Math.min(window.devicePixelRatio || 1, 2);
-      for (let n = 1; n <= numPages; n++) {
-        if (cancelled) return;
-        const page = await pdf.getPage(n);
-        const base = page.getViewport({ scale: 1 });
-        const escalaCss = ((anchoDisponible / base.width) || 1) * zoom;
-        const viewport = page.getViewport({ scale: escalaCss * dpr });
-        const canvas = canvasRefs.current[n - 1];
-        if (!canvas) continue;
-        canvas.width = viewport.width;
-        canvas.height = viewport.height;
-        canvas.style.width = base.width * escalaCss + "px";
-        canvas.style.height = base.height * escalaCss + "px";
-        const task = page.render({ canvasContext: canvas.getContext("2d"), viewport });
-        tasks.push(task);
-        try {
-          await task.promise;
-        } catch (e) {
-          /* render cancelado al re-dibujar: normal */
-        }
-      }
-    })();
-    return () => {
-      cancelled = true;
-      tasks.forEach((t) => t.cancel && t.cancel());
-    };
-  }, [status, numPages, zoom]);
-
-  return (
-    <div>
-      {status === "ready" && numPages > 0 && (
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8, gap: 8 }}>
-          <span style={{ fontSize: 12, color: "var(--color-text-tertiary)" }}>
-            {numPages === 1 ? "1 página" : `${numPages} páginas`}
-          </span>
-          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-            <button
-              onClick={() => setZoom((z) => Math.max(0.5, Math.round((z - 0.25) * 100) / 100))}
-              aria-label="Alejar"
-              style={{ padding: "8px 12px", minWidth: 40, minHeight: 40, fontSize: 14 }}
-            >
-              <i className="ti ti-minus" style={{ fontSize: 13 }} aria-hidden="true"></i>
-            </button>
-            <span style={{ fontSize: 12, color: "var(--color-text-secondary)", minWidth: 42, textAlign: "center" }}>
-              {Math.round(zoom * 100)}%
-            </span>
-            <button
-              onClick={() => setZoom((z) => Math.min(3, Math.round((z + 0.25) * 100) / 100))}
-              aria-label="Acercar"
-              style={{ padding: "8px 12px", minWidth: 40, minHeight: 40, fontSize: 14 }}
-            >
-              <i className="ti ti-plus" style={{ fontSize: 13 }} aria-hidden="true"></i>
-            </button>
-          </div>
-        </div>
-      )}
-      <div
-        ref={containerRef}
-        style={{
-          width: "100%",
-          maxHeight: "72vh",
-          overflow: "auto",
-          overscrollBehavior: "contain",
-          background: "var(--color-background-secondary)",
-          borderRadius: "var(--border-radius-md)",
-          padding: 8,
-          textAlign: "center",
-        }}
-      >
-        {status === "loading" && (
-          <div style={{ padding: "3rem 0", textAlign: "center", fontSize: 13, color: "var(--color-text-secondary)" }}>Cargando documento...</div>
-        )}
-        {status === "error" && (
-          <div style={{ padding: "2rem 1rem", textAlign: "center", fontSize: 13, color: "var(--color-text-warning)" }}>
-            No se pudo mostrar el documento aquí. Usa "Descargar PDF" abajo para abrirlo.
-          </div>
-        )}
-        {status === "ready" &&
-          Array.from({ length: numPages }).map((_, i) => (
-            <canvas
-              key={i}
-              ref={(el) => (canvasRefs.current[i] = el)}
-              style={{
-                display: "block",
-                margin: i > 0 ? "10px auto 0" : "0 auto",
-                boxShadow: "0 1px 4px rgba(0,0,0,0.18)",
-                background: "white",
-              }}
-            />
-          ))}
-      </div>
-    </div>
-  );
-}
 
 // Overlay de modal verdadero: position:fixed cubre toda la ventana visible
 // (sin esto, el "fondo oscuro" solo ocupaba el alto del contenido y el click
 // afuera o el modal mismo podían quedar fuera de la vista, dando la sensación
 // de que "no cierra"). Cierra con click fuera, botón X, o tecla Esc.
-function ModalOverlay({ onClose, children, maxWidth = 480 }) {
-  useEffect(() => {
-    function handleKey(e) {
-      if (e.key === "Escape") onClose();
-    }
-    window.addEventListener("keydown", handleKey);
-    return () => window.removeEventListener("keydown", handleKey);
-  }, [onClose]);
-
-  return (
-    <div
-      style={{
-        position: "fixed",
-        top: 0,
-        left: 0,
-        right: 0,
-        bottom: 0,
-        background: "rgba(0,0,0,0.45)",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        padding: 16,
-        zIndex: 1000,
-      }}
-      onClick={onClose}
-    >
-      <div
-        onClick={(e) => e.stopPropagation()}
-        style={{
-          background: "var(--color-background-primary)",
-          borderRadius: "var(--border-radius-lg)",
-          padding: 12,
-          width: "100%",
-          maxWidth,
-          maxHeight: "90vh",
-          overflowY: "auto",
-          overscrollBehavior: "contain",
-        }}
-      >
-        {children}
-      </div>
-    </div>
-  );
-}
 
 // El PDF ya no viene en la carga inicial (pesa demasiado): si el pedido no lo
 // trae en memoria pero tiene_pdf es true, lo pedimos aquí con fetchPdf al abrir
 // el visor. Estados: "cargando" | "listo" | "vacio" | "error".
-function PdfModal({ pedido, fetchPdf, onClose }) {
-  const [dataUrl, setDataUrl] = useState(pedido.pdfDataUrl || null);
-  const [estado, setEstado] = useState(
-    pedido.pdfDataUrl ? "listo" : pedido.tienePdf ? "cargando" : "vacio"
-  );
-
-  useEffect(() => {
-    // Si ya lo tenemos (pedido recién subido) o no hay PDF, no cargamos nada.
-    if (pedido.pdfDataUrl || !pedido.tienePdf || !fetchPdf) return;
-    let activo = true;
-    setEstado("cargando");
-    fetchPdf(pedido.id)
-      .then((url) => {
-        if (!activo) return;
-        if (url) {
-          setDataUrl(url);
-          setEstado("listo");
-        } else {
-          setEstado("vacio");
-        }
-      })
-      .catch(() => {
-        if (activo) setEstado("error");
-      });
-    return () => {
-      activo = false;
-    };
-  }, [pedido.id, pedido.pdfDataUrl, pedido.tienePdf, fetchPdf]);
-
-  return (
-    <ModalOverlay onClose={onClose} maxWidth={860}>
-      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
-        <span style={{ fontSize: 13, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-          {pedido.fileName || "Documento"}
-        </span>
-        <button onClick={onClose} aria-label="Cerrar" style={{ padding: 8, minWidth: 40, minHeight: 40, flexShrink: 0, marginLeft: 8 }}>
-          <i className="ti ti-x" style={{ fontSize: 14 }} aria-hidden="true"></i>
-        </button>
-      </div>
-      {estado === "listo" && dataUrl && <PdfCanvasViewer dataUrl={dataUrl} />}
-      {estado === "cargando" && (
-        <div style={{ fontSize: 13, color: "var(--color-text-secondary)", padding: "2rem 0", textAlign: "center" }}>
-          Cargando documento…
-        </div>
-      )}
-      {estado === "vacio" && (
-        <div style={{ fontSize: 13, color: "var(--color-text-secondary)", padding: "2rem 0", textAlign: "center" }}>
-          No hay documento adjunto para este pedido
-        </div>
-      )}
-      {estado === "error" && (
-        <div style={{ fontSize: 13, color: "var(--color-text-warning)", padding: "2rem 0", textAlign: "center" }}>
-          No se pudo cargar el documento. Revisa tu conexión e inténtalo de nuevo.
-        </div>
-      )}
-      {estado === "listo" && dataUrl && (
-        <div style={{ marginTop: 8, display: "flex", gap: 8, justifyContent: "flex-end", flexWrap: "wrap" }}>
-          {/* En celular NO se puede descargar desde una URL "data:" (Chrome y
-              Safari lo bloquean por seguridad): por eso el PDF se convierte a
-              un archivo real (blob) antes de abrirlo o compartirlo. */}
-          <button onClick={() => abrirPdf(dataUrl)} style={{ fontSize: 12.5, padding: "9px 12px", minHeight: 40 }}>
-            <i className="ti ti-external-link" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
-            Abrir en otra pestaña
-          </button>
-          <button onClick={() => descargarPdf(dataUrl, pedido.fileName)} style={{ fontSize: 12.5, padding: "9px 12px", minHeight: 40, fontWeight: 500 }}>
-            <i className="ti ti-download" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
-            Descargar / compartir
-          </button>
-        </div>
-      )}
-    </ModalOverlay>
-  );
-}
 
 // Tarjeta de un "viaje juntado": varias facturas que van juntas. Se muestra
 // como una sola tarjeta con el detalle de cada factura adentro, se arrastra en
 // bloque y se entrega de una. Ver handlers de juntar/entregarGrupo arriba.
-function GrupoCard({ miembros, isDragging, onDragStart, onDragEnd, onDragOverItem, onDropItem, onEntregarGrupo, onSeparar, onVerPdf }) {
-  const [confirmSeparar, setConfirmSeparar] = useState(false);
-  const total = miembros.reduce((s, m) => s + (Number(m.total) || 0), 0);
-  const clientesUnicos = Array.from(new Set(miembros.map((m) => (m.cliente || "").trim()).filter(Boolean)));
-  const titulo = clientesUnicos.length === 1 ? clientesUnicos[0] : `${miembros.length} pedidos en un viaje`;
-  const conPendiente = miembros.filter((m) => m.entregaPendiente);
-  // Peso del viaje completo: la suma de lo que falta por entregar de cada
-  // factura del grupo. Es el número que dice si el viaje cabe o no.
-  const cargaGrupo = miembros.reduce((sum, m) => sum + cargaPorEntregar(m), 0);
-  const vehGrupo = VEHICULOS.find((v) => v.id === (miembros[0] && miembros[0].vehiculo));
-  const capGrupo = vehGrupo && vehGrupo.capacidadKg;
-  const excedeGrupo = !!capGrupo && cargaGrupo > capGrupo;
-
-  return (
-    <div
-      draggable
-      onDragStart={onDragStart}
-      onDragEnd={onDragEnd}
-      onDragOver={onDragOverItem}
-      onDrop={onDropItem}
-      style={{
-        background: "var(--color-background-primary)",
-        border: "0.5px solid var(--color-border-info)",
-        borderLeft: "3px solid var(--color-border-info)",
-        borderRadius: "var(--border-radius-md)",
-        padding: "10px 12px",
-        marginBottom: 8,
-        cursor: "grab",
-        opacity: isDragging ? 0.4 : 1,
-      }}
-    >
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 7 }}>
-        <span
-          style={{
-            width: 28,
-            height: 28,
-            borderRadius: "50%",
-            background: "var(--color-background-info)",
-            color: "var(--color-text-info)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            flexShrink: 0,
-          }}
-        >
-          <i className="ti ti-layers-intersect" style={{ fontSize: 15 }} aria-hidden="true"></i>
-        </span>
-        <span style={{ fontWeight: 500, fontSize: 14, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-          {titulo}
-        </span>
-        {total ? <span style={{ fontSize: 14, fontWeight: 500, color: MARCA.azulOscuro, flexShrink: 0 }}>${formatCOP(total)}</span> : null}
-        <i className="ti ti-grip-vertical" style={{ fontSize: 14, color: "var(--color-text-tertiary)", flexShrink: 0 }} aria-hidden="true"></i>
-      </div>
-
-      <div style={{ paddingLeft: 36, marginBottom: 8 }}>
-        <span style={{ fontSize: 11.5, color: "var(--color-text-info)", fontWeight: 500 }}>
-          <i className="ti ti-layers-intersect" style={{ fontSize: 11, verticalAlign: "-1px", marginRight: 3 }} aria-hidden="true"></i>
-          Viaje juntado · {miembros.length} facturas
-        </span>
-        {cargaGrupo > 0 && (
-          <span style={{ fontSize: 11.5, fontWeight: 500, marginLeft: 8, color: excedeGrupo ? "var(--color-text-danger)" : "var(--color-text-secondary)" }}>
-            <i className="ti ti-weight" style={{ fontSize: 12, verticalAlign: "-2px", marginRight: 3 }} aria-hidden="true"></i>
-            {formatCOP(Math.round(cargaGrupo))} kg
-            {excedeGrupo ? " · no cabe en un viaje" : ""}
-          </span>
-        )}
-      </div>
-
-      {/* Al juntar pedidos se perdía de vista el material pendiente de cada
-          factura: aquí se avisa arriba y además en cada línea de abajo. */}
-      {conPendiente.length > 0 && (
-        <div
-          style={{
-            marginLeft: 36,
-            marginBottom: 9,
-            padding: "7px 10px",
-            borderRadius: "var(--border-radius-md)",
-            background: "var(--color-background-danger)",
-            border: "0.5px solid var(--color-border-danger)",
-            color: "var(--color-text-danger)",
-            fontSize: 12,
-          }}
-        >
-          <i className="ti ti-alert-triangle" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
-          {conPendiente.length === 1
-            ? "1 factura de este viaje debe material"
-            : `${conPendiente.length} facturas de este viaje deben material`}
-        </div>
-      )}
-
-      {/* Detalle de cada factura del viaje. */}
-      <div style={{ paddingLeft: 36, display: "flex", flexDirection: "column", gap: 8, marginBottom: 9 }}>
-        {miembros.map((m) => {
-          const prods = m.productos || [];
-          const resumen = prods.length === 0 ? "" : prods.length === 1 ? `${prods[0].cantidad} ${prods[0].unidad} — ${prods[0].descripcion}` : `${prods[0].descripcion} +${prods.length - 1} más`;
-          return (
-            <div key={m.id} style={{ borderLeft: "2px solid var(--color-border-tertiary)", paddingLeft: 8 }}>
-              <div style={{ fontSize: 12.5, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-                <span style={{ fontWeight: 500 }}>{m.cliente || "Sin nombre"}</span>
-                {m.numeroFactura && <span style={{ color: "var(--color-text-tertiary)" }}>· {m.remisionDe ? `${m.numeroFactura} (rem.)` : `Fact. ${m.numeroFactura}`}</span>}
-                {(m.tienePdf || m.pdfDataUrl) && (
-                  <button
-                    onClick={() => onVerPdf(m)}
-                    style={{ fontSize: 11, padding: "3px 8px", minHeight: 30, border: "0.5px solid var(--color-border-tertiary)", background: "transparent" }}
-                  >
-                    <i className="ti ti-file-text" style={{ fontSize: 12, verticalAlign: "-1px", marginRight: 3 }} aria-hidden="true"></i>
-                    PDF
-                  </button>
-                )}
-              </div>
-              {resumen && <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginTop: 2 }}>{resumen}</div>}
-              {m.entregaPendiente && (
-                <div style={{ fontSize: 11.5, color: "var(--color-text-danger)", marginTop: 3, fontWeight: 500 }}>
-                  <i className="ti ti-alert-triangle" style={{ fontSize: 12, verticalAlign: "-2px", marginRight: 3 }} aria-hidden="true"></i>
-                  Debe material{m.notaPendiente && m.notaPendiente.trim() ? `: ${m.notaPendiente}` : ""}
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-
-      <div style={{ display: "flex", alignItems: "center", gap: 6, paddingLeft: 36, flexWrap: "wrap" }}>
-        {confirmSeparar ? (
-          <button
-            onClick={onSeparar}
-            style={{ fontSize: 12.5, padding: "9px 12px", minHeight: 40, fontWeight: 500, background: "var(--color-background-warning)", color: "var(--color-text-warning)", border: "0.5px solid var(--color-border-warning)" }}
-          >
-            <i className="ti ti-arrows-split" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
-            Toca otra vez para separar
-          </button>
-        ) : (
-          <button
-            onClick={() => setConfirmSeparar(true)}
-            style={{ fontSize: 12.5, padding: "9px 12px", minHeight: 40, background: "transparent", color: "var(--color-text-primary)", border: "0.5px solid var(--color-border-tertiary)" }}
-          >
-            <i className="ti ti-unlink" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
-            Separar
-          </button>
-        )}
-        <button
-          onClick={onEntregarGrupo}
-          style={{
-            marginLeft: "auto",
-            border: "none",
-            background: "#639922",
-            color: "white",
-            fontWeight: 500,
-            fontSize: 13,
-            borderRadius: "var(--border-radius-md)",
-            padding: "9px 14px",
-            minHeight: 40,
-          }}
-        >
-          <i className="ti ti-check" style={{ fontSize: 14, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
-          Entregar todo
-        </button>
-      </div>
-    </div>
-  );
-}
 
 // Confirmación de pago al entregar un viaje juntado (una sola vez para todas
 // las facturas por cobrar del grupo).
@@ -4226,118 +3172,6 @@ function ConfirmarEntregaGrupoModal({ info, onClose, onConfirm }) {
   );
 }
 
-function HistorialRow({ pedido, onVerPdf, onDevolver }) {
-  const [expanded, setExpanded] = useState(false);
-  const [confirmDevolver, setConfirmDevolver] = useState(false);
-  const pagado = pedido.estadoPago === "pagado";
-  return (
-    <div style={{ background: "var(--color-background-primary)", border: "0.5px solid var(--color-border-tertiary)", borderRadius: "var(--border-radius-md)", padding: "10px 14px" }}>
-      <button
-        onClick={() => setExpanded(!expanded)}
-        aria-expanded={expanded}
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 10,
-          cursor: "pointer",
-          width: "100%",
-          background: "transparent",
-          border: "none",
-          padding: 0,
-          font: "inherit",
-          textAlign: "left",
-          color: "inherit",
-        }}
-      >
-        <i className={`ti ${(VEHICULOS.find((v) => v.id === pedido.vehiculo) || {}).icon || "ti-package"}`} style={{ fontSize: 16, color: "var(--color-text-secondary)" }} aria-hidden="true"></i>
-        <span style={{ fontWeight: 500, fontSize: 13, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{pedido.cliente}</span>
-        {/* Marca de "quedó debiendo" bien visible: sirve para saber a quién cobrar. */}
-        {!pagado && (
-          <span
-            style={{
-              fontSize: 11,
-              fontWeight: 500,
-              background: "var(--color-background-warning)",
-              color: "var(--color-text-warning)",
-              borderRadius: "var(--border-radius-sm)",
-              padding: "1px 7px",
-              flexShrink: 0,
-            }}
-          >
-            Debe
-          </span>
-        )}
-        <span style={{ fontSize: 12, color: "var(--color-text-tertiary)", flexShrink: 0 }}>{pedido.fechaEntrega || pedido.fecha}</span>
-        <i className={`ti ti-chevron-${expanded ? "up" : "down"}`} style={{ fontSize: 14, color: "var(--color-text-tertiary)", flexShrink: 0 }} aria-hidden="true"></i>
-      </button>
-      {expanded && (
-        <div style={{ marginTop: 10, paddingTop: 10, borderTop: "0.5px solid var(--color-border-tertiary)", fontSize: 12, color: "var(--color-text-secondary)" }}>
-          <div>
-            Documento: {pedido.numeroFactura || "-"} (
-            {pedido.remisionDe ? `remisión de Factura ${pedido.remisionDe}` : pedido.tipoDocumento === "remision" ? "remisión manual" : pedido.tipoDocumento === "cotizacion" ? "cotización" : "factura"})
-          </div>
-          <div>Vendedor: {pedido.vendedor || "-"}</div>
-          <div>Vehículo: {(VEHICULOS.find((v) => v.id === pedido.vehiculo) || {}).label || "-"}</div>
-          {pedido.destino && pedido.destino.trim() && <div>Destino: {pedido.destino}</div>}
-          <div>Total: {pedido.total ? `$${formatCOP(pedido.total)}` : "-"}</div>
-          <div style={{ color: pagado ? "var(--color-text-success)" : "var(--color-text-warning)", fontWeight: 500 }}>
-            Pago: {pagado ? "Pagado" : "Quedó debiendo"}
-          </div>
-          {pedido.productos && pedido.productos.length > 0 && (
-            <div style={{ marginTop: 6 }}>
-              {pedido.productos.map((p, i) => (
-                <div key={i}>· {p.cantidad} {p.unidad} {p.descripcion}</div>
-              ))}
-            </div>
-          )}
-          <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
-            {(pedido.tienePdf || pedido.pdfDataUrl) && (
-              <button onClick={onVerPdf} style={{ fontSize: 12.5, padding: "9px 12px", minHeight: 40 }}>
-                <i className="ti ti-file-text" style={{ fontSize: 12, verticalAlign: "-1px", marginRight: 3 }} aria-hidden="true"></i>
-                Ver documento
-              </button>
-            )}
-            {/* Corrige una entrega marcada por error. Doble toque para no
-                devolver un pedido sin querer. */}
-            {onDevolver &&
-              (confirmDevolver ? (
-                <button
-                  onClick={onDevolver}
-                  style={{
-                    fontSize: 12.5,
-                    padding: "9px 12px",
-                    minHeight: 40,
-                    fontWeight: 500,
-                    background: "var(--color-background-warning)",
-                    color: "var(--color-text-warning)",
-                    border: "0.5px solid var(--color-border-warning)",
-                  }}
-                >
-                  <i className="ti ti-arrow-back-up" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
-                  Toca otra vez para devolver
-                </button>
-              ) : (
-                <button
-                  onClick={() => setConfirmDevolver(true)}
-                  style={{
-                    fontSize: 12.5,
-                    padding: "9px 12px",
-                    minHeight: 40,
-                    background: "transparent",
-                    color: "var(--color-text-primary)",
-                    border: "0.5px solid var(--color-border-tertiary)",
-                  }}
-                >
-                  <i className="ti ti-arrow-back-up" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
-                  Devolver a despacho
-                </button>
-              ))}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
 
 // Guía de carga interna: NO es factura ni la reemplaza (no lleva CUFE, QR ni
 // resolución DIAN), solo ayuda al despachador a saber qué subir al vehículo.
@@ -4402,134 +3236,6 @@ function NotaPendienteModal({ pedido, onClose, onGuardar, onQuitar }) {
 // unidades se entregaron (de las que trae la factura), por si no se entregó
 // todo. Guarda cantidadEntregada en cada producto. La nota de material
 // pendiente NO se crea aquí: se genera sola al pasar el pedido a despacho.
-function MaterialPorUnidadesModal({ pedido, onClose, onGuardar }) {
-  // Este modal declara lo que salió DIRECTO contra la factura (a mano, sin
-  // remisión). Por eso trabaja contra el TOPE EDITABLE (= facturado − lo que ya
-  // salió remisionado), no contra lo facturado.
-  //
-  // Antes usaba lo facturado como default y como techo, ignorando
-  // cantidadRestante: en una factura de 100 con remisión de 40, proponía 100 y
-  // dejaba guardar 100 aunque solo quedaran 60. Eso dejaba el par
-  // (cantidadEntregada, cantidadRestante) contradictorio: el modal decía
-  // "Completo", "Por entregar" decía "quedan 60", y al archivarse la factura el
-  // Panel sumaba 100 encima de los 40 ya contados por la remisión (7.000 kg
-  // donde salieron 5.000).
-  const [items, setItems] = useState(() =>
-    (pedido.productos || []).map((p) => ({
-      ...p,
-      // Sin remisiones: arranca en todo lo facturado (el caso normal es "salí
-      // con todo" y solo se baja lo que faltó). Con remisiones: arranca en 0,
-      // porque lo remisionado ya se contó aparte.
-      entregadas: valorInicialMaterialDe(p),
-    }))
-  );
-
-  const setEntregadas = (idx, valor) => {
-    setItems((prev) =>
-      prev.map((it, i) => {
-        if (i !== idx) return it;
-        const tope = topeEditableDe(it);
-        let n = valor;
-        if (isNaN(n) || n < 0) n = 0;
-        if (n > tope) n = tope;
-        return { ...it, entregadas: n };
-      })
-    );
-  };
-
-  return (
-    <ModalOverlay onClose={onClose} maxWidth={460}>
-      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
-        <span style={{ fontWeight: 500, fontSize: 15 }}>Material entregado</span>
-        <button onClick={onClose} aria-label="Cerrar" style={{ padding: 8, minWidth: 40, minHeight: 40 }}>
-          <i className="ti ti-x" style={{ fontSize: 14 }} aria-hidden="true"></i>
-        </button>
-      </div>
-      <div style={{ fontSize: 12.5, color: "var(--color-text-tertiary)", marginBottom: 12 }}>
-        {pedido.cliente} · marca cuántas unidades de cada material se entregaron.
-      </div>
-
-      {items.length === 0 && (
-        <div style={{ fontSize: 13, color: "var(--color-text-tertiary)", padding: "8px 4px" }}>
-          Este pedido no tiene productos detallados.
-        </div>
-      )}
-
-      <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 14 }}>
-        {items.map((it, idx) => {
-          const facturado = cantidadNum(it.cantidad);
-          const tope = topeEditableDe(it);
-          // Lo que salió por remisiones: no es editable acá y se muestra para
-          // que el despachador entienda por qué el tope no es lo facturado.
-          const remisionado = Math.max(0, facturado - tope);
-          const falta = tope - it.entregadas;
-          const completo = falta <= 0;
-          return (
-            <div
-              key={idx}
-              style={{
-                border: completo ? "0.5px solid var(--color-border-success)" : "0.5px solid var(--color-border-warning)",
-                borderRadius: "var(--border-radius-md)",
-                padding: "8px 10px",
-              }}
-            >
-              <div style={{ fontSize: 13, marginBottom: 6 }}>
-                <b style={{ fontWeight: 500 }}>{formatCantidad(facturado)} {it.unidad}</b> — {it.descripcion}
-              </div>
-              {remisionado > 0 && (
-                <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 6 }}>
-                  <i className="ti ti-arrows-split" style={{ fontSize: 12, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
-                  Ya salieron {formatCantidad(remisionado)} por remisión · acá solo se marca lo que queda ({formatCantidad(tope)})
-                </div>
-              )}
-              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                <span style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>Entregadas:</span>
-                <input
-                  type="number"
-                  inputMode="decimal"
-                  min={0}
-                  max={tope}
-                  value={it.entregadas}
-                  onChange={(e) => setEntregadas(idx, parseCantidad(e.target.value))}
-                  style={{ width: 80 }}
-                />
-                <button onClick={() => setEntregadas(idx, tope)} style={{ fontSize: 12, padding: "6px 10px", minHeight: 36 }}>
-                  Todo
-                </button>
-                <button onClick={() => setEntregadas(idx, 0)} style={{ fontSize: 12, padding: "6px 10px", minHeight: 36 }}>
-                  Nada
-                </button>
-                <span
-                  style={{
-                    marginLeft: "auto",
-                    fontSize: 12,
-                    fontWeight: 500,
-                    color: completo ? "var(--color-text-success)" : "var(--color-text-warning)",
-                  }}
-                >
-                  {completo ? "Completo" : `Faltan ${formatCantidad(falta)}`}
-                </span>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-
-      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-        <button onClick={onClose} style={{ fontSize: 13 }}>Cancelar</button>
-        <button
-          // aplicarEntregadoDirecto deja el par (cantidadEntregada,
-          // cantidadRestante) coherente. A una factura SIN remisiones no le
-          // inventa cantidadRestante: sigue con la forma de dato de siempre.
-          onClick={() => onGuardar(items.map(({ entregadas, ...rest }) => aplicarEntregadoDirecto(rest, entregadas)))}
-          style={{ fontSize: 13, fontWeight: 500, background: "var(--color-background-info)", color: "var(--color-text-info)", border: "0.5px solid var(--color-border-info)" }}
-        >
-          Guardar
-        </button>
-      </div>
-    </ModalOverlay>
-  );
-}
 
 // Modal para crear una remisión: elegir cuántas unidades de cada producto de
 // una factura grande se despachan esta vez, y a qué fecha/vehículo van. Lo que
@@ -4723,437 +3429,16 @@ function RemisionModal({ pedido, hoyIso, onClose, onCrear }) {
 // Descontar del saldo de una factura madre el material que el cliente ya se
 // llevó directo (mostrador), sin generar una remisión. Mismo estilo que
 // RemisionModal pero sin fecha ni vehículo: aquí nada sale a despacho.
-function DescontarMaterialModal({ pedido, onClose, onDescontar }) {
-  const productos = pedido.productos || [];
-  // Copia 6 de 6 -> saldo.js.
-  const dispo = saldoDe;
-  const [cantidades, setCantidades] = useState(() => productos.map(() => 0));
-
-  const setCantidad = (idx, valor) => {
-    setCantidades((prev) =>
-      prev.map((c, i) => {
-        if (i !== idx) return c;
-        const max = dispo(productos[idx]);
-        let n = valor;
-        if (isNaN(n) || n < 0) n = 0;
-        if (n > max) n = max;
-        return n;
-      })
-    );
-  };
-
-  const total = cantidades.reduce((s, c) => s + (Number(c) || 0), 0);
-
-  return (
-    <ModalOverlay onClose={onClose} maxWidth={460}>
-      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
-        <span style={{ fontWeight: 500, fontSize: 15 }}>Descontar material entregado</span>
-        <button onClick={onClose} aria-label="Cerrar" style={{ padding: 8, minWidth: 40, minHeight: 40 }}>
-          <i className="ti ti-x" style={{ fontSize: 14 }} aria-hidden="true"></i>
-        </button>
-      </div>
-      <div style={{ fontSize: 12.5, color: "var(--color-text-tertiary)", marginBottom: 12 }}>
-        {pedido.cliente}
-        {pedido.numeroFactura ? ` · Factura ${pedido.numeroFactura}` : ""} — marca lo que el cliente ya se llevó directo. Baja del saldo sin crear remisión.
-      </div>
-
-      <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 14 }}>
-        {productos.map((p, idx) => {
-          const disponible = dispo(p);
-          const agotado = disponible <= 0;
-          return (
-            <div key={idx} style={{ border: "0.5px solid var(--color-border-tertiary)", borderRadius: "var(--border-radius-md)", padding: "8px 10px", opacity: agotado ? 0.5 : 1 }}>
-              <div style={{ fontSize: 13, marginBottom: 6 }}>
-                <b style={{ fontWeight: 500 }}>{p.descripcion}</b>
-                <span style={{ color: "var(--color-text-tertiary)" }}> · quedan {formatCantidad(disponible)} {p.unidad}</span>
-              </div>
-              {agotado ? (
-                <div style={{ fontSize: 12, color: "var(--color-text-tertiary)" }}>Ya se entregó completo.</div>
-              ) : (
-                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                  <span style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>Ya se llevó:</span>
-                  <input
-                    type="number"
-                    inputMode="decimal"
-                    min={0}
-                    max={disponible}
-                    value={cantidades[idx]}
-                    onChange={(e) => setCantidad(idx, parseCantidad(e.target.value))}
-                    style={{ width: 90 }}
-                  />
-                  <button onClick={() => setCantidad(idx, disponible)} style={{ fontSize: 12, padding: "6px 10px", minHeight: 36 }}>Todo</button>
-                  <button onClick={() => setCantidad(idx, 0)} style={{ fontSize: 12, padding: "6px 10px", minHeight: 36 }}>Nada</button>
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-
-      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", alignItems: "center" }}>
-        <span style={{ fontSize: 12, color: "var(--color-text-tertiary)", marginRight: "auto" }}>
-          {total > 0 ? `${formatCantidad(total)} unidades se descuentan` : "Nada marcado aún"}
-        </span>
-        <button onClick={onClose} style={{ fontSize: 13 }}>Cancelar</button>
-        <button
-          onClick={() => total > 0 && onDescontar(cantidades)}
-          disabled={total <= 0}
-          style={{
-            fontSize: 13,
-            fontWeight: 500,
-            background: total > 0 ? "#639922" : "var(--color-background-secondary)",
-            color: total > 0 ? "white" : "var(--color-text-tertiary)",
-            border: "none",
-            borderRadius: "var(--border-radius-md)",
-            padding: "9px 14px",
-            minHeight: 40,
-            cursor: total > 0 ? "pointer" : "not-allowed",
-          }}
-        >
-          <i className="ti ti-check" style={{ fontSize: 14, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
-          Descontar
-        </button>
-      </div>
-    </ModalOverlay>
-  );
-}
 
 // Tirilla de remisión para impresora térmica de 58 mm. NO es factura de venta
 // (no lleva CUFE, QR ni resolución DIAN): es el comprobante interno de que el
 // material salió y alguien lo recibió. Por eso lleva firma de quien recibe.
 // Sin peso a propósito: el peso de la app es aproximado y no debe imprimirse
 // en un papel que el cliente firma.
-function TirillaModal({ pedido, onClose }) {
-  const productos = pedido.productos || [];
-  const veh = VEHICULOS.find((v) => v.id === pedido.vehiculo);
-  const tel = pedido.telefono || pedido.telefonoContacto;
-
-  return (
-    <ModalOverlay onClose={onClose} maxWidth={360}>
-      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}>
-        <span style={{ fontWeight: 500, fontSize: 15 }}>Tirilla de remisión</span>
-        <button onClick={onClose} aria-label="Cerrar" style={{ padding: 8, minWidth: 40, minHeight: 40 }}>
-          <i className="ti ti-x" style={{ fontSize: 14 }} aria-hidden="true"></i>
-        </button>
-      </div>
-
-      <div style={{ display: "flex", justifyContent: "center", marginBottom: 12 }}>
-        <div id="tirilla-print" className="tr">
-          <div className="tr-tit">FERROMATERIALES</div>
-          <div className="tr-tit">SAN BLAS S.A.S.</div>
-          <div className="tr-sub">NIT 901.577.413-3</div>
-          <div className="tr-sub">CL 7 CRA 2-28 AV SAN BLAS</div>
-          <div className="tr-sub">CEL 310 590 0475</div>
-          <div className="tr-sub">MORROA - SUCRE</div>
-
-          <div className="tr-sep"></div>
-          <div className="tr-enc">REMISION DE ENTREGA</div>
-          <div className="tr-num">{pedido.numeroFactura || "-"}</div>
-          {pedido.remisionDe && <div className="tr-sub">de Factura {pedido.remisionDe}</div>}
-          <div className="tr-sep"></div>
-
-          <div className="tr-row"><span className="tr-lab">FECHA</span><span>{todayStr()} {nowTimeStr()}</span></div>
-          <div className="tr-row"><span className="tr-lab">CLIENTE</span><span style={{ flex: 1 }}>{pedido.cliente || "-"}</span></div>
-          {pedido.direccion && <div className="tr-row"><span className="tr-lab">DIRECC.</span><span style={{ flex: 1 }}>{pedido.direccion}</span></div>}
-          {tel && <div className="tr-row"><span className="tr-lab">CEL.</span><span>{tel}</span></div>}
-          {pedido.destino && <div className="tr-row"><span className="tr-lab">DESTINO</span><span>{pedido.destino}</span></div>}
-          {veh && <div className="tr-row"><span className="tr-lab">VEHIC.</span><span>{veh.label.toUpperCase()}</span></div>}
-
-          <div className="tr-sep"></div>
-          <div className="tr-item" style={{ fontWeight: 700 }}>
-            <span className="tr-qty">CANT</span>
-            <span className="tr-desc">DESCRIPCION</span>
-          </div>
-          <div className="tr-solid"></div>
-
-          {productos.map((p, i) => (
-            <div key={i} className="tr-item">
-              <span className="tr-qty">{p.cantidad} {p.unidad}</span>
-              <span className="tr-desc">{p.descripcion}</span>
-            </div>
-          ))}
-
-          <div className="tr-sep"></div>
-          <div className="tr-tot">
-            <span>TOTAL ITEMS</span>
-            <span>{productos.length}</span>
-          </div>
-
-          <div className="tr-firma">FIRMA DE QUIEN RECIBE</div>
-          <div className="tr-firma" style={{ marginTop: "1.8em" }}>C.C. / NOMBRE</div>
-
-          <div className="tr-sep" style={{ marginTop: "0.8em" }}></div>
-          <div className="tr-nota">
-            Documento interno de entrega.
-            <br />
-            NO es factura de venta.
-          </div>
-        </div>
-      </div>
-
-      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-        <button onClick={onClose} style={{ fontSize: 13 }}>Cerrar</button>
-        <button
-          onClick={() => window.print()}
-          style={{
-            fontSize: 13,
-            fontWeight: 500,
-            background: MARCA.azulMedio,
-            color: "#fff",
-            border: "none",
-            borderRadius: "var(--border-radius-md)",
-            padding: "9px 14px",
-            minHeight: 40,
-          }}
-        >
-          <i className="ti ti-printer" style={{ fontSize: 14, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
-          Imprimir
-        </button>
-      </div>
-    </ModalOverlay>
-  );
-}
 
 // Formulario para crear una remisión a mano (sin PDF): pedidos que llegan en
 // hoja aparte de remisiones (arena, bloque, etc.), ajenos a World Office. El
 // número REM lo pone el componente padre (siguienteNumeroRemision).
-function RemisionManualModal({ hoyIso, onClose, onCrear }) {
-  const [cliente, setCliente] = useState("");
-  const [telefono, setTelefono] = useState("");
-  const [direccion, setDireccion] = useState("");
-  const [destino, setDestino] = useState("");
-  const [estadoPago, setEstadoPago] = useState("pendiente");
-  const [productos, setProductos] = useState([{ descripcion: "", cantidad: "", unidad: "", precio: "" }]);
-  const [fechaOpcion, setFechaOpcion] = useState("hoy");
-  const [fechaOtro, setFechaOtro] = useState(addDaysISO(hoyIso, 1));
-  const [vehiculo, setVehiculo] = useState(VEHICULOS[0].id);
-
-  const esConFecha = fechaOpcion === "hoy" || fechaOpcion === "otro";
-  const fechaResuelta = fechaOpcion === "hoy" ? hoyIso : fechaOpcion === "otro" ? fechaOtro : fechaOpcion; // "pendiente" | "viaje"
-
-  const setProd = (i, campo, valor) => setProductos((prev) => prev.map((p, idx) => (idx === i ? { ...p, [campo]: valor } : p)));
-  const agregarFila = () => setProductos((prev) => [...prev, { descripcion: "", cantidad: "", unidad: "", precio: "" }]);
-  const quitarFila = (i) => setProductos((prev) => (prev.length === 1 ? prev : prev.filter((_, idx) => idx !== i)));
-
-  const hayMaterial = productos.some((p) => (p.descripcion || "").trim() && cantidadNum(p.cantidad) > 0);
-  const puedeCrear = cliente.trim() && hayMaterial && (fechaOpcion !== "otro" || !!fechaOtro);
-
-  const opcionesFecha = [
-    { id: "hoy", label: "Hoy" },
-    { id: "otro", label: "Otro día" },
-    { id: "pendiente", label: "Por entregar" },
-    { id: "viaje", label: "Por viaje" },
-  ];
-
-  const chipFecha = (activo) => ({
-    fontSize: 12.5,
-    padding: "8px 12px",
-    minHeight: 40,
-    fontWeight: activo ? 600 : 400,
-    background: activo ? "var(--color-background-info)" : "var(--color-background-primary)",
-    color: activo ? "var(--color-text-info)" : "var(--color-text-primary)",
-    border: activo ? "2px solid var(--color-border-info)" : "0.5px solid var(--color-border-tertiary)",
-  });
-
-  return (
-    <ModalOverlay onClose={onClose} maxWidth={500}>
-      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
-        <span style={{ fontWeight: 500, fontSize: 15 }}>Remisión manual</span>
-        <button onClick={onClose} aria-label="Cerrar" style={{ padding: 8, minWidth: 40, minHeight: 40 }}>
-          <i className="ti ti-x" style={{ fontSize: 14 }} aria-hidden="true"></i>
-        </button>
-      </div>
-      <div style={{ fontSize: 12.5, color: "var(--color-text-tertiary)", marginBottom: 14 }}>
-        Para pedidos escritos a mano (arena, bloque, etc.). Se le pone un número REM automático.
-      </div>
-
-      <label style={{ display: "block", marginBottom: 10 }}>
-        <span style={{ fontSize: 12, color: "var(--color-text-secondary)", display: "block", marginBottom: 4 }}>Cliente</span>
-        <input type="text" value={cliente} onChange={(e) => setCliente(e.target.value)} placeholder="Nombre del cliente" style={{ width: "100%" }} />
-      </label>
-
-      <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
-        <label style={{ flex: 1, minWidth: 140 }}>
-          <span style={{ fontSize: 12, color: "var(--color-text-secondary)", display: "block", marginBottom: 4 }}>Teléfono (opcional)</span>
-          <input type="tel" value={telefono} onChange={(e) => setTelefono(e.target.value)} style={{ width: "100%" }} />
-        </label>
-        <label style={{ flex: 1, minWidth: 140 }}>
-          <span style={{ fontSize: 12, color: "var(--color-text-secondary)", display: "block", marginBottom: 4 }}>Dirección (opcional)</span>
-          <input type="text" value={direccion} onChange={(e) => setDireccion(e.target.value)} style={{ width: "100%" }} />
-        </label>
-      </div>
-
-      <span style={{ fontSize: 12, color: "var(--color-text-secondary)", display: "block", marginBottom: 6 }}>Material</span>
-      <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 8 }}>
-        {productos.map((p, i) => (
-          <div key={i} style={{ display: "flex", gap: 6, alignItems: "center" }}>
-            <input
-              type="text"
-              value={p.descripcion}
-              onChange={(e) => setProd(i, "descripcion", e.target.value)}
-              placeholder="Material (arena, bloque...)"
-              style={{ flex: 1, minWidth: 0 }}
-            />
-            <input
-              type="number"
-              inputMode="decimal"
-              value={p.cantidad}
-              onChange={(e) => setProd(i, "cantidad", e.target.value)}
-              placeholder="Cant."
-              style={{ width: 66 }}
-            />
-            <input
-              type="text"
-              value={p.unidad}
-              onChange={(e) => setProd(i, "unidad", e.target.value)}
-              placeholder="und"
-              style={{ width: 54 }}
-            />
-            {/* Precio total de la línea. Necesario para que los fletes escritos
-                a mano ("carga de material") sumen en el reporte del Panel. */}
-            <input
-              type="number"
-              inputMode="numeric"
-              value={p.precio}
-              onChange={(e) => setProd(i, "precio", e.target.value)}
-              placeholder="$"
-              aria-label="Precio de la línea"
-              style={{ width: 78 }}
-            />
-            <button
-              onClick={() => quitarFila(i)}
-              aria-label="Quitar material"
-              disabled={productos.length === 1}
-              style={{ minWidth: 36, minHeight: 36, padding: 0, border: "0.5px solid var(--color-border-tertiary)", background: "transparent", opacity: productos.length === 1 ? 0.4 : 1 }}
-            >
-              <i className="ti ti-trash" style={{ fontSize: 14 }} aria-hidden="true"></i>
-            </button>
-          </div>
-        ))}
-      </div>
-      <button onClick={agregarFila} style={{ fontSize: 12.5, padding: "8px 12px", minHeight: 38, marginBottom: 14, background: "var(--color-background-secondary)", border: "0.5px solid var(--color-border-tertiary)" }}>
-        <i className="ti ti-plus" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
-        Agregar material
-      </button>
-
-      <div style={{ fontSize: 12.5, fontWeight: 500, marginBottom: 6 }}>¿Para cuándo?</div>
-      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: fechaOpcion === "otro" ? 8 : 14 }}>
-        {opcionesFecha.map((o) => (
-          <button key={o.id} onClick={() => setFechaOpcion(o.id)} aria-pressed={fechaOpcion === o.id} style={chipFecha(fechaOpcion === o.id)}>
-            {o.label}
-          </button>
-        ))}
-      </div>
-      {fechaOpcion === "otro" && (
-        <div style={{ marginBottom: 14 }}>
-          <div style={{ display: "flex", gap: 6, overflowX: "auto", paddingBottom: 4, marginBottom: 8 }}>
-            {Array.from({ length: 7 }, (_, i) => addDaysISO(hoyIso, i + 1)).map((iso) => {
-              const [yy, mm, dd] = iso.split("-").map(Number);
-              const fechaObj = new Date(yy, mm - 1, dd);
-              const etiqueta = iso === addDaysISO(hoyIso, 1) ? "Mañana" : fechaObj.toLocaleDateString("es-CO", { weekday: "short" }).replace(".", "");
-              const mesAbrev = fechaObj.toLocaleDateString("es-CO", { month: "short" }).replace(".", "");
-              const sel = fechaOtro === iso;
-              return (
-                <button
-                  key={iso}
-                  onClick={() => setFechaOtro(iso)}
-                  aria-pressed={sel}
-                  style={{
-                    flexShrink: 0,
-                    minWidth: 62,
-                    padding: "8px 8px",
-                    display: "flex",
-                    flexDirection: "column",
-                    alignItems: "center",
-                    gap: 1,
-                    borderRadius: "var(--border-radius-md)",
-                    border: sel ? "2px solid var(--color-border-info)" : "0.5px solid var(--color-border-tertiary)",
-                    background: sel ? "var(--color-background-info)" : "var(--color-background-primary)",
-                    color: sel ? "var(--color-text-info)" : "var(--color-text-primary)",
-                  }}
-                >
-                  <span style={{ fontSize: 11, textTransform: "capitalize", color: sel ? "var(--color-text-info)" : "var(--color-text-tertiary)" }}>{etiqueta}</span>
-                  <span style={{ fontSize: 19, fontWeight: 600, lineHeight: 1.1 }}>{dd}</span>
-                  <span style={{ fontSize: 10, textTransform: "capitalize", color: sel ? "var(--color-text-info)" : "var(--color-text-tertiary)" }}>{mesAbrev}</span>
-                </button>
-              );
-            })}
-          </div>
-          <input type="date" value={fechaOtro} min={hoyIso} onChange={(e) => setFechaOtro(e.target.value || addDaysISO(hoyIso, 1))} style={{ width: "100%" }} />
-        </div>
-      )}
-
-      {esConFecha && (
-        <>
-          <div style={{ fontSize: 12.5, fontWeight: 500, marginBottom: 6 }}>¿En qué vehículo?</div>
-          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 14 }}>
-            {VEHICULOS.map((v) => (
-              <button
-                key={v.id}
-                onClick={() => setVehiculo(v.id)}
-                aria-pressed={vehiculo === v.id}
-                style={{
-                  fontSize: 12.5,
-                  padding: "8px 12px",
-                  minHeight: 40,
-                  fontWeight: vehiculo === v.id ? 600 : 400,
-                  background: vehiculo === v.id ? v.bg : "var(--color-background-primary)",
-                  color: vehiculo === v.id ? v.text : "var(--color-text-primary)",
-                  border: vehiculo === v.id ? `2px solid ${v.border}` : "0.5px solid var(--color-border-tertiary)",
-                }}
-              >
-                <i className={`ti ${v.icon}`} style={{ fontSize: 14, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
-                {v.label}
-              </button>
-            ))}
-          </div>
-        </>
-      )}
-
-      <DestinoSelector value={destino} onChange={setDestino} />
-
-      <div style={{ fontSize: 12.5, fontWeight: 500, margin: "12px 0 6px" }}>Estado de pago</div>
-      <div style={{ display: "flex", gap: 6, marginBottom: 16 }}>
-        <button
-          onClick={() => setEstadoPago("pagado")}
-          aria-pressed={estadoPago === "pagado"}
-          style={{ flex: 1, fontSize: 12.5, padding: "8px 0", minHeight: 40, border: estadoPago === "pagado" ? "2px solid var(--color-border-success)" : "0.5px solid var(--color-border-tertiary)", background: estadoPago === "pagado" ? "var(--color-background-success)" : "transparent", color: estadoPago === "pagado" ? "var(--color-text-success)" : "var(--color-text-primary)" }}
-        >
-          Ya pagado
-        </button>
-        <button
-          onClick={() => setEstadoPago("pendiente")}
-          aria-pressed={estadoPago === "pendiente"}
-          style={{ flex: 1, fontSize: 12.5, padding: "8px 0", minHeight: 40, border: estadoPago === "pendiente" ? "2px solid var(--color-border-warning)" : "0.5px solid var(--color-border-tertiary)", background: estadoPago === "pendiente" ? "var(--color-background-warning)" : "transparent", color: estadoPago === "pendiente" ? "var(--color-text-warning)" : "var(--color-text-primary)" }}
-        >
-          Paga al recibir
-        </button>
-      </div>
-
-      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-        <button onClick={onClose} style={{ fontSize: 13 }}>Cancelar</button>
-        <button
-          onClick={() => puedeCrear && onCrear({ cliente, telefono, direccion, destino, productos, fechaDespacho: fechaResuelta, vehiculo, estadoPago })}
-          disabled={!puedeCrear}
-          style={{
-            fontSize: 13,
-            fontWeight: 500,
-            background: puedeCrear ? "#639922" : "var(--color-background-secondary)",
-            color: puedeCrear ? "white" : "var(--color-text-tertiary)",
-            border: "none",
-            borderRadius: "var(--border-radius-md)",
-            padding: "9px 14px",
-            minHeight: 40,
-            cursor: puedeCrear ? "pointer" : "not-allowed",
-          }}
-        >
-          <i className="ti ti-pencil-plus" style={{ fontSize: 14, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
-          Crear remisión
-        </button>
-      </div>
-    </ModalOverlay>
-  );
-}
 
 function ConfirmarEntregaModal({ pedido, onClose, onConfirm }) {
   return (
@@ -5485,407 +3770,10 @@ function EditModal({ pedido, onClose, onSave }) {
 // Componentes del módulo de Cotizaciones (independiente de despacho).
 // ---------------------------------------------------------------------
 
-const ESTADOS_COTIZACION_BADGE = {
-  pendiente: { label: "Pendiente", bg: "var(--color-background-warning)", text: "var(--color-text-warning)" },
-  aceptada: { label: "Aceptada", bg: "var(--color-background-success)", text: "var(--color-text-success)" },
-  rechazada: { label: "Rechazada", bg: "var(--color-background-danger)", text: "var(--color-text-danger)" },
-};
 
-const ESTADOS_COTIZACION_BADGE_KEYS = ["pendiente", "aceptada", "rechazada"];
 
-function CotizacionCard({ cotizacion, hoyIso, onDelete, onEdit, onVerPdf, onCambiarEstado, onPasarADespacho, yaEnDespacho = false }) {
-  const [confirmDelete, setConfirmDelete] = useState(false);
-  const badge = ESTADOS_COTIZACION_BADGE[cotizacion.estado || "pendiente"];
-  const iniciales = (cotizacion.cliente || "?")
-    .trim()
-    .split(/\s+/)
-    .slice(0, 2)
-    .map((p) => p[0])
-    .join("")
-    .toUpperCase();
 
-  return (
-    <div
-      style={{
-        background: "var(--color-background-primary)",
-        border: "0.5px solid var(--color-border-tertiary)",
-        borderRadius: "var(--border-radius-md)",
-        padding: "10px 12px",
-        marginBottom: 8,
-      }}
-    >
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 7 }}>
-        <span
-          style={{
-            width: 28,
-            height: 28,
-            borderRadius: "50%",
-            background: badge.bg,
-            color: badge.text,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            fontSize: 12,
-            fontWeight: 500,
-            flexShrink: 0,
-          }}
-        >
-          {iniciales}
-        </span>
-        <span style={{ fontWeight: 500, fontSize: 14, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-          {cotizacion.cliente}
-        </span>
-        {cotizacion.total ? (
-          <span style={{ fontSize: 14, fontWeight: 500, color: MARCA.azulOscuro, flexShrink: 0 }}>${formatCOP(cotizacion.total)}</span>
-        ) : null}
-      </div>
 
-      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 7, paddingLeft: 36, flexWrap: "wrap" }}>
-        {cotizacion.numeroFactura && (
-          <span style={{ fontSize: 12, background: "var(--color-background-secondary)", color: "var(--color-text-secondary)", borderRadius: "var(--border-radius-sm)", padding: "2px 7px" }}>
-            Cotización {cotizacion.numeroFactura}
-          </span>
-        )}
-        {cotizacion.fecha && <span style={{ fontSize: 12, color: "var(--color-text-tertiary)" }}>{cotizacion.fecha}</span>}
-        <span
-          style={{
-            fontSize: 12,
-            padding: "2px 8px",
-            borderRadius: "var(--border-radius-sm)",
-            background: badge.bg,
-            color: badge.text,
-            marginLeft: "auto",
-          }}
-        >
-          {badge.label}
-        </span>
-      </div>
-
-      {cotizacion.productos && cotizacion.productos.length > 0 && (
-        <div style={{ fontSize: 12.5, color: "var(--color-text-secondary)", marginBottom: 7, paddingLeft: 36 }}>
-          {cotizacion.productos.length === 1
-            ? cotizacion.productos[0].descripcion
-            : `${cotizacion.productos[0].descripcion} +${cotizacion.productos.length - 1} más`}
-        </div>
-      )}
-
-      {cotizacion.fechaSeguimiento &&
-        (() => {
-          const vencido = (cotizacion.estado || "pendiente") === "pendiente" && cotizacion.fechaSeguimiento < hoyIso;
-          return (
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 5,
-                fontSize: 12.5,
-                color: vencido ? "var(--color-text-danger)" : "var(--color-text-secondary)",
-                fontWeight: vencido ? 500 : 400,
-                marginBottom: 7,
-                paddingLeft: 36,
-              }}
-            >
-              <i
-                className={vencido ? "ti ti-alert-triangle" : "ti ti-bell"}
-                style={{ fontSize: 13, color: vencido ? "var(--color-text-danger)" : MARCA.azulMedio }}
-                aria-hidden="true"
-              ></i>
-              {vencido ? "Seguimiento vencido: " : "Seguimiento: "}
-              {cotizacion.fechaSeguimiento}
-            </div>
-          );
-        })()}
-
-      {cotizacion.estado === "rechazada" && cotizacion.motivoRechazo && (
-        <div
-          style={{
-            fontSize: 12,
-            color: "var(--color-text-danger)",
-            marginBottom: 8,
-            marginLeft: 36,
-            padding: "6px 8px",
-            background: "var(--color-background-danger)",
-            borderRadius: "var(--border-radius-sm)",
-          }}
-        >
-          <i className="ti ti-info-circle" style={{ fontSize: 12, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
-          Motivo: {cotizacion.motivoRechazo}
-        </div>
-      )}
-
-      {cotizacion.notas && cotizacion.notas.trim() && (
-        <div
-          style={{
-            fontSize: 12,
-            color: "var(--color-text-secondary)",
-            marginBottom: 8,
-            marginLeft: 36,
-            padding: "6px 8px",
-            background: "var(--color-background-secondary)",
-            borderRadius: "var(--border-radius-sm)",
-          }}
-        >
-          <i className="ti ti-note" style={{ fontSize: 12, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
-          {cotizacion.notas}
-        </div>
-      )}
-
-      <div style={{ display: "flex", alignItems: "center", gap: 6, paddingLeft: 36, flexWrap: "wrap" }}>
-        {(cotizacion.tienePdf || cotizacion.pdfDataUrl) && (
-          <button onClick={onVerPdf} style={{ fontSize: 12.5, padding: "9px 12px", minHeight: 40 }}>
-            <i className="ti ti-file-text" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
-            Ver documento
-          </button>
-        )}
-        <button
-          onClick={onEdit}
-          style={{
-            fontSize: 12.5,
-            padding: "9px 12px",
-            minHeight: 40,
-            background: MARCA.azulClaro,
-            color: MARCA.azulOscuro,
-            border: `0.5px solid ${MARCA.azulMedio}`,
-          }}
-        >
-          <i className="ti ti-edit" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
-          Editar
-        </button>
-
-        {/* Ya pasó a despacho: no se ofrece volver a mandarla (evita duplicar
-            el pedido) y se deja claro que la venta está andando. */}
-        {yaEnDespacho && (
-          <span
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 5,
-              fontSize: 12.5,
-              fontWeight: 500,
-              color: "var(--color-text-success)",
-              background: "var(--color-background-success)",
-              border: "0.5px solid var(--color-border-success)",
-              borderRadius: "var(--border-radius-md)",
-              padding: "9px 12px",
-              minHeight: 40,
-            }}
-          >
-            <i className="ti ti-truck-delivery" style={{ fontSize: 14 }} aria-hidden="true"></i>
-            Ya está en despacho
-          </span>
-        )}
-
-        {cotizacion.estado === "pendiente" && (
-          <>
-            {/* Antes este botón solo pintaba la tarjeta de verde. Ahora además
-                arma el pedido con el PDF que ya está guardado: se elige vehículo
-                y fecha, y listo. No hay que volver a subir nada. */}
-            <button
-              onClick={onPasarADespacho}
-              style={{
-                flex: 1,
-                minWidth: 90,
-                minHeight: 40,
-                border: "none",
-                background: "#639922",
-                color: "white",
-                fontWeight: 500,
-                fontSize: 13,
-                borderRadius: "var(--border-radius-md)",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                gap: 4,
-              }}
-            >
-              <i className="ti ti-truck-delivery" style={{ fontSize: 14 }} aria-hidden="true"></i>
-              Aceptar y despachar
-            </button>
-            <button
-              onClick={() => onCambiarEstado("rechazada")}
-              style={{
-                flex: 1,
-                minWidth: 90,
-                minHeight: 40,
-                border: "none",
-                background: "#A32D2D",
-                color: "white",
-                fontWeight: 500,
-                fontSize: 13,
-                borderRadius: "var(--border-radius-md)",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                gap: 4,
-              }}
-            >
-              <i className="ti ti-x" style={{ fontSize: 14 }} aria-hidden="true"></i>
-              Rechazar
-            </button>
-          </>
-        )}
-
-        {/* Rescate: una cotización aceptada que nunca llegó a despacho (o una
-            FACTURA que se subió por error en este tablero) se manda al flujo de
-            despacho desde acá, sin borrarla ni volver a subir el PDF. */}
-        {cotizacion.estado !== "pendiente" && !yaEnDespacho && (
-          <button
-            onClick={onPasarADespacho}
-            style={{
-              fontSize: 12.5,
-              padding: "9px 12px",
-              minHeight: 40,
-              background: MARCA.azulClaro,
-              color: MARCA.azulOscuro,
-              border: `0.5px solid ${MARCA.azulMedio}`,
-              fontWeight: 500,
-            }}
-          >
-            <i className="ti ti-truck-delivery" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
-            Pasar a despacho
-          </button>
-        )}
-
-        {cotizacion.estado !== "pendiente" && (
-          <button onClick={() => onCambiarEstado("pendiente")} style={{ fontSize: 12.5, padding: "9px 12px", minHeight: 40 }}>
-            <i className="ti ti-clock" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
-            Volver a pendiente
-          </button>
-        )}
-
-        {confirmDelete ? (
-          <button
-            onClick={onDelete}
-            style={{
-              fontSize: 12.5,
-              padding: "9px 12px",
-              minHeight: 40,
-              background: "var(--color-background-danger)",
-              color: "var(--color-text-danger)",
-              border: "0.5px solid var(--color-border-danger)",
-              fontWeight: 500,
-            }}
-          >
-            <i className="ti ti-alert-triangle" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
-            Toca otra vez para eliminar
-          </button>
-        ) : (
-          <button
-            onClick={() => setConfirmDelete(true)}
-            style={{
-              fontSize: 12.5,
-              padding: "9px 12px",
-              minHeight: 40,
-              background: "var(--color-background-danger)",
-              color: "var(--color-text-danger)",
-              border: "0.5px solid var(--color-border-danger)",
-            }}
-          >
-            <i className="ti ti-trash" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
-            Eliminar
-          </button>
-        )}
-      </div>
-    </div>
-  );
-}
-
-const MOTIVOS_RECHAZO = [
-  "Precio muy alto",
-  "Compró con la competencia",
-  "No respondió / se enfrió",
-  "Cambio de planes del cliente",
-];
-
-function MotivoRechazoModal({ cotizacion, onClose, onConfirm }) {
-  const [seleccionado, setSeleccionado] = useState(null);
-  const [otroTexto, setOtroTexto] = useState("");
-
-  const puedeConfirmar = seleccionado && (seleccionado !== "Otro" || otroTexto.trim());
-
-  return (
-    <ModalOverlay onClose={onClose} maxWidth={400}>
-      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12 }}>
-        <span style={{ fontWeight: 500, fontSize: 15 }}>¿Por qué se rechazó?</span>
-        <button onClick={onClose} aria-label="Cerrar" style={{ padding: 8, minWidth: 40, minHeight: 40 }}>
-          <i className="ti ti-x" style={{ fontSize: 14 }} aria-hidden="true"></i>
-        </button>
-      </div>
-
-      <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 12 }}>
-        Cotización de {cotizacion.cliente}
-      </div>
-
-      <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 12 }}>
-        {MOTIVOS_RECHAZO.map((m) => (
-          <button
-            key={m}
-            onClick={() => setSeleccionado(m)}
-            aria-pressed={seleccionado === m}
-            style={{
-              textAlign: "left",
-              fontSize: 13,
-              padding: "8px 10px",
-              border: seleccionado === m ? "2px solid var(--color-border-danger)" : "0.5px solid var(--color-border-tertiary)",
-              background: seleccionado === m ? "var(--color-background-danger)" : "var(--color-background-primary)",
-              color: seleccionado === m ? "var(--color-text-danger)" : "var(--color-text-primary)",
-              borderRadius: "var(--border-radius-md)",
-            }}
-          >
-            {m}
-          </button>
-        ))}
-        <button
-          onClick={() => setSeleccionado("Otro")}
-          aria-pressed={seleccionado === "Otro"}
-          style={{
-            textAlign: "left",
-            fontSize: 13,
-            padding: "8px 10px",
-            border: seleccionado === "Otro" ? "2px solid var(--color-border-danger)" : "0.5px solid var(--color-border-tertiary)",
-            background: seleccionado === "Otro" ? "var(--color-background-danger)" : "var(--color-background-primary)",
-            color: seleccionado === "Otro" ? "var(--color-text-danger)" : "var(--color-text-primary)",
-            borderRadius: "var(--border-radius-md)",
-          }}
-        >
-          Otro
-        </button>
-        {seleccionado === "Otro" && (
-          <input
-            type="text"
-            placeholder="Escribe el motivo..."
-            value={otroTexto}
-            onChange={(e) => setOtroTexto(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && otroTexto.trim()) onConfirm(otroTexto.trim());
-            }}
-            style={{ width: "100%" }}
-            autoFocus={window.matchMedia("(pointer: fine)").matches}
-          />
-        )}
-      </div>
-
-      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-        <button onClick={onClose} style={{ fontSize: 13 }}>Cancelar</button>
-        <button
-          disabled={!puedeConfirmar}
-          onClick={() => onConfirm(seleccionado === "Otro" ? otroTexto.trim() : seleccionado)}
-          style={{
-            fontSize: 13,
-            fontWeight: 500,
-            background: "var(--color-background-danger)",
-            color: "var(--color-text-danger)",
-            border: "0.5px solid var(--color-border-danger)",
-            opacity: puedeConfirmar ? 1 : 0.5,
-          }}
-        >
-          <i className="ti ti-x" style={{ fontSize: 14, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
-          Rechazar cotización
-        </button>
-      </div>
-    </ModalOverlay>
-  );
-}
 
 function EditCotizacionModal({ cotizacion, onClose, onSave }) {
   const [form, setForm] = useState({ ...cotizacion, estado: cotizacion.estado || "pendiente" });
