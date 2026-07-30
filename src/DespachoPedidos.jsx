@@ -31,6 +31,7 @@ import {
   valorInicialMaterialDe,
   aplicarEntregadoDirecto,
   sumarEntregadoDirecto,
+  fijarSaldoEn,
   cerrarEntregaCompleta,
   faltantesDeProductos,
   notaDesdeFaltantes,
@@ -800,6 +801,46 @@ export default function DespachoPedidos() {
         setPedidos((prev) => reemplazarPorId(prev, madre));
         showToast("No se pudo guardar. Nada cambió.", 5000);
       }
+    }
+  }
+
+  // Marcha atrás de un descuento mal tecleado: en vez de restar, deja cada línea
+  // con EXACTAMENTE el saldo que se le indique (ver fijarSaldoEn en saldo.js).
+  //
+  // `saldos` viene alineado a madre.productos: un número = ese es el saldo
+  // nuevo; null = esa línea no se toca. Puede SUBIR el saldo, que es lo que no
+  // se podía hacer antes cuando se descontaba de más.
+  //
+  // A diferencia de descontar, corregir NO archiva la factura aunque el saldo
+  // quede en cero: se está enderezando un dato, no despachando material, y
+  // archivarla de sorpresa mientras alguien cuadra números es peor que dejarla
+  // en Pendientes. Si de verdad quedó en cero, se cierra con "Entregado".
+  async function corregirSaldosMadre(madre, saldos) {
+    const productosMadre = madre.productos || [];
+    const hayCambio = saldos.some((s, i) => s !== null && s !== saldoDe(productosMadre[i]));
+    if (!hayCambio) {
+      showToast("No hay nada que corregir: los saldos ya están así.");
+      return;
+    }
+    const hoyMov = new Date().toLocaleDateString("en-CA", { timeZone: "America/Bogota" });
+    const nuevosProductos = productosMadre.map((p, i) => {
+      if (saldos[i] === null || saldos[i] === undefined) return p;
+      return { ...fijarSaldoEn(p, saldos[i]), fechaMovimiento: hoyMov };
+    });
+    const notaNueva = madre.entregaPendiente ? notaDesdeFaltantes(nuevosProductos) : "";
+    const actualizada = {
+      ...madre,
+      productos: nuevosProductos,
+      entregaPendiente: !!notaNueva,
+      notaPendiente: notaNueva,
+    };
+    setPedidos((prev) => reemplazarPorId(prev, actualizada));
+    showToast("Saldo corregido.");
+    try {
+      await actualizarPedido(actualizada);
+    } catch (e) {
+      setPedidos((prev) => reemplazarPorId(prev, madre));
+      showToast("No se pudo guardar la corrección. Nada cambió.", 5000);
     }
   }
 
@@ -3069,6 +3110,10 @@ export default function DespachoPedidos() {
           onClose={() => setDescontarDe(null)}
           onDescontar={(cantidades) => {
             descontarMaterialMadre(descontarDe, cantidades);
+            setDescontarDe(null);
+          }}
+          onCorregir={(saldos) => {
+            corregirSaldosMadre(descontarDe, saldos);
             setDescontarDe(null);
           }}
         />

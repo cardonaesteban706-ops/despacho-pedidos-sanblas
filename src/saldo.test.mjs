@@ -28,6 +28,7 @@ import {
   valorInicialMaterialDe,
   aplicarEntregadoDirecto,
   sumarEntregadoDirecto,
+  fijarSaldoEn,
   cerrarEntregaCompleta,
 } from "./saldo.js";
 
@@ -182,6 +183,63 @@ test("sumarEntregadoDirecto no deja descontar más de lo que hay en bodega", () 
   const p = sumarEntregadoDirecto(FORMA_C, 999);
   assert.equal(p.cantidadEntregada, 60);
   assert.equal(p.cantidadRestante, 0);
+});
+
+// ---------------------------------------------------------------------
+// fijarSaldoEn — la marcha atrás de un descuento mal tecleado
+// ---------------------------------------------------------------------
+
+test("fijarSaldoEn deja el saldo EXACTAMENTE en el número pedido", () => {
+  // Es el caso real que lo motivó: factura de 250 varillas, se descontaron 199
+  // por error y el saldo quedó en 51 cuando en bodega hay 50.
+  const malDescontada = sumarEntregadoDirecto({ cantidad: "250" }, 199);
+  assert.equal(saldoDe(malDescontada), 51, "el error de partida");
+
+  const corregida = fijarSaldoEn(malDescontada, 50);
+  assert.equal(saldoDe(corregida), 50);
+  assert.equal(marcadoAManoDe(corregida), 200, "y lo entregado queda en los 200 de verdad");
+});
+
+test("fijarSaldoEn sirve en las cuatro formas de dato", () => {
+  for (const p of [FORMA_A, FORMA_B, FORMA_C, FORMA_BC]) {
+    const r = fijarSaldoEn(p, 25);
+    assert.equal(saldoDe(r), 25, `forma con saldo previo ${saldoDe(p)}`);
+  }
+});
+
+test("fijarSaldoEn puede DEVOLVER material al saldo, no solo quitar", () => {
+  // Si se descontó de más, antes no había forma de devolverlo: el modal solo
+  // sabía restar. Subir el saldo es lo que arregla ese caso.
+  const descontadaDeMas = sumarEntregadoDirecto({ cantidad: "100" }, 80);
+  assert.equal(saldoDe(descontadaDeMas), 20);
+
+  const devuelta = fijarSaldoEn(descontadaDeMas, 30);
+  assert.equal(saldoDe(devuelta), 30, "se devolvieron 10 al saldo");
+  assert.equal(marcadoAManoDe(devuelta), 70);
+});
+
+test("fijarSaldoEn nunca devuelve material que ya salió por remisión", () => {
+  // En una factura de 100 con remisión de 40, el saldo no puede pasar de 60:
+  // esas 40 ya no están en la bodega para volver a entregarlas.
+  const r = fijarSaldoEn(FORMA_C, 999);
+  assert.equal(saldoDe(r), 60, "acotado al tope editable");
+  assert.equal(saldoDe(fijarSaldoEn(FORMA_C, -5)), 0, "ni por debajo de cero");
+});
+
+test("fijarSaldoEn mantiene el invariante", () => {
+  assertInvariante(fijarSaldoEn(FORMA_C, 25), 40, "forma C");
+  assertInvariante(fijarSaldoEn(FORMA_BC, 25), 40, "forma B+C");
+});
+
+test("fijarSaldoEn NO le inventa cantidadRestante a una factura sin remisiones", () => {
+  const r = fijarSaldoEn(FORMA_A, 40);
+  assert.equal("cantidadRestante" in r, false);
+  assert.equal(saldoDe(r), 40);
+});
+
+test("fijarSaldoEn lee el número en formato colombiano", () => {
+  const r = fijarSaldoEn({ cantidad: "1.500" }, "1.200,5");
+  assert.equal(saldoDe(r), 1200.5);
 });
 
 // ---------------------------------------------------------------------

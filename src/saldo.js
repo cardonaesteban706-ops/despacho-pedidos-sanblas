@@ -192,6 +192,32 @@ export function sumarEntregadoDirecto(prod, usadoAhora) {
   return aplicarEntregadoDirecto(prod, marcadoAManoDe(prod) + Math.max(0, cantidadNum(usadoAhora)));
 }
 
+// Deja la línea con EXACTAMENTE el saldo que se le pida.
+//
+// Es la marcha atrás de los descuentos. Hasta ahora, si alguien tecleaba mal
+// —descontar 199 donde eran 200— no había forma de arreglarlo: el modal solo
+// sabía restar, así que corregir obligaba a calcular la diferencia de cabeza y
+// descontar otra vez, y si el error era al revés (se descontó de más) no había
+// manera de devolver el material al saldo.
+//
+// Acá se dice el número que debe quedar y listo, que es como lo ve el
+// despachador: "el sistema dice 51 y en bodega hay 50".
+//
+// El truco es que el saldo siempre es `tope - lo marcado a mano`, en las dos
+// formas de dato:
+//   - con remisiones:  saldo = cantidadRestante = tope - cantidadEntregada
+//   - sin remisiones:  saldo = facturado - cantidadEntregada, y tope = facturado
+// así que fijar el saldo en S es marcar (tope - S). Por eso esto se apoya en
+// aplicarEntregadoDirecto y no reescribe la regla.
+//
+// El saldo pedido se acota a [0, tope]: no se puede dejar más de lo que queda
+// sin remisionar, ni menos que cero.
+export function fijarSaldoEn(prod, saldoDeseado) {
+  const tope = topeEditableDe(prod);
+  const s = Math.min(tope, Math.max(0, cantidadNum(saldoDeseado)));
+  return aplicarEntregadoDirecto(prod, tope - s);
+}
+
 // Cierra una línea como "salió todo lo que faltaba" (botón "Entregado").
 //
 // Vivía suelta en DespachoPedidos.jsx: era la SÉPTIMA copia de la regla del
