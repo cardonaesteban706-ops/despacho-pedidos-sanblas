@@ -810,8 +810,17 @@ export default function DespachoPedidos() {
         descripcion: p.descripcion.trim(),
         cantidad: String(p.cantidad).trim(),
         unidad: (p.unidad || "").trim(),
-        // Precio total de la línea. Si va vacío queda en 0, igual que antes.
-        total: String(parseInt(String(p.precio || "0").replace(/[^\d]/g, ""), 10) || 0),
+        // El precio que se escribe es POR UNIDAD, así que el total de la línea
+        // es precio x cantidad.
+        //
+        // Antes se guardaba el precio tal cual como total de la línea: 5 bultos
+        // de cemento a 32.000 quedaban en 32.000 en vez de 160.000. El total de
+        // la remisión salía mal en la tarjeta, en la tirilla y en el Panel.
+        total: String(
+          Math.round(
+            (parseInt(String(p.precio || "0").replace(/[^\d]/g, ""), 10) || 0) * cantidadNum(p.cantidad)
+          )
+        ),
       }));
     if (productos.length === 0) {
       showToast("Agrega al menos un material con cantidad.");
@@ -849,7 +858,9 @@ export default function DespachoPedidos() {
     };
     persistPedidos([...pedidos, nuevo], [nuevo], { crear: true });
     setRemisionManualAbierta(false);
-    setTirillaDe(nuevo);
+    // La tirilla NO se abre sola: hoy no se está imprimiendo, y el modal
+    // obligaba a cerrarlo cada vez. Queda en el menú de la tarjeta ("Imprimir
+    // tirilla") para cuando se necesite.
     if (esConFecha) setSelectedDate(data.fechaDespacho);
     else if (data.fechaDespacho === "viaje") setSelectedDate("viaje");
     else setSelectedDate("pendiente");
@@ -1074,7 +1085,6 @@ export default function DespachoPedidos() {
       };
       setPedidos((prev) => [child, ...quitarPorId(prev, madre.id)]);
       setHistorial((prev) => [madreCompletada, ...prev]);
-      setTirillaDe(child);
       showToast(`Remisión ${numRemision} creada. Factura ${madre.numeroFactura || ""} completada, pasó al historial.`, 4500);
       try {
         await guardarRemisionConReintento(child);
@@ -1099,8 +1109,8 @@ export default function DespachoPedidos() {
         notaPendiente: notaNueva,
       };
       setPedidos((prev) => [child, ...reemplazarPorId(prev, nuevaMadre)]);
-      // Se abre la tirilla de una: es el momento en que se necesita imprimir.
-      setTirillaDe(child);
+      // La tirilla NO se abre sola (ver crearRemisionManual): queda en el menú
+      // de la tarjeta, en "Imprimir tirilla".
       showToast(`Remisión ${numRemision} creada y enviada a despacho.`, 4000);
       try {
         await guardarRemisionConReintento(child);
@@ -3246,7 +3256,9 @@ function RemisionModal({ pedido, hoyIso, onClose, onCrear }) {
   // Copia 5 de 6 -> saldo.js.
   const dispo = saldoDe;
 
-  const [cantidades, setCantidades] = useState(() => productos.map(() => 0));
+  // Igual que en DescontarMaterialModal: se guarda lo TECLEADO, no el número ya
+  // recortado, para que la casilla arranque vacía y el "0" se pueda borrar.
+  const [textos, setTextos] = useState(() => productos.map(() => ""));
   const [fechaOpcion, setFechaOpcion] = useState("hoy");
   const [fechaOtro, setFechaOtro] = useState(hoyIso);
   const [vehiculo, setVehiculo] = useState(pedido.vehiculo || VEHICULOS[0].id);
@@ -3257,20 +3269,19 @@ function RemisionModal({ pedido, hoyIso, onClose, onCrear }) {
     return new Date(Date.UTC(y, m - 1, d + 1)).toISOString().slice(0, 10);
   })();
 
-  const setCantidad = (idx, valor) => {
-    setCantidades((prev) =>
-      prev.map((c, i) => {
-        if (i !== idx) return c;
-        const max = dispo(productos[idx]);
-        let n = valor;
-        if (isNaN(n) || n < 0) n = 0;
-        if (n > max) n = max;
-        return n;
-      })
-    );
-  };
+  const setTexto = (idx, valor) => setTextos((prev) => prev.map((t, i) => (i === idx ? valor : t)));
 
-  const totalUnidades = cantidades.reduce((s, c) => s + (Number(c) || 0), 0);
+  // Lo que de verdad se va a remisionar de cada línea, acotado a lo disponible.
+  const cantidades = textos.map((t, i) => {
+    const max = dispo(productos[i]);
+    const n = parseCantidad(t);
+    if (!isFinite(n) || n <= 0) return 0;
+    return Math.min(max, n);
+  });
+  // Líneas donde se tecleó más de lo que hay: se avisa en vez de recortar callado.
+  const excedidas = textos.map((t, i) => parseCantidad(t) > dispo(productos[i]));
+
+  const totalUnidades = cantidades.reduce((s, c) => s + c, 0);
   const fechaResuelta = fechaOpcion === "hoy" ? hoyIso : fechaOpcion === "manana" ? manana : fechaOpcion === "viaje" ? "viaje" : fechaOtro;
   const puedeCrear = totalUnidades > 0 && (fechaOpcion !== "otro" || !!fechaOtro);
 
@@ -3320,6 +3331,7 @@ function RemisionModal({ pedido, hoyIso, onClose, onCrear }) {
                 <span style={{ color: "var(--color-text-tertiary)" }}> · disponible {formatCantidad(disponible)} {p.unidad}</span>
               </div>
               {!agotado && (
+                <>
                 <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                   <span style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>Se lleva:</span>
                   <input
@@ -3327,17 +3339,25 @@ function RemisionModal({ pedido, hoyIso, onClose, onCrear }) {
                     inputMode="decimal"
                     min={0}
                     max={disponible}
-                    value={va}
-                    onChange={(e) => setCantidad(idx, parseCantidad(e.target.value))}
+                    value={textos[idx]}
+                    onChange={(e) => setTexto(idx, e.target.value)}
+                    placeholder="0"
                     style={{ width: 90 }}
                   />
-                  <button onClick={() => setCantidad(idx, disponible)} style={{ fontSize: 12, padding: "6px 10px", minHeight: 36 }}>
+                  <button onClick={() => setTexto(idx, String(disponible))} style={{ fontSize: 12, padding: "6px 10px", minHeight: 36 }}>
                     Todo
                   </button>
-                  <button onClick={() => setCantidad(idx, 0)} style={{ fontSize: 12, padding: "6px 10px", minHeight: 36 }}>
+                  <button onClick={() => setTexto(idx, "")} style={{ fontSize: 12, padding: "6px 10px", minHeight: 36 }}>
                     Nada
                   </button>
                 </div>
+                {excedidas[idx] && (
+                  <div style={{ fontSize: 12, color: "var(--color-text-warning)", fontWeight: 500, marginTop: 5 }}>
+                    <i className="ti ti-alert-triangle" style={{ fontSize: 12, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
+                    Solo hay {formatCantidad(disponible)}: se remisionarán {formatCantidad(disponible)}, no {formatCantidad(parseCantidad(textos[idx]))}.
+                  </div>
+                )}
+                </>
               )}
               {agotado && <div style={{ fontSize: 12, color: "var(--color-text-tertiary)" }}>Ya se despachó completo.</div>}
             </div>

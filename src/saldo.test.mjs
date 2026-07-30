@@ -256,6 +256,22 @@ test("CICLO: remisión 40 + mostrador 20 + cierre 40 = los 100 facturados", () =
   assert.equal(saldoDe(cerrada), 0, "no queda saldo pendiente");
 });
 
+test("CICLO: los descuentos con decimales no dejan un saldo fantasma", () => {
+  // 100 − 33,33 × 3 debería dar 0,01. En coma flotante daba
+  // 0.010000000000005116, un número que la pantalla NO muestra (recorta a 2
+  // decimales) pero que sí se guarda: la línea nunca llegaba a cero, la factura
+  // no se archivaba sola y aparecía debiendo un material que ya había salido.
+  let linea = { cantidad: "100", cantidadRestante: 100 };
+  for (let i = 0; i < 3; i++) linea = sumarEntregadoDirecto(linea, 33.33);
+  assert.equal(saldoDe(linea), 0.01, "sin basura de coma flotante");
+
+  // Y cuando el reparto sí cuadra, tiene que quedar exactamente en cero.
+  let exacta = { cantidad: "10", cantidadRestante: 10 };
+  for (let i = 0; i < 3; i++) exacta = sumarEntregadoDirecto(exacta, 3.33);
+  exacta = sumarEntregadoDirecto(exacta, 0.01);
+  assert.equal(saldoDe(exacta), 0, "la línea queda agotada de verdad");
+});
+
 test("CICLO: descontar todo en el mostrador cuenta los 10, no cero", () => {
   // Antes, descontar material no tocaba cantidadEntregada: al archivarse la
   // factura el Panel contaba 0 kilos aunque hubieran salido los 10.

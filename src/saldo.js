@@ -68,6 +68,19 @@ export function cantidadNum(v) {
   return parseCantidad(v);
 }
 
+// Redondea a 2 decimales, que es todo lo que puede tener una cantidad de
+// ferretería (m², m³, kg) y todo lo que la pantalla muestra.
+//
+// Existe por las restas encadenadas del saldo: descontar 33,33 tres veces de
+// 100 dejaba 0.010000000000005116 en vez de 0,01, porque en coma flotante
+// 100 - 33.33 - 33.33 - 33.33 no da exacto. El número feo no se ve (la pantalla
+// recorta a 2 decimales), pero sí se guarda en la base y sí hace que una línea
+// que debería estar en CERO quede con un saldo residual: la factura no se
+// archiva sola y aparece debiendo un material que ya salió completo.
+export function redondearCantidad(n) {
+  return Math.round((Number(n) || 0) * 100) / 100;
+}
+
 // Lo FACTURADO en la línea (el número que trae el PDF). Es el techo de todo.
 export function facturadoDe(prod) {
   return cantidadNum(prod && prod.cantidad);
@@ -82,11 +95,11 @@ export function saldoDe(prod) {
   if (prod.cantidadRestante !== undefined && prod.cantidadRestante !== null) {
     // Se acota a [0, facturado] a propósito: un dato viejo inconsistente no
     // debe poder producir un saldo negativo ni mayor que lo facturado.
-    return Math.min(total, Math.max(0, cantidadNum(prod.cantidadRestante)));
+    return redondearCantidad(Math.min(total, Math.max(0, cantidadNum(prod.cantidadRestante))));
   }
   // 2) Si no, es lo facturado menos lo que se marcó a mano como entregado.
   if (prod.cantidadEntregada !== undefined && prod.cantidadEntregada !== null) {
-    return Math.max(0, total - cantidadNum(prod.cantidadEntregada));
+    return redondearCantidad(Math.max(0, total - cantidadNum(prod.cantidadEntregada)));
   }
   // 3) Línea sin tocar: falta todo.
   return total;
@@ -159,10 +172,10 @@ export function valorInicialMaterialDe(prod) {
 // que es la que entienden las filas viejas).
 export function aplicarEntregadoDirecto(prod, entregadoDirecto) {
   const tope = topeEditableDe(prod);
-  const n = Math.min(tope, Math.max(0, cantidadNum(entregadoDirecto)));
+  const n = redondearCantidad(Math.min(tope, Math.max(0, cantidadNum(entregadoDirecto))));
   const out = { ...prod, cantidadEntregada: n };
   if (prod && prod.cantidadRestante !== undefined && prod.cantidadRestante !== null) {
-    out.cantidadRestante = Math.max(0, tope - n);
+    out.cantidadRestante = redondearCantidad(Math.max(0, tope - n));
   }
   return out;
 }

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import ModalOverlay from "./ModalOverlay.jsx";
 import DestinoSelector from "./DestinoSelector.jsx";
-import { VEHICULOS, addDaysISO } from "./constants.js";
+import { VEHICULOS, MARCA, addDaysISO, formatCOP } from "./constants.js";
 import { cantidadNum } from "./saldo.js";
 
 // Formulario para crear una remisión a mano (sin PDF): pedidos que llegan en
@@ -24,6 +24,12 @@ function RemisionManualModal({ hoyIso, onClose, onCrear }) {
   const setProd = (i, campo, valor) => setProductos((prev) => prev.map((p, idx) => (idx === i ? { ...p, [campo]: valor } : p)));
   const agregarFila = () => setProductos((prev) => [...prev, { descripcion: "", cantidad: "", unidad: "", precio: "" }]);
   const quitarFila = (i) => setProductos((prev) => (prev.length === 1 ? prev : prev.filter((_, idx) => idx !== i)));
+
+  // Mismo cálculo que crearRemisionManual: precio POR UNIDAD x cantidad.
+  const totalRemision = productos.reduce(
+    (s, p) => s + (parseInt(String(p.precio || "0").replace(/[^\d]/g, ""), 10) || 0) * cantidadNum(p.cantidad),
+    0
+  );
 
   const hayMaterial = productos.some((p) => (p.descripcion || "").trim() && cantidadNum(p.cantidad) > 0);
   const puedeCrear = cliente.trim() && hayMaterial && (fechaOpcion !== "otro" || !!fechaOtro);
@@ -99,15 +105,18 @@ function RemisionManualModal({ hoyIso, onClose, onCrear }) {
               placeholder="und"
               style={{ width: 54 }}
             />
-            {/* Precio total de la línea. Necesario para que los fletes escritos
-                a mano ("carga de material") sumen en el reporte del Panel. */}
+            {/* Precio POR UNIDAD. El total de la línea lo calcula
+                crearRemisionManual multiplicándolo por la cantidad: antes este
+                campo se guardaba tal cual como total, y 5 bultos a 32.000
+                quedaban en 32.000 en vez de 160.000. */}
             <input
               type="number"
               inputMode="numeric"
               value={p.precio}
               onChange={(e) => setProd(i, "precio", e.target.value)}
-              placeholder="$"
-              aria-label="Precio de la línea"
+              placeholder="$ c/u"
+              aria-label="Precio por unidad"
+              title="Precio de UNA unidad. El total de la línea se calcula solo."
               style={{ width: 78 }}
             />
             <button
@@ -121,10 +130,21 @@ function RemisionManualModal({ hoyIso, onClose, onCrear }) {
           </div>
         ))}
       </div>
-      <button onClick={agregarFila} style={{ fontSize: 12.5, padding: "8px 12px", minHeight: 38, marginBottom: 14, background: "var(--color-background-secondary)", border: "0.5px solid var(--color-border-tertiary)" }}>
-        <i className="ti ti-plus" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
-        Agregar material
-      </button>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
+        <button onClick={agregarFila} style={{ fontSize: 12.5, padding: "8px 12px", minHeight: 38, background: "var(--color-background-secondary)", border: "0.5px solid var(--color-border-tertiary)" }}>
+          <i className="ti ti-plus" style={{ fontSize: 13, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
+          Agregar material
+        </button>
+        {/* Total en vivo (precio x cantidad de cada línea). Se muestra para que
+            el precio unitario y el total no se puedan confundir: el error que
+            arregla esto era escribir 32.000 en 5 bultos y que la remisión
+            quedara en 32.000. */}
+        {totalRemision > 0 && (
+          <span style={{ marginLeft: "auto", fontSize: 13, fontWeight: 500, color: MARCA.azulOscuro }}>
+            Total: ${formatCOP(totalRemision)}
+          </span>
+        )}
+      </div>
 
       <div style={{ fontSize: 12.5, fontWeight: 500, marginBottom: 6 }}>¿Para cuándo?</div>
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: fechaOpcion === "otro" ? 8 : 14 }}>

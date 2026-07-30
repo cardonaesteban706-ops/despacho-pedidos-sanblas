@@ -10,22 +10,33 @@ function DescontarMaterialModal({ pedido, onClose, onDescontar }) {
   const productos = pedido.productos || [];
   // Copia 6 de 6 -> saldo.js.
   const dispo = saldoDe;
-  const [cantidades, setCantidades] = useState(() => productos.map(() => 0));
 
-  const setCantidad = (idx, valor) => {
-    setCantidades((prev) =>
-      prev.map((c, i) => {
-        if (i !== idx) return c;
-        const max = dispo(productos[idx]);
-        let n = valor;
-        if (isNaN(n) || n < 0) n = 0;
-        if (n > max) n = max;
-        return n;
-      })
-    );
-  };
+  // Se guarda lo TECLEADO (texto), no el número ya recortado.
+  //
+  // Antes el estado eran números que arrancaban en 0, y eso dejaba un "0" fijo
+  // en la casilla que no se podía borrar: al intentarlo, el campo quedaba vacío,
+  // se leía como 0 y React volvía a pintar el 0. Escribir encima de ese cero es
+  // justo como se teclea de más o de menos sin darse cuenta — y acá cada unidad
+  // mal tecleada es material que se descuadra.
+  //
+  // Con texto: la casilla arranca VACÍA (con "0" de placeholder gris), se puede
+  // borrar, y el recorte al máximo se calcula aparte para poder AVISAR cuando
+  // pasa, en vez de recortar en silencio.
+  const [textos, setTextos] = useState(() => productos.map(() => ""));
 
-  const total = cantidades.reduce((s, c) => s + (Number(c) || 0), 0);
+  const setTexto = (idx, valor) => setTextos((prev) => prev.map((t, i) => (i === idx ? valor : t)));
+
+  // Lo que de verdad se va a descontar de cada línea, ya acotado a lo disponible.
+  const cantidades = textos.map((t, i) => {
+    const max = dispo(productos[i]);
+    const n = parseCantidad(t);
+    if (!isFinite(n) || n <= 0) return 0;
+    return Math.min(max, n);
+  });
+  // Líneas donde se tecleó más de lo que hay en bodega: se avisa, no se calla.
+  const excedidas = textos.map((t, i) => parseCantidad(t) > dispo(productos[i]));
+
+  const total = cantidades.reduce((s, c) => s + c, 0);
 
   return (
     <ModalOverlay onClose={onClose} maxWidth={460}>
@@ -53,20 +64,29 @@ function DescontarMaterialModal({ pedido, onClose, onDescontar }) {
               {agotado ? (
                 <div style={{ fontSize: 12, color: "var(--color-text-tertiary)" }}>Ya se entregó completo.</div>
               ) : (
-                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                  <span style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>Ya se llevó:</span>
-                  <input
-                    type="number"
-                    inputMode="decimal"
-                    min={0}
-                    max={disponible}
-                    value={cantidades[idx]}
-                    onChange={(e) => setCantidad(idx, parseCantidad(e.target.value))}
-                    style={{ width: 90 }}
-                  />
-                  <button onClick={() => setCantidad(idx, disponible)} style={{ fontSize: 12, padding: "6px 10px", minHeight: 36 }}>Todo</button>
-                  <button onClick={() => setCantidad(idx, 0)} style={{ fontSize: 12, padding: "6px 10px", minHeight: 36 }}>Nada</button>
-                </div>
+                <>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                    <span style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>Ya se llevó:</span>
+                    <input
+                      type="number"
+                      inputMode="decimal"
+                      min={0}
+                      max={disponible}
+                      value={textos[idx]}
+                      onChange={(e) => setTexto(idx, e.target.value)}
+                      placeholder="0"
+                      style={{ width: 90 }}
+                    />
+                    <button onClick={() => setTexto(idx, String(disponible))} style={{ fontSize: 12, padding: "6px 10px", minHeight: 36 }}>Todo</button>
+                    <button onClick={() => setTexto(idx, "")} style={{ fontSize: 12, padding: "6px 10px", minHeight: 36 }}>Nada</button>
+                  </div>
+                  {excedidas[idx] && (
+                    <div style={{ fontSize: 12, color: "var(--color-text-warning)", fontWeight: 500, marginTop: 5 }}>
+                      <i className="ti ti-alert-triangle" style={{ fontSize: 12, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
+                      Solo quedan {formatCantidad(disponible)}: se descontarán {formatCantidad(disponible)}, no {formatCantidad(parseCantidad(textos[idx]))}.
+                    </div>
+                  )}
+                </>
               )}
             </div>
           );

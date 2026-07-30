@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { VEHICULOS, MARCA, formatCOP } from "./constants.js";
+import { VEHICULOS, MARCA, formatCOP, formatCantidad } from "./constants.js";
+import { cantidadNum } from "./saldo.js";
 import { cargaPorEntregar } from "./peso.js";
 
 // Tarjeta de un "viaje juntado": varias facturas que van juntas. Se muestra
@@ -7,6 +8,8 @@ import { cargaPorEntregar } from "./peso.js";
 // bloque y se entrega de una. Ver handlers de juntar/entregarGrupo arriba.
 function GrupoCard({ miembros, isDragging, onDragStart, onDragEnd, onDragOverItem, onDropItem, onEntregarGrupo, onSeparar, onVerPdf }) {
   const [confirmSeparar, setConfirmSeparar] = useState(false);
+  // Qué facturas del viaje tienen su material desplegado, por id.
+  const [verMaterial, setVerMaterial] = useState({});
   const total = miembros.reduce((s, m) => s + (Number(m.total) || 0), 0);
   const clientesUnicos = Array.from(new Set(miembros.map((m) => (m.cliente || "").trim()).filter(Boolean)));
   const titulo = clientesUnicos.length === 1 ? clientesUnicos[0] : `${miembros.length} pedidos en un viaje`;
@@ -100,6 +103,7 @@ function GrupoCard({ miembros, isDragging, onDragStart, onDragEnd, onDragOverIte
         {miembros.map((m) => {
           const prods = m.productos || [];
           const resumen = prods.length === 0 ? "" : prods.length === 1 ? `${prods[0].cantidad} ${prods[0].unidad} — ${prods[0].descripcion}` : `${prods[0].descripcion} +${prods.length - 1} más`;
+          const abierto = !!verMaterial[m.id];
           return (
             <div key={m.id} style={{ borderLeft: "2px solid var(--color-border-tertiary)", paddingLeft: 8 }}>
               <div style={{ fontSize: 12.5, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
@@ -115,7 +119,58 @@ function GrupoCard({ miembros, isDragging, onDragStart, onDragEnd, onDragOverIte
                   </button>
                 )}
               </div>
-              {resumen && <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginTop: 2 }}>{resumen}</div>}
+              {/* Al juntar pedidos, el material de cada factura quedaba en un
+                  resumen recortado ("+3 más") y no había forma de verlo entero:
+                  justo cuando más falta hace, porque es el momento de cargar el
+                  vehículo. Con una sola factura no hay nada que desplegar. */}
+              {resumen && prods.length <= 1 && (
+                <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginTop: 2 }}>{resumen}</div>
+              )}
+              {prods.length > 1 && (
+                <>
+                  <button
+                    onClick={() => setVerMaterial((prev) => ({ ...prev, [m.id]: !prev[m.id] }))}
+                    aria-expanded={abierto}
+                    style={{
+                      marginTop: 2,
+                      padding: "3px 0",
+                      minHeight: 30,
+                      border: "none",
+                      background: "transparent",
+                      textAlign: "left",
+                      fontSize: 12,
+                      color: "var(--color-text-secondary)",
+                      cursor: "pointer",
+                    }}
+                  >
+                    {abierto ? "Ocultar material" : resumen}
+                    <i
+                      className={abierto ? "ti ti-chevron-up" : "ti ti-chevron-down"}
+                      style={{ fontSize: 13, verticalAlign: "-2px", marginLeft: 4, color: MARCA.azulMedio }}
+                      aria-hidden="true"
+                    ></i>
+                  </button>
+                  {abierto && (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 4 }}>
+                      {prods.map((p, i) => (
+                        <div key={i} style={{ display: "flex", gap: 8, fontSize: 12.5 }}>
+                          <span style={{ fontWeight: 500, flexShrink: 0, minWidth: 58 }}>
+                            {p.cantidad} {p.unidad}
+                          </span>
+                          <span style={{ color: "var(--color-text-secondary)" }}>
+                            {p.descripcion}
+                            {p.cantidadRestante !== undefined && p.cantidadRestante !== null && (
+                              <span style={{ color: "var(--color-text-warning)", fontWeight: 500 }}>
+                                {" "}· quedan {formatCantidad(p.cantidadRestante)} de {formatCantidad(cantidadNum(p.cantidad))}
+                              </span>
+                            )}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </>
+              )}
               {m.entregaPendiente && (
                 <div style={{ fontSize: 11.5, color: "var(--color-text-danger)", marginTop: 3, fontWeight: 500 }}>
                   <i className="ti ti-alert-triangle" style={{ fontSize: 12, verticalAlign: "-2px", marginRight: 3 }} aria-hidden="true"></i>
