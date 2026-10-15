@@ -3,9 +3,7 @@ import { cargarPedidosActivos, cargarHistorial, guardarPedido, actualizarPedido,
 import { cargarCotizaciones, guardarCotizacion, eliminarCotizacion, cargarPdfCotizacion } from "./supabaseClient";
 import { buscarHistorial, maxNumeroRemision, columnasFaltantes, moverPedidoAEstado, salir, DIAS_HISTORIAL_PRECARGADO } from "./supabaseClient";
 import PanelResumen from "./PanelResumen.jsx";
-import Agotados from "./Agotados.jsx";
-import Llegadas from "./Llegadas.jsx";
-import ConteoCemento from "./ConteoCemento.jsx";
+import Bodega from "./Bodega.jsx";
 import { cargarAgotados } from "./supabaseClient";
 import { esAgotado, estaAbierto } from "./agotados.js";
 import PorEntregar from "./PorEntregar.jsx";
@@ -255,7 +253,7 @@ function fileToDataUrl(file) {
 export default function DespachoPedidos() {
   const [pedidos, setPedidos] = useState([]);
   const [historial, setHistorial] = useState([]);
-  // Agotados abiertos (0 unidades) para el contador rojo del botón. Lo mantiene
+  // Agotados abiertos (0 unidades) para el contador rojo del botón Bodega. Lo mantiene
   // al día el propio módulo (onConteo) mientras está abierto.
   const [conteoAgotados, setConteoAgotados] = useState(0);
   const [view, setView] = useState("despacho");
@@ -2016,47 +2014,13 @@ export default function DespachoPedidos() {
             Panel
           </button>
           <button
-            onClick={() => setView("cemento")}
-            aria-pressed={view === "cemento"}
+            onClick={() => setView("bodega")}
+            aria-pressed={view === "bodega"}
             style={{
-              border: view === "cemento" ? "none" : "0.5px solid var(--color-border-tertiary)",
-              background: view === "cemento" ? MARCA.azulOscuro : "transparent",
-              color: view === "cemento" ? "white" : "var(--color-text-primary)",
-              fontWeight: view === "cemento" ? 500 : 400,
-              padding: "6px 14px",
-              minHeight: 40,
-              borderRadius: "var(--border-radius-md)",
-              fontSize: 14,
-            }}
-          >
-            <i className="ti ti-bucket-droplet" style={{ fontSize: 16, verticalAlign: "-2px", marginRight: 6 }} aria-hidden="true"></i>
-            Cemento
-          </button>
-          <button
-            onClick={() => setView("llegadas")}
-            aria-pressed={view === "llegadas"}
-            style={{
-              border: view === "llegadas" ? "none" : "0.5px solid var(--color-border-tertiary)",
-              background: view === "llegadas" ? MARCA.azulOscuro : "transparent",
-              color: view === "llegadas" ? "white" : "var(--color-text-primary)",
-              fontWeight: view === "llegadas" ? 500 : 400,
-              padding: "6px 14px",
-              minHeight: 40,
-              borderRadius: "var(--border-radius-md)",
-              fontSize: 14,
-            }}
-          >
-            <i className="ti ti-truck" style={{ fontSize: 16, verticalAlign: "-2px", marginRight: 6 }} aria-hidden="true"></i>
-            Llegadas
-          </button>
-          <button
-            onClick={() => setView("agotados")}
-            aria-pressed={view === "agotados"}
-            style={{
-              border: view === "agotados" ? "none" : "0.5px solid var(--color-border-tertiary)",
-              background: view === "agotados" ? MARCA.azulOscuro : "transparent",
-              color: view === "agotados" ? "white" : "var(--color-text-primary)",
-              fontWeight: view === "agotados" ? 500 : 400,
+              border: view === "bodega" ? "none" : "0.5px solid var(--color-border-tertiary)",
+              background: view === "bodega" ? MARCA.azulOscuro : "transparent",
+              color: view === "bodega" ? "white" : "var(--color-text-primary)",
+              fontWeight: view === "bodega" ? 500 : 400,
               padding: "6px 14px",
               minHeight: 40,
               borderRadius: "var(--border-radius-md)",
@@ -2065,8 +2029,8 @@ export default function DespachoPedidos() {
               alignItems: "center",
             }}
           >
-            <i className="ti ti-package-off" style={{ fontSize: 16, marginRight: 6 }} aria-hidden="true"></i>
-            Agotados
+            <i className="ti ti-building-warehouse" style={{ fontSize: 16, marginRight: 6 }} aria-hidden="true"></i>
+            Bodega
             {conteoAgotados > 0 && (
               <span
                 aria-label={`${conteoAgotados} agotados`}
@@ -2771,11 +2735,7 @@ export default function DespachoPedidos() {
         </div>
       ) : null}
 
-      {view === "agotados" && <Agotados onConteo={setConteoAgotados} />}
-
-      {view === "llegadas" && <Llegadas onConteoAgotados={setConteoAgotados} />}
-
-      {view === "cemento" && <ConteoCemento />}
+      {view === "bodega" && <Bodega conteoAgotados={conteoAgotados} onConteoAgotados={setConteoAgotados} />}
 
       {view === "panel" &&
         (!panelDesbloqueado ? (
