@@ -8,7 +8,7 @@
 //     novedades: [], observacion, tieneFoto }
 
 import { normalizarTexto } from "./constants.js";
-import { mismoDia, cuandoCorto, proveedoresConocidos, vistaProveedor } from "./agotados.js";
+import { mismoDia, cuandoCorto, proveedoresConocidos, vistaProveedor, unirProveedores } from "./agotados.js";
 
 // Fichas rápidas para "¿Qué pasó?": se toca en vez de escribir.
 export const TIPOS_NOVEDAD = ["Faltantes", "Averías", "Producto equivocado", "Sin remisión"];
@@ -46,9 +46,10 @@ export function filtrarLlegadas(lista, { soloNovedad = false, proveedor = "" } =
 }
 
 // Proveedores para autocompletar: primero los que más han llegado, luego los
-// que solo están asignados a productos en Agotados. Sin repetir por
+// que están asignados a productos en Agotados, y al final el catálogo de
+// proveedores (tabla proveedores, sql/proveedores.sql). Sin repetir por
 // mayúsculas o tildes.
-export function proveedoresParaLlegada(llegadas, reportes) {
+export function proveedoresParaLlegada(llegadas, reportes, catalogo = []) {
   const cuenta = new Map();
   for (const l of llegadas || []) {
     const k = clave(l.proveedor);
@@ -59,9 +60,7 @@ export function proveedoresParaLlegada(llegadas, reportes) {
     cuenta.set(k, actual);
   }
   const deLlegadas = [...cuenta.values()].sort((a, b) => b.n - a.n || b.ultima - a.ultima).map((x) => x.nombre);
-  const vistos = new Set(deLlegadas.map(clave));
-  const deAgotados = proveedoresConocidos(reportes).filter((p) => !vistos.has(clave(p)));
-  return [...deLlegadas, ...deAgotados];
+  return unirProveedores(deLlegadas, proveedoresConocidos(reportes), catalogo);
 }
 
 // Las 3 fichas de "Recientes": los últimos proveedores que llegaron.

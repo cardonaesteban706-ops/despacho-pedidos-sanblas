@@ -592,6 +592,15 @@ export async function eliminarLlegada(id) {
   if (error) throw error;
 }
 
+// --- Catálogo de proveedores (sql/proveedores.sql) ---
+
+// Solo los nombres, para las sugerencias de Llegadas y Agotados.
+export async function cargarProveedores() {
+  const { data, error } = await supabase.from("proveedores").select("nombre").eq("activo", true).order("nombre", { ascending: true });
+  if (error) throw error;
+  return (data || []).map((f) => f.nombre);
+}
+
 // --- Conteo de cemento (módulo de Bodega, tablas de sql/conteo-cemento.sql) ---
 
 export async function cargarTiposCemento() {

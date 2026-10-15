@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { cargarAgotados, cargarCatalogoProductos, guardarAgotado, guardarAgotados, eliminarAgotado } from "./supabaseClient";
+import { cargarAgotados, cargarCatalogoProductos, cargarProveedores, guardarAgotado, guardarAgotados, eliminarAgotado } from "./supabaseClient";
 import { categoriaDeProducto } from "./peso.js";
 import { uid, formatCantidad, MARCA } from "./constants.js";
 import { quitarPorId, reponerPorId, reemplazarPorId } from "./listas.js";
@@ -15,6 +15,7 @@ import {
   buscarEnCatalogo,
   filtrarCompras,
   proveedoresConocidos,
+  unirProveedores,
   proveedoresDelProducto,
   alternarProveedor,
   cambiarEstado,
@@ -249,11 +250,11 @@ export function Vacio({ icono, titulo, children }) {
 
 // Asignar uno o varios proveedores a un producto. Los que ya le vendieron ese
 // producto salen arriba.
-function HojaProveedores({ r, reportes, onGuardar, onClose }) {
+function HojaProveedores({ r, reportes, catalogoProv, onGuardar, onClose }) {
   const [elegidos, setElegidos] = useState(r.proveedores || []);
   const [texto, setTexto] = useState("");
   const antes = useMemo(() => proveedoresDelProducto(reportes, r.producto), [reportes, r.producto]);
-  const todos = useMemo(() => proveedoresConocidos(reportes), [reportes]);
+  const todos = useMemo(() => unirProveedores(proveedoresConocidos(reportes), catalogoProv), [reportes, catalogoProv]);
   const esta = (p) => elegidos.some((e) => e.toLowerCase() === p.toLowerCase());
   const filtro = texto.trim().toLowerCase();
   const visibles = (lista) => lista.filter((p) => !filtro || p.toLowerCase().includes(filtro));
@@ -326,9 +327,9 @@ function HojaProveedores({ r, reportes, onGuardar, onClose }) {
 
 // "¿A quién se le pidió?" — solo sale si el producto tiene varios proveedores
 // (o ninguno). Con uno solo, el toque en Pedido basta.
-function HojaPedidoA({ r, reportes, onElegir, onClose }) {
+function HojaPedidoA({ r, reportes, catalogoProv, onElegir, onClose }) {
   const [texto, setTexto] = useState("");
-  const opciones = (r.proveedores || []).length ? r.proveedores : proveedoresConocidos(reportes).slice(0, 8);
+  const opciones = (r.proveedores || []).length ? r.proveedores : unirProveedores(proveedoresConocidos(reportes), catalogoProv);
   return (
     <ModalOverlay onClose={onClose} maxWidth={420}>
       <div style={{ padding: 6 }}>
@@ -892,6 +893,7 @@ function VistaProveedor({ reportes, onMarcarPedidos, onCambiar }) {
 export default function Agotados({ onConteo }) {
   const [reportes, setReportes] = useState([]);
   const [productosWO, setProductosWO] = useState([]);
+  const [catalogoProv, setCatalogoProv] = useState([]);
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState("");
   const [aviso, setAviso] = useState("");
@@ -922,6 +924,9 @@ export default function Agotados({ onConteo }) {
     let vivo = true;
     cargarCatalogoProductos()
       .then((lista) => vivo && setProductosWO(lista))
+      .catch(() => {});
+    cargarProveedores()
+      .then((lista) => vivo && setCatalogoProv(lista))
       .catch(() => {});
     return () => {
       vivo = false;
@@ -1060,6 +1065,7 @@ export default function Agotados({ onConteo }) {
         <HojaProveedores
           r={hojaProv}
           reportes={reportes}
+          catalogoProv={catalogoProv}
           onClose={() => setHojaProv(null)}
           onGuardar={(proveedores) => {
             const r = reportes.find((x) => x.id === hojaProv.id) || hojaProv;
@@ -1073,6 +1079,7 @@ export default function Agotados({ onConteo }) {
         <HojaPedidoA
           r={hojaPedidoA}
           reportes={reportes}
+          catalogoProv={catalogoProv}
           onClose={() => setHojaPedidoA(null)}
           onElegir={(p) => {
             const r = hojaPedidoA;

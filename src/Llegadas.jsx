@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { cargarLlegadas, guardarLlegada, cargarFotoLlegada, eliminarLlegada, cargarAgotados, guardarAgotados } from "./supabaseClient";
+import { cargarLlegadas, guardarLlegada, cargarFotoLlegada, eliminarLlegada, cargarAgotados, guardarAgotados, cargarProveedores } from "./supabaseClient";
 import { uid, MARCA } from "./constants.js";
 import { quitarPorId, reponerPorId, reemplazarPorId } from "./listas.js";
 import ModalOverlay from "./ModalOverlay.jsx";
@@ -378,6 +378,7 @@ function HojaFoto({ llegada, onClose }) {
 export default function Llegadas({ onConteoAgotados }) {
   const [llegadas, setLlegadas] = useState([]);
   const [reportes, setReportes] = useState([]);
+  const [catalogoProv, setCatalogoProv] = useState([]);
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState("");
   const [aviso, setAviso] = useState("");
@@ -412,13 +413,24 @@ export default function Llegadas({ onConteoAgotados }) {
 
   useEffect(() => () => avisoTimer.current && clearTimeout(avisoTimer.current), []);
 
+  // Catálogo de proveedores para el autocompletado (se pide una vez).
+  useEffect(() => {
+    let vivo = true;
+    cargarProveedores()
+      .then((l) => vivo && setCatalogoProv(l))
+      .catch(() => {});
+    return () => {
+      vivo = false;
+    };
+  }, []);
+
   function avisar(t) {
     setAviso(t);
     if (avisoTimer.current) clearTimeout(avisoTimer.current);
     avisoTimer.current = setTimeout(() => setAviso(""), 3500);
   }
 
-  const proveedores = useMemo(() => proveedoresParaLlegada(llegadas, reportes), [llegadas, reportes]);
+  const proveedores = useMemo(() => proveedoresParaLlegada(llegadas, reportes, catalogoProv), [llegadas, reportes, catalogoProv]);
   const recientes = useMemo(() => proveedoresRecientes(llegadas), [llegadas]);
   const provEnLista = useMemo(() => proveedoresParaLlegada(llegadas, []), [llegadas]);
   const visibles = filtrarLlegadas(llegadas, { soloNovedad, proveedor: filtroProv });

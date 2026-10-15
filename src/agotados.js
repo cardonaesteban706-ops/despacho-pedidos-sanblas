@@ -163,6 +163,23 @@ export function proveedoresConocidos(lista) {
   return [...cuenta.values()].sort((a, b) => b.n - a.n || a.nombre.localeCompare(b.nombre)).map((x) => x.nombre);
 }
 
+// Junta varias listas de nombres de proveedor en una, en ese orden y sin
+// repetir por mayúsculas, tildes o espacios ("PAVCO" y "Pavco" son el mismo).
+export function unirProveedores(...listas) {
+  const vistos = new Set();
+  const out = [];
+  for (const lista of listas) {
+    for (const p of lista || []) {
+      const nombre = String(p || "").replace(/\s+/g, " ").trim();
+      const k = normalizarTexto(nombre);
+      if (!nombre || vistos.has(k)) continue;
+      vistos.add(k);
+      out.push(nombre);
+    }
+  }
+  return out;
+}
+
 // A quién se le ha comprado ESTE producto antes (sale arriba al asignar).
 export function proveedoresDelProducto(lista, producto) {
   const usados = (lista || []).filter((r) => mismoProducto(r.producto, producto) && r.proveedorPedido).map((r) => r.proveedorPedido);

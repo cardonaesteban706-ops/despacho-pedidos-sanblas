@@ -40,6 +40,12 @@ test("proveedoresParaLlegada: primero los que más llegan, luego los de Agotados
   assert.deepEqual(proveedoresParaLlegada(llegadas, reportes), ["Argos", "PAVCO", "Diaco"]);
 });
 
+test("proveedoresParaLlegada: el catálogo va al final y no repite", () => {
+  const llegadas = [l("a", "Copaques", en(15, 8))];
+  const catalogo = ["COPAQUES", "MEICO S.A.", "copaques "];
+  assert.deepEqual(proveedoresParaLlegada(llegadas, [], catalogo), ["Copaques", "MEICO S.A."]);
+});
+
 test("proveedoresRecientes: los últimos distintos que llegaron", () => {
   const llegadas = [l("a", "Argos", en(15, 8)), l("b", "ARGOS", en(15, 7)), l("c", "Gyplac", en(14, 8)), l("d", "Corona", en(13, 8)), l("e", "Diaco", en(12, 8))];
   assert.deepEqual(proveedoresRecientes(llegadas), ["Argos", "Gyplac", "Corona"]);
