@@ -591,3 +591,35 @@ export async function eliminarLlegada(id) {
   const { error } = await supabase.from("llegadas").delete().eq("id", id);
   if (error) throw error;
 }
+
+// --- Conteo de cemento (módulo de Bodega, tablas de sql/conteo-cemento.sql) ---
+
+export async function cargarTiposCemento() {
+  const { data, error } = await supabase.from("tipos_cemento").select("id, nombre, orden, activo").order("orden", { ascending: true });
+  if (error) throw error;
+  return data || [];
+}
+
+export async function guardarTipoCemento(tipo) {
+  const { error } = await supabase.from("tipos_cemento").upsert({ id: tipo.id, nombre: tipo.nombre, orden: tipo.orden || 0, activo: tipo.activo !== false });
+  if (error) throw error;
+}
+
+// Los últimos `dias` días: alcanza para la gráfica de 30 días y para comparar
+// con el conteo anterior aunque haya habido días sin contar.
+export async function cargarConteosCemento({ dias = 45 } = {}) {
+  const d = new Date(Date.now() - dias * 86400000);
+  const desde = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  const filas = await traerTodo(() =>
+    supabase.from("conteos_cemento").select("id, fecha, tipo_id, bultos, contado_en").gte("fecha", desde).order("fecha", { ascending: false })
+  );
+  return filas.map((f) => ({ id: f.id, fecha: f.fecha, tipoId: f.tipo_id, bultos: f.bultos, contadoEn: f.contado_en }));
+}
+
+export async function guardarConteosCemento(conteos) {
+  if (!conteos.length) return;
+  const { error } = await supabase
+    .from("conteos_cemento")
+    .upsert(conteos.map((c) => ({ id: c.id, fecha: c.fecha, tipo_id: c.tipoId, bultos: c.bultos, contado_en: c.contadoEn })));
+  if (error) throw error;
+}

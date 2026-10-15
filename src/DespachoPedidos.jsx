@@ -5,6 +5,7 @@ import { buscarHistorial, maxNumeroRemision, columnasFaltantes, moverPedidoAEsta
 import PanelResumen from "./PanelResumen.jsx";
 import Agotados from "./Agotados.jsx";
 import Llegadas from "./Llegadas.jsx";
+import ConteoCemento from "./ConteoCemento.jsx";
 import { cargarAgotados } from "./supabaseClient";
 import { esAgotado, estaAbierto } from "./agotados.js";
 import PorEntregar from "./PorEntregar.jsx";
@@ -2015,6 +2016,23 @@ export default function DespachoPedidos() {
             Panel
           </button>
           <button
+            onClick={() => setView("cemento")}
+            aria-pressed={view === "cemento"}
+            style={{
+              border: view === "cemento" ? "none" : "0.5px solid var(--color-border-tertiary)",
+              background: view === "cemento" ? MARCA.azulOscuro : "transparent",
+              color: view === "cemento" ? "white" : "var(--color-text-primary)",
+              fontWeight: view === "cemento" ? 500 : 400,
+              padding: "6px 14px",
+              minHeight: 40,
+              borderRadius: "var(--border-radius-md)",
+              fontSize: 14,
+            }}
+          >
+            <i className="ti ti-bucket-droplet" style={{ fontSize: 16, verticalAlign: "-2px", marginRight: 6 }} aria-hidden="true"></i>
+            Cemento
+          </button>
+          <button
             onClick={() => setView("llegadas")}
             aria-pressed={view === "llegadas"}
             style={{
@@ -2756,6 +2774,8 @@ export default function DespachoPedidos() {
       {view === "agotados" && <Agotados onConteo={setConteoAgotados} />}
 
       {view === "llegadas" && <Llegadas onConteoAgotados={setConteoAgotados} />}
+
+      {view === "cemento" && <ConteoCemento />}
 
       {view === "panel" &&
         (!panelDesbloqueado ? (
