@@ -595,13 +595,13 @@ export async function eliminarLlegada(id) {
 // --- Conteo de cemento (módulo de Bodega, tablas de sql/conteo-cemento.sql) ---
 
 export async function cargarTiposCemento() {
-  const { data, error } = await supabase.from("tipos_cemento").select("id, nombre, orden, activo").order("orden", { ascending: true });
+  const { data, error } = await supabase.from("tipos_cemento").select("id, nombre, orden, activo, color").order("orden", { ascending: true });
   if (error) throw error;
   return data || [];
 }
 
 export async function guardarTipoCemento(tipo) {
-  const { error } = await supabase.from("tipos_cemento").upsert({ id: tipo.id, nombre: tipo.nombre, orden: tipo.orden || 0, activo: tipo.activo !== false });
+  const { error } = await supabase.from("tipos_cemento").upsert({ id: tipo.id, nombre: tipo.nombre, orden: tipo.orden || 0, activo: tipo.activo !== false, color: tipo.color || null });
   if (error) throw error;
 }
 

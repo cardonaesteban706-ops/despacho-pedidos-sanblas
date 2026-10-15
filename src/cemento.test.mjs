@@ -107,3 +107,16 @@ test("armarConteos: solo los tipos con número, un vacío no es 0", () => {
   assert.deepEqual(r, [{ id: "2026-10-15_g", fecha: HOY, tipoId: "g", bultos: 1250, contadoEn: ahora.toISOString() }]);
   assert.equal(armarConteos({ g: "0" }, tipos, HOY, ahora)[0].bultos, 0, "un 0 escrito sí se guarda");
 });
+
+test("colorSugerido: el color del bulto según la marca", async () => {
+  const { colorSugerido, colorDeTipo, COLORES_BULTO } = await import("./cemento.js");
+  const hex = (id) => COLORES_BULTO.find((c) => c.id === id).hex;
+  assert.equal(colorSugerido("CEMENTO GRIS KOLCEM"), hex("naranja"));
+  assert.equal(colorSugerido("CEMENTO ECOCEM"), hex("verde"));
+  assert.equal(colorSugerido("CEMENTO GRIS 50 KG ECOCEM ULTRACEM"), hex("verde"), "Ecocem gana aunque diga Ultracem");
+  assert.equal(colorSugerido("CEMENTO GRIS 50 Kg ULTRACEM"), hex("azul"));
+  assert.equal(colorSugerido("CEMENTO ESTRUCTURAL ULTRACEM"), hex("rojo"), "estructural gana a Ultracem");
+  assert.equal(colorSugerido("Cemento raro", [hex("naranja")]), hex("verde"), "sin marca: el primero libre");
+  assert.equal(colorDeTipo({ nombre: "CEMENTO GRIS KOLCEM", color: "#123456" }), "#123456", "si ya tiene color, se respeta");
+  assert.equal(colorDeTipo({ nombre: "CEMENTO GRIS KOLCEM", color: null }), hex("naranja"));
+});

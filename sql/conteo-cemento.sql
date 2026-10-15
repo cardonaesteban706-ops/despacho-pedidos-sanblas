@@ -33,6 +33,10 @@ create table if not exists public.conteos_cemento (
   unique (fecha, tipo_id)
 );
 
+-- Color característico del bulto (ej. Kolcem naranja, Ecocem verde), para
+-- reconocer cada tipo de un vistazo en la lista y en la gráfica.
+alter table public.tipos_cemento add column if not exists color text;
+
 create index if not exists conteos_cemento_fecha_idx on public.conteos_cemento (fecha desc);
 create index if not exists conteos_cemento_tipo_idx on public.conteos_cemento (tipo_id);
 

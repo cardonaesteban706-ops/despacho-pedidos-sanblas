@@ -16,6 +16,9 @@ import {
   serieDias,
   sugerenciasTipos,
   armarConteos,
+  COLORES_BULTO,
+  colorSugerido,
+  colorDeTipo,
 } from "./cemento.js";
 
 // Módulo Conteo de cemento (Bodega). Reemplaza el papel donde se anotaba a
@@ -24,8 +27,19 @@ import {
 //
 // La lógica pura vive en cemento.js. Estilos y piezas: los de Agotados.
 
-// Colores de las líneas de la gráfica: distintos en claridad, no solo en tono.
-const COLORES_SERIE = [MARCA.azulMuyOscuro, MARCA.azulMedio, "#BA7517", "#639922", "#CC3333"];
+// Un bultico del color del empaque, para reconocer cada cemento de un vistazo
+// (Kolcem naranja, Ecocem verde, Ultracem azul, Estructural rojo vino). La
+// franja de abajo, más oscura, imita la franja de los sacos.
+function Bulto({ color, size = 20 }) {
+  return (
+    <svg width={size * 0.82} height={size} viewBox="0 0 18 22" aria-hidden="true" style={{ flexShrink: 0 }}>
+      <rect x="1" y="1.5" width="16" height="19" rx="3" fill={color} />
+      <rect x="1" y="14" width="16" height="6.5" rx="0" fill="#000" opacity="0.28" />
+      <rect x="1" y="1.5" width="16" height="19" rx="3" fill="none" stroke="#000" strokeOpacity="0.18" />
+      <line x1="4" y1="5" x2="14" y2="5" stroke="#fff" strokeOpacity="0.55" strokeWidth="1.2" />
+    </svg>
+  );
+}
 
 const CC_CSS = `
 .cc-fila { display:flex; align-items:center; gap:12px; padding:12px; background:var(--color-background-primary); border:0.5px solid var(--color-border-tertiary); border-radius:var(--border-radius-lg); }
@@ -95,7 +109,7 @@ function Grafica({ conteos, tipos, hoy }) {
       ))}
       {series.map((s, k) => {
         const puntos = s.map((p, i) => (p.bultos === null ? null : [x(i), y(p.bultos)])).filter(Boolean);
-        const color = COLORES_SERIE[k % COLORES_SERIE.length];
+        const color = colorDeTipo(tipos[k], tipos);
         if (puntos.length === 0) return null;
         return (
           <g key={tipos[k].id}>
@@ -127,7 +141,7 @@ function AgregarTipo({ sugerencias, onAgregar, onCancelar }) {
           <div className="ag-chips" style={{ marginBottom: 10 }}>
             {sugerencias.map((s) => (
               <button type="button" key={s} className="ag-chip" onClick={() => onAgregar(s)}>
-                <Icono n="plus" size={14} />
+                <Bulto color={colorSugerido(s)} size={16} />
                 {s}
               </button>
             ))}
@@ -259,7 +273,10 @@ export default function ConteoCemento() {
     const limpio = nombre.replace(/\s+/g, " ").trim();
     // Si ya existió y se había quitado, se reactiva (conserva su historial).
     const previo = tipos.find((t) => t.nombre.toLowerCase() === limpio.toLowerCase());
-    const nuevo = previo ? { ...previo, activo: true } : { id: uid(), nombre: limpio, orden: Math.max(0, ...tipos.map((t) => t.orden || 0)) + 1, activo: true };
+    const color = colorSugerido(limpio, tiposActivos(tipos).map((t) => t.color));
+    const nuevo = previo
+      ? { ...previo, activo: true, color: previo.color || color }
+      : { id: uid(), nombre: limpio, orden: Math.max(0, ...tipos.map((t) => t.orden || 0)) + 1, activo: true, color };
     setTipos((prev) => (previo ? prev.map((t) => (t.id === nuevo.id ? nuevo : t)) : [...prev, nuevo]));
     try {
       await guardarTipoCemento(nuevo);
@@ -267,6 +284,17 @@ export default function ConteoCemento() {
     } catch {
       setTipos((prev) => (previo ? prev.map((t) => (t.id === previo.id ? previo : t)) : prev.filter((t) => t.id !== nuevo.id)));
       setError("No se pudo agregar el tipo. Revisa la conexión.");
+    }
+  }
+
+  async function cambiarColor(t, color) {
+    const nuevo = { ...t, color };
+    setTipos((prev) => prev.map((x) => (x.id === t.id ? nuevo : x)));
+    try {
+      await guardarTipoCemento(nuevo);
+    } catch {
+      setTipos((prev) => prev.map((x) => (x.id === t.id ? t : x)));
+      setError("No se pudo cambiar el color. Revisa la conexión.");
     }
   }
 
@@ -355,6 +383,7 @@ export default function ConteoCemento() {
             const actual = leerBultos(valorDe(t));
             return (
               <div key={t.id} className="cc-fila">
+                <Bulto color={colorDeTipo(t, tipos)} size={34} />
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 15, lineHeight: "20px", fontWeight: 500 }}>{t.nombre}</div>
                   <div className="ag-meta" style={{ marginTop: 2 }}>
@@ -373,6 +402,34 @@ export default function ConteoCemento() {
                     )}
                     {!editable && !delDia.has(t.id) && " · sin contar hoy"}
                   </div>
+                  {editTipos && (
+                    <div role="group" aria-label={`Color de ${t.nombre}`} style={{ display: "flex", flexWrap: "wrap", gap: 2, marginTop: 6 }}>
+                      {COLORES_BULTO.map((c) => {
+                        const activo = colorDeTipo(t, tipos).toLowerCase() === c.hex.toLowerCase();
+                        return (
+                          <button
+                            type="button"
+                            key={c.id}
+                            aria-label={c.nombre}
+                            aria-pressed={activo}
+                            title={c.nombre}
+                            onClick={() => !activo && cambiarColor(t, c.hex)}
+                            style={{ width: 36, height: 36, minHeight: 36, padding: 0, border: 0, background: "none", display: "flex", alignItems: "center", justifyContent: "center" }}
+                          >
+                            <span
+                              style={{
+                                width: 24,
+                                height: 24,
+                                borderRadius: 12,
+                                background: c.hex,
+                                boxShadow: activo ? `0 0 0 2px #fff, 0 0 0 4px ${MARCA.azulOscuro}` : "inset 0 0 0 1px rgba(0,0,0,.15)",
+                              }}
+                            ></span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
                 {editTipos ? (
                   <button
@@ -432,7 +489,7 @@ export default function ConteoCemento() {
                 Agregar tipo
               </button>
               <button type="button" className="ag-btn" style={{ color: "var(--color-text-secondary)" }} onClick={() => (setEditTipos((x) => !x), setQuitando(null))}>
-                {editTipos ? "Listo" : "Quitar tipos"}
+                {editTipos ? "Listo" : "Editar tipos"}
               </button>
             </div>
           )}
@@ -461,7 +518,7 @@ export default function ConteoCemento() {
             <div className="cc-leg">
               {activos.map((t, k) => (
                 <span key={t.id}>
-                  <i style={{ background: COLORES_SERIE[k % COLORES_SERIE.length] }}></i>
+                  <i style={{ background: colorDeTipo(t, activos) }}></i>
                   {t.nombre}
                 </span>
               ))}
@@ -475,7 +532,7 @@ export default function ConteoCemento() {
                   <th>Día</th>
                   {activos.map((t, k) => (
                     <th key={t.id} title={t.nombre}>
-                      <i style={{ display: "inline-block", width: 8, height: 8, borderRadius: 2, marginRight: 4, background: COLORES_SERIE[k % COLORES_SERIE.length] }}></i>
+                      <i style={{ display: "inline-block", width: 8, height: 8, borderRadius: 2, marginRight: 4, background: colorDeTipo(t, activos) }}></i>
                       {t.nombre.replace(/^cemento\s+/i, "").split(" ").slice(0, 2).join(" ")}
                     </th>
                   ))}

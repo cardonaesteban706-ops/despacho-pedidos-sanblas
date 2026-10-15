@@ -136,3 +136,51 @@ export function armarConteos(valores, tipos, fecha, ahora = new Date()) {
     .filter((x) => x.bultos !== null)
     .map(({ t, bultos }) => ({ id: idConteo(fecha, t.id), fecha, tipoId: t.id, bultos, contadoEn: iso }));
 }
+
+// ---------------------------------------------------------------------
+// Color del bulto
+// ---------------------------------------------------------------------
+
+// Cada tipo lleva el color característico de su bulto, para reconocerlo de un
+// vistazo en la lista y en la gráfica (revisado en las fotos de los empaques):
+//   Kolcem: bulto naranja · Ecocem: franja verde · Ultracem uso general: "U"
+//   azul y franja gris · Ultracem estructural: franja roja vino.
+export const COLORES_BULTO = [
+  { id: "naranja", nombre: "Naranja", hex: "#E5761E" },
+  { id: "verde", nombre: "Verde", hex: "#3D9A3F" },
+  { id: "azul", nombre: "Azul", hex: "#2340A8" },
+  { id: "rojo", nombre: "Rojo vino", hex: "#A32630" },
+  { id: "amarillo", nombre: "Amarillo", hex: "#E3B505" },
+  { id: "gris", nombre: "Gris", hex: "#6B7280" },
+  { id: "cafe", nombre: "Café", hex: "#8A5A2B" },
+  { id: "morado", nombre: "Morado", hex: "#6B3FA0" },
+];
+
+// Por marca y uso, en este orden: "ECOCEM ULTRACEM" es Ecocem (verde) y un
+// Ultracem "estructural" es rojo aunque diga Ultracem.
+const COLOR_POR_CLAVE = [
+  ["ecocem", "verde"],
+  ["kolcem", "naranja"],
+  ["estructural", "rojo"],
+  ["ultracem", "azul"],
+  ["argos", "amarillo"],
+  ["blanco", "gris"],
+];
+
+// Color sugerido para un tipo nuevo: el de su marca si se reconoce; si no, el
+// primero de la paleta que no esté usado (para que no se confunda con otro).
+export function colorSugerido(nombre, usados = []) {
+  const n = normalizarTexto(nombre);
+  const porMarca = COLOR_POR_CLAVE.find(([k]) => n.includes(k));
+  const hexDe = (id) => COLORES_BULTO.find((c) => c.id === id).hex;
+  if (porMarca) return hexDe(porMarca[1]);
+  const ocupados = new Set((usados || []).map((h) => String(h || "").toLowerCase()));
+  const libre = COLORES_BULTO.find((c) => !ocupados.has(c.hex.toLowerCase()));
+  return (libre || COLORES_BULTO[0]).hex;
+}
+
+// El color con que se pinta un tipo: el suyo, o uno sugerido si no tiene.
+export function colorDeTipo(tipo, tipos = []) {
+  if (tipo && /^#[0-9a-f]{6}$/i.test(tipo.color || "")) return tipo.color;
+  return colorSugerido(tipo ? tipo.nombre : "", (tipos || []).map((t) => t.color));
+}
