@@ -34,7 +34,6 @@ const r = (id, producto, quedan, extra = {}) => ({
   producto,
   quedan,
   pedir: null,
-  reportadoPor: "Luz Dary",
   reportadoEn: en(15, 8),
   proveedores: [],
   estado: "reportado",
@@ -132,15 +131,14 @@ test("alternarProveedor agrega y quita sin duplicar", () => {
   assert.deepEqual(alternarProveedor(["Diaco"], "  "), ["Diaco"]);
 });
 
-test("cambiarEstado: Pedido guarda a quién, quién y cuándo; volver atrás lo limpia", () => {
+test("cambiarEstado: Pedido guarda a quién se le pidió y cuándo; volver atrás lo limpia", () => {
   const base = r("a", "Tubo", 0, { proveedores: ["PAVCO"] });
-  const pedido = cambiarEstado(base, "pedido", { quien: "Álvaro", ahora: AHORA });
+  const pedido = cambiarEstado(base, "pedido", { ahora: AHORA });
   assert.equal(pedido.estado, "pedido");
   assert.equal(pedido.proveedorPedido, "PAVCO", "con un solo proveedor no hay que preguntar");
-  assert.equal(pedido.pedidoPor, "Álvaro");
   assert.equal(pedido.pedidoEn, AHORA.toISOString());
 
-  const aOtro = cambiarEstado(base, "pedido", { proveedor: "Mayorista Costa", quien: "Álvaro", ahora: AHORA });
+  const aOtro = cambiarEstado(base, "pedido", { proveedor: "Mayorista Costa", ahora: AHORA });
   assert.deepEqual(aOtro.proveedores, ["PAVCO", "Mayorista Costa"], "el proveedor al que se pidió queda asignado");
 
   const llego = cambiarEstado(pedido, "llego", { ahora: AHORA });

@@ -23,7 +23,7 @@ import {
 } from "./agotados.js";
 
 // Módulo de Agotados (Bodega). Reemplaza el Excel diario de productos agotados
-// o que se están acabando: la evidencia queda en la app (quién y cuándo).
+// o que se están acabando: queda en la app cuándo se reportó cada uno.
 //
 //   Reportar      -> la empleada de bodega: producto, cuántas quedan, cuánto pedir.
 //   Compras       -> el encargado: todo lo abierto, agotados primero, proveedores
@@ -31,26 +31,8 @@ import {
 //   Por proveedor -> llegó o llamó un vendedor: qué se le puede pedir a él.
 //
 // Diseño: sistema "San Blas Bodega" (mínimos toques). La lógica pura vive en
-// agotados.js; aquí solo hay pantalla y guardado.
-
-const CLAVE_NOMBRE = "sanblas.nombreBodega";
-
-// La app entra con UNA cuenta compartida, así que el login no dice quién es
-// quién. Cada celular recuerda el nombre de su dueño (se elige una vez).
-function leerNombre() {
-  try {
-    return window.localStorage.getItem(CLAVE_NOMBRE) || "";
-  } catch {
-    return "";
-  }
-}
-function escribirNombre(n) {
-  try {
-    window.localStorage.setItem(CLAVE_NOMBRE, n);
-  } catch {
-    // Almacenamiento bloqueado: se vuelve a preguntar la próxima vez, nada más.
-  }
-}
+// agotados.js; aquí solo hay pantalla y guardado. No se pide quién reporta:
+// basta con la fecha y hora de cada reporte.
 
 function useAncho(minPx) {
   const consulta = `(min-width: ${minPx}px)`;
@@ -76,7 +58,6 @@ const AG_CSS = `
 .ag-seg { display:flex; background:var(--color-background-secondary); border-radius:var(--border-radius-md); padding:3px; gap:2px; }
 .ag-seg button { flex:1; min-height:40px; border:0; background:none; border-radius:6px; font-size:14px; color:var(--color-text-secondary); white-space:nowrap; display:flex; align-items:center; justify-content:center; gap:6px; }
 .ag-seg button[aria-pressed=true] { background:var(--color-background-primary); color:var(--color-text-primary); font-weight:600; box-shadow:0 1px 2px rgba(0,0,0,.08); }
-.ag-quien { display:flex; align-items:center; gap:8px; font-size:13px; color:var(--color-text-secondary); margin:10px 2px 0; }
 .ag-link { border:0; background:none; color:var(--color-text-info); font-size:13px; padding:4px 2px; min-height:auto; }
 .ag-label { display:block; font-size:12px; font-weight:500; color:var(--color-text-secondary); margin:16px 0 6px; }
 .ag-field { width:100%; min-height:48px; padding:0 12px; border:0.5px solid var(--color-border-secondary); border-radius:var(--border-radius-md); background:var(--color-background-primary); font-size:16px; }
@@ -264,41 +245,6 @@ function Vacio({ icono, titulo, children }) {
 // ---------------------------------------------------------------------
 // Hojas (modales)
 // ---------------------------------------------------------------------
-
-function HojaNombre({ conocidos, onElegir, onClose }) {
-  const [texto, setTexto] = useState("");
-  return (
-    <ModalOverlay onClose={onClose} maxWidth={420}>
-      <div style={{ padding: 6 }}>
-        <div style={{ fontSize: 16, fontWeight: 600 }}>¿Quién eres?</div>
-        <p className="ag-meta" style={{ margin: "4px 0 12px" }}>
-          Se pregunta una sola vez en este celular. Queda guardado en cada reporte como evidencia.
-        </p>
-        {conocidos.length > 0 && (
-          <div className="ag-chips" style={{ marginBottom: 12 }}>
-            {conocidos.map((n) => (
-              <button type="button" key={n} className="ag-chip" onClick={() => onElegir(n)}>
-                {n}
-              </button>
-            ))}
-          </div>
-        )}
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (texto.trim()) onElegir(texto.trim());
-          }}
-          style={{ display: "flex", gap: 8 }}
-        >
-          <input className="ag-field" autoFocus placeholder="Tu nombre" value={texto} onChange={(e) => setTexto(e.target.value)} />
-          <button type="submit" className="ag-btn pri" disabled={!texto.trim()} style={{ minHeight: 48 }}>
-            Listo
-          </button>
-        </form>
-      </div>
-    </ModalOverlay>
-  );
-}
 
 // Asignar uno o varios proveedores a un producto. Los que ya le vendieron ese
 // producto salen arriba.
@@ -538,7 +484,7 @@ function VistaReportar({ reportes, catalogo, onReportar, onQuitar }) {
           <>
             {abierto && (
               <div className="ag-meta" style={{ marginTop: 6 }}>
-                Ya lo reportó {abierto.reportadoPor} {cuandoCorto(abierto.reportadoEn)}
+                Ya está reportado ({cuandoCorto(abierto.reportadoEn)})
                 {abierto.estado === "pedido" ? ` · pedido a ${abierto.proveedorPedido || "proveedor"}` : ""}. Se actualiza ese reporte.
               </div>
             )}
@@ -615,7 +561,7 @@ function VistaReportar({ reportes, catalogo, onReportar, onQuitar }) {
                   <div className="ag-nombre">{r.producto}</div>
                   <div className="ag-meta">
                     {r.pedir ? `Pedir ${formatCantidad(r.pedir)} · ` : ""}
-                    {r.reportadoPor}, {horaCorta(r.reportadoEn)}
+                    {horaCorta(r.reportadoEn)}
                   </div>
                   {r.nota && <div className="ag-meta" style={{ color: "var(--color-text-primary)" }}>“{r.nota}”</div>}
                 </div>
@@ -705,11 +651,7 @@ function VistaCompras({ reportes, ancho, onCambiar, onAsignar }) {
     );
   }
 
-  const reporto = (r) => (
-    <>
-      {r.reportadoPor} · {cuandoCorto(r.reportadoEn)}
-    </>
-  );
+  const reporto = (r) => <>Reportado {cuandoCorto(r.reportadoEn)}</>;
 
   if (ancho) {
     const sinProv = reportes.filter((r) => estaAbierto(r) && !(r.proveedores || []).length).length;
@@ -739,7 +681,7 @@ function VistaCompras({ reportes, ancho, onCambiar, onAsignar }) {
               <th style={{ width: 120 }}>En bodega</th>
               <th style={{ width: 90, textAlign: "right" }}>Pedir</th>
               <th>Proveedores</th>
-              <th style={{ width: 150 }}>Reportó</th>
+              <th style={{ width: 140 }}>Reportado</th>
               <th style={{ width: 300 }}>Estado</th>
             </tr>
           </thead>
@@ -762,7 +704,6 @@ function VistaCompras({ reportes, ancho, onCambiar, onAsignar }) {
                     <FichasProveedor r={r} onAsignar={onAsignar} />
                   </td>
                   <td>
-                    <div>{r.reportadoPor}</div>
                     <div className="ag-meta">{cuandoCorto(r.reportadoEn)}</div>
                   </td>
                   <td>
@@ -919,7 +860,6 @@ function VistaProveedor({ reportes, onMarcarPedidos, onCambiar }) {
                 <div className="ag-nombre">{r.producto}</div>
                 <div className="ag-meta">
                   {r.pedir ? `${formatCantidad(r.pedir)} pedidos` : "Pedido"} {cuandoCorto(r.pedidoEn)}
-                  {r.pedidoPor ? ` por ${r.pedidoPor}` : ""}
                 </div>
               </div>
               <button type="button" className="ag-btn" onClick={() => onCambiar(r, "llego")}>
@@ -953,8 +893,6 @@ export default function Agotados({ pedidos, onConteo }) {
   const [error, setError] = useState("");
   const [aviso, setAviso] = useState("");
   const [vista, setVista] = useState("reportar");
-  const [nombre, setNombre] = useState(leerNombre);
-  const [pendiente, setPendiente] = useState(null); // acción que espera el nombre
   const [hojaProv, setHojaProv] = useState(null);
   const [hojaPedidoA, setHojaPedidoA] = useState(null);
   const ancho = useAncho(900);
@@ -973,8 +911,8 @@ export default function Agotados({ pedidos, onConteo }) {
     }
   }, []);
 
-  // Se carga al entrar y cada vez que el celular vuelve a la app: Luz Dary
-  // reporta desde bodega y Compras lo ve en el computador sin refrescar.
+  // Se carga al entrar y cada vez que el celular vuelve a la app: bodega
+  // reporta desde el celular y Compras lo ve en el computador sin refrescar.
   useEffect(() => {
     recargar();
     const alVolver = () => document.visibilityState === "visible" && recargar();
@@ -995,23 +933,6 @@ export default function Agotados({ pedidos, onConteo }) {
   }
 
   const catalogo = useMemo(() => catalogoProductos(reportes, pedidos), [reportes, pedidos]);
-  const nombresConocidos = useMemo(() => {
-    const s = new Set();
-    for (const r of reportes) {
-      if (r.reportadoPor) s.add(r.reportadoPor);
-      if (r.pedidoPor) s.add(r.pedidoPor);
-    }
-    return [...s].slice(0, 8);
-  }, [reportes]);
-
-  // Las acciones que dejan evidencia necesitan saber quién es. Si este celular
-  // no lo sabe todavía, se pregunta UNA vez y la acción sigue sola.
-  function conNombre(accion) {
-    if (nombre) return accion(nombre);
-    // Si cierra la hoja sin elegir, la acción se cancela (n = null).
-    return new Promise((resolve) => setPendiente(() => (n) => resolve(n ? accion(n) : false)));
-  }
-
   // Guardado optimista: se pinta ya y se deshace solo lo propio si falla.
   async function guardar(nuevo, previo) {
     setReportes((prev) => (previo ? reemplazarPorId(prev, nuevo) : [nuevo, ...prev]));
@@ -1026,12 +947,11 @@ export default function Agotados({ pedidos, onConteo }) {
   }
 
   function reportar(datos, abierto) {
-    return conNombre(async (quien) => {
-      const ahora = new Date().toISOString();
-      const nuevo = abierto
-        ? { ...abierto, ...datos, reportadoPor: quien, reportadoEn: ahora }
-        : { id: uid(), ...datos, reportadoPor: quien, reportadoEn: ahora, proveedores: [], estado: "reportado", proveedorPedido: null, pedidoPor: null, pedidoEn: null, llegoEn: null };
-      const ok = await guardar(nuevo, abierto);
+    const ahora = new Date().toISOString();
+    const nuevo = abierto
+      ? { ...abierto, ...datos, reportadoEn: ahora }
+      : { id: uid(), ...datos, reportadoEn: ahora, proveedores: [], estado: "reportado", proveedorPedido: null, pedidoEn: null, llegoEn: null };
+    return guardar(nuevo, abierto).then((ok) => {
       if (ok) avisar(`${abierto ? "Actualizado" : "Reportado"}: ${datos.producto}`);
       return ok;
     });
@@ -1053,23 +973,21 @@ export default function Agotados({ pedidos, onConteo }) {
       setHojaPedidoA(r);
       return;
     }
-    conNombre((quien) => guardar(cambiarEstado(r, estado, { proveedor, quien }), r));
+    guardar(cambiarEstado(r, estado, { proveedor }), r);
   }
 
-  function marcarPedidos(lista, proveedor) {
-    conNombre(async (quien) => {
-      const ahora = new Date();
-      const nuevos = lista.map((r) => cambiarEstado(r, "pedido", { proveedor, quien, ahora }));
-      const porId = new Map(lista.map((r) => [r.id, r]));
-      setReportes((prev) => nuevos.reduce((acc, n) => reemplazarPorId(acc, n), prev));
-      try {
-        await guardarAgotados(nuevos);
-        avisar(`${nuevos.length} ${nuevos.length === 1 ? "producto pedido" : "productos pedidos"} a ${proveedor}`);
-      } catch {
-        setReportes((prev) => nuevos.reduce((acc, n) => reemplazarPorId(acc, porId.get(n.id)), prev));
-        setError("No se pudo guardar. Revisa la conexión e inténtalo otra vez.");
-      }
-    });
+  async function marcarPedidos(lista, proveedor) {
+    const ahora = new Date();
+    const nuevos = lista.map((r) => cambiarEstado(r, "pedido", { proveedor, ahora }));
+    const porId = new Map(lista.map((r) => [r.id, r]));
+    setReportes((prev) => nuevos.reduce((acc, n) => reemplazarPorId(acc, n), prev));
+    try {
+      await guardarAgotados(nuevos);
+      avisar(`${nuevos.length} ${nuevos.length === 1 ? "producto pedido" : "productos pedidos"} a ${proveedor}`);
+    } catch {
+      setReportes((prev) => nuevos.reduce((acc, n) => reemplazarPorId(acc, porId.get(n.id)), prev));
+      setError("No se pudo guardar. Revisa la conexión e inténtalo otra vez.");
+    }
   }
 
   return (
@@ -1096,22 +1014,6 @@ export default function Agotados({ pedidos, onConteo }) {
           Por proveedor
         </button>
       </div>
-      <div className="ag-quien">
-        <Icono n="user" size={15} />
-        {nombre ? (
-          <>
-            Como <b style={{ color: "var(--color-text-primary)", fontWeight: 500 }}>{nombre}</b>
-            <button type="button" className="ag-link" onClick={() => setPendiente(() => () => {})}>
-              Cambiar
-            </button>
-          </>
-        ) : (
-          <button type="button" className="ag-link" style={{ paddingLeft: 0 }} onClick={() => setPendiente(() => () => {})}>
-            ¿Quién eres? Toca para elegir tu nombre
-          </button>
-        )}
-      </div>
-
       {error && (
         <div className="ag-error" role="alert">
           <Icono n="alert-triangle" />
@@ -1139,23 +1041,6 @@ export default function Agotados({ pedidos, onConteo }) {
         <VistaProveedor reportes={reportes} onMarcarPedidos={marcarPedidos} onCambiar={(r, e) => cambiar(r, e)} />
       )}
 
-      {pendiente && (
-        <HojaNombre
-          conocidos={nombresConocidos.filter((n) => n !== nombre)}
-          onClose={() => {
-            const accion = pendiente;
-            setPendiente(null);
-            accion(null);
-          }}
-          onElegir={(n) => {
-            setNombre(n);
-            escribirNombre(n);
-            const accion = pendiente;
-            setPendiente(null);
-            accion(n);
-          }}
-        />
-      )}
       {hojaProv && (
         <HojaProveedores
           r={hojaProv}

@@ -5,9 +5,10 @@
 // Supabase, para poder probarla con `npm test` (agotados.test.mjs).
 //
 // Un reporte es una fila de la tabla `agotados` (sql/agotados.sql) en camelCase:
-//   { id, producto, quedan, pedir, nota, reportadoPor, reportadoEn,
+//   { id, producto, quedan, pedir, nota, reportadoEn,
 //     proveedores: [], estado: "reportado" | "pedido" | "llego",
-//     proveedorPedido, pedidoPor, pedidoEn, llegoEn }
+//     proveedorPedido, pedidoEn, llegoEn }
+// No se guarda quién reporta ni quién pide: basta con cuándo.
 // `quedan` = unidades que quedan en bodega: 0 es Agotado, > 0 es Pocas unidades.
 
 import { normalizarTexto, esLineaFlete } from "./constants.js";
@@ -183,7 +184,7 @@ export function alternarProveedor(proveedores, nombre) {
 
 // Pasos Reportado -> Pedido -> Llegó. Se puede volver atrás tocando el paso
 // anterior (un toque equivocado no deja el producto perdido).
-export function cambiarEstado(r, estado, { proveedor = null, quien = "", ahora = new Date() } = {}) {
+export function cambiarEstado(r, estado, { proveedor = null, ahora = new Date() } = {}) {
   const iso = ahora.toISOString();
   if (estado === "pedido") {
     const prov = proveedor || r.proveedorPedido || (r.proveedores && r.proveedores.length === 1 ? r.proveedores[0] : null);
@@ -192,13 +193,12 @@ export function cambiarEstado(r, estado, { proveedor = null, quien = "", ahora =
       estado: "pedido",
       proveedorPedido: prov,
       proveedores: prov ? alternarSiFalta(r.proveedores, prov) : r.proveedores || [],
-      pedidoPor: r.estado === "pedido" && r.pedidoPor ? r.pedidoPor : quien,
       pedidoEn: r.estado === "pedido" && r.pedidoEn ? r.pedidoEn : iso,
       llegoEn: null,
     };
   }
   if (estado === "llego") return { ...r, estado: "llego", llegoEn: iso };
-  return { ...r, estado: "reportado", proveedorPedido: null, pedidoPor: null, pedidoEn: null, llegoEn: null };
+  return { ...r, estado: "reportado", proveedorPedido: null, pedidoEn: null, llegoEn: null };
 }
 
 function alternarSiFalta(proveedores, nombre) {
