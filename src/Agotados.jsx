@@ -35,7 +35,7 @@ import {
 // agotados.js; aquí solo hay pantalla y guardado. No se pide quién reporta:
 // basta con la fecha y hora de cada reporte.
 
-function useAncho(minPx) {
+export function useAncho(minPx) {
   const consulta = `(min-width: ${minPx}px)`;
   const [ok, setOk] = useState(() => typeof window !== "undefined" && window.matchMedia && window.matchMedia(consulta).matches);
   useEffect(() => {
@@ -50,7 +50,7 @@ function useAncho(minPx) {
 
 // Colores de estado del sistema de diseño (mismos de constants.js: cotización
 // rechazada / pendiente / aceptada). Fondo + texto + borde, siempre con palabra.
-const AG_CSS = `
+export const AG_CSS = `
 .ag { --ag-rojo-bg:#FBE6E6; --ag-rojo:#7A1F1F; --ag-rojo-borde:#CC3333;
       --ag-amar-bg:#FAEEDA; --ag-amar:#633806; --ag-amar-borde:#BA7517;
       --ag-verde-bg:#EAF3DE; --ag-verde:#27500A; --ag-verde-borde:#639922;
@@ -137,7 +137,7 @@ const AG_CSS = `
 // Piezas
 // ---------------------------------------------------------------------
 
-function Icono({ n, size = 16 }) {
+export function Icono({ n, size = 16 }) {
   return <i className={`ti ti-${n}`} style={{ fontSize: size }} aria-hidden="true"></i>;
 }
 
@@ -231,7 +231,7 @@ function FichasProveedor({ r, onAsignar }) {
   );
 }
 
-function Vacio({ icono, titulo, children }) {
+export function Vacio({ icono, titulo, children }) {
   return (
     <div className="ag-vacio">
       <div className="ic">

@@ -4,6 +4,7 @@ import { cargarCotizaciones, guardarCotizacion, eliminarCotizacion, cargarPdfCot
 import { buscarHistorial, maxNumeroRemision, columnasFaltantes, moverPedidoAEstado, salir, DIAS_HISTORIAL_PRECARGADO } from "./supabaseClient";
 import PanelResumen from "./PanelResumen.jsx";
 import Agotados from "./Agotados.jsx";
+import Llegadas from "./Llegadas.jsx";
 import { cargarAgotados } from "./supabaseClient";
 import { esAgotado, estaAbierto } from "./agotados.js";
 import PorEntregar from "./PorEntregar.jsx";
@@ -2014,6 +2015,23 @@ export default function DespachoPedidos() {
             Panel
           </button>
           <button
+            onClick={() => setView("llegadas")}
+            aria-pressed={view === "llegadas"}
+            style={{
+              border: view === "llegadas" ? "none" : "0.5px solid var(--color-border-tertiary)",
+              background: view === "llegadas" ? MARCA.azulOscuro : "transparent",
+              color: view === "llegadas" ? "white" : "var(--color-text-primary)",
+              fontWeight: view === "llegadas" ? 500 : 400,
+              padding: "6px 14px",
+              minHeight: 40,
+              borderRadius: "var(--border-radius-md)",
+              fontSize: 14,
+            }}
+          >
+            <i className="ti ti-truck" style={{ fontSize: 16, verticalAlign: "-2px", marginRight: 6 }} aria-hidden="true"></i>
+            Llegadas
+          </button>
+          <button
             onClick={() => setView("agotados")}
             aria-pressed={view === "agotados"}
             style={{
@@ -2736,6 +2754,8 @@ export default function DespachoPedidos() {
       ) : null}
 
       {view === "agotados" && <Agotados onConteo={setConteoAgotados} />}
+
+      {view === "llegadas" && <Llegadas onConteoAgotados={setConteoAgotados} />}
 
       {view === "panel" &&
         (!panelDesbloqueado ? (

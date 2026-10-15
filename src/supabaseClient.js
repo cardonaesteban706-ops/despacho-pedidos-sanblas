@@ -540,3 +540,54 @@ export async function eliminarAgotado(id) {
   const { error } = await supabase.from("agotados").delete().eq("id", id);
   if (error) throw error;
 }
+
+// --- Llegada de proveedores (módulo de Bodega, tabla de sql/llegadas.sql) ---
+
+// Sin "foto": pesa ~150 KB cada una y solo se trae al tocar "Ver foto"
+// (cargarFotoLlegada), igual que los PDF de pedidos con tiene_pdf.
+const COLUMNAS_LLEGADA = "id, proveedor, llego_en, estado, novedades, observacion, tiene_foto";
+
+function filaALlegada(fila) {
+  return {
+    id: fila.id,
+    proveedor: fila.proveedor,
+    llegoEn: fila.llego_en,
+    estado: fila.estado,
+    novedades: fila.novedades || [],
+    observacion: fila.observacion || "",
+    tieneFoto: !!fila.tiene_foto,
+  };
+}
+
+// Las de los últimos `dias` días, la más reciente primero.
+export async function cargarLlegadas({ dias = 30 } = {}) {
+  const desde = new Date(Date.now() - dias * 86400000).toISOString();
+  const filas = await traerTodo(() =>
+    supabase.from("llegadas").select(COLUMNAS_LLEGADA).gte("llego_en", desde).order("llego_en", { ascending: false })
+  );
+  return filas.map(filaALlegada);
+}
+
+export async function guardarLlegada(llegada) {
+  const { error } = await supabase.from("llegadas").upsert({
+    id: llegada.id,
+    proveedor: llegada.proveedor,
+    llego_en: llegada.llegoEn,
+    estado: llegada.estado,
+    novedades: llegada.novedades || [],
+    observacion: llegada.observacion || null,
+    foto: llegada.foto || null,
+  });
+  if (error) throw error;
+}
+
+export async function cargarFotoLlegada(id) {
+  const { data, error } = await supabase.from("llegadas").select("foto").eq("id", id).maybeSingle();
+  if (error) throw error;
+  return (data && data.foto) || null;
+}
+
+export async function eliminarLlegada(id) {
+  const { error } = await supabase.from("llegadas").delete().eq("id", id);
+  if (error) throw error;
+}
