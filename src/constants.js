@@ -24,6 +24,11 @@ export const VEHICULOS = [
   { id: "tractor", label: "Tractor", icon: "ti-tractor", bg: "#EAF3DE", border: "#639922", text: "#27500A", capacidadKg: null },
 ];
 
+// Módulo de Cotizaciones (seguimiento de cotizaciones): oculto por ahora. El
+// código y la tabla `cotizaciones` siguen intactos; poner `true` lo reactiva
+// (botón de la barra, panel de subida, vista y la carga inicial).
+export const MOSTRAR_COTIZACIONES = false;
+
 // Destinos frecuentes para marcar la zona del pedido al montarlo. "Otro" abre
 // un campo de texto para escribir cualquier otro lugar a mano.
 export const DESTINOS = ["Corozal", "Morroa"];

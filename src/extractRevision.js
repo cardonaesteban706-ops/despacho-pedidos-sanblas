@@ -61,7 +61,7 @@ export function motivoBloqueo(data, { seguimiento = false, ack = false, ackDup =
 
   // El vehículo solo se exige en despacho: un seguimiento de cotización no
   // despacha nada. Y tampoco se exige si el pedido va sin fecha definida
-  // (Pendientes / Por viaje), que no ocupan columna de tablero.
+  // (Por entregar), que no ocupa columna de tablero.
   if (!esCotizacion && !d.sinFechaDefinida && !d.vehiculo) return "Selecciona un vehículo antes de guardar";
   if (!d.cliente || !String(d.cliente).trim()) return "Escribe el nombre del cliente antes de guardar";
   if (hayIgnoradas && !ack) return "Confirma que revisarás el material que no se pudo leer";

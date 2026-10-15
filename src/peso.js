@@ -59,6 +59,10 @@ export const CATEGORIAS_PESO = [
   // arriba. Van con nombre propio para que el Panel diga cuál es cuál.
   { nombre: "Cerámica Santa Marta (por m²)", kg: 18, claves: ["santa marta"] },
   { nombre: "Piso Manaure (por m²)", kg: 18, claves: ["manaure"] },
+  // Tornillería ANTES de "Placa yesocartón (drywall)" a propósito: el
+  // "TORNILLO DRYWALL" lleva la palabra "drywall" y caía como una placa de
+  // 22 kg. Un tornillo pesa gramos; 0,002 kg por unidad.
+  { nombre: "Tornillería", kg: 0.002, claves: ["tornillo", "chazo", "tuerca", "arandela"] },
   { nombre: "Placa yesocartón (drywall)", kg: 22, claves: ["yesocarton", "yeso carton", "drywall", "dry wall"] },
   { nombre: "Arena / gravilla / áridos", kg: 40, claves: ["arena", "gravilla", "triturado", "recebo", "balastro", "arenilla"] },
   // Tubo galvanizado ANTES de "Tubería PVC" para que "tubería galvanizada" no
@@ -70,6 +74,9 @@ export const CATEGORIAS_PESO = [
   // calibre 16 es más grueso (más pesado) que el calibre 18.
   { nombre: "Tubo rectangular estructural (cal. 16)", kg: 19, claves: ["cal16"] },
   { nombre: "Tubo rectangular estructural (cal. 18)", kg: 13, claves: ["cal18"] },
+  // En la factura viene como "CAL20.A": normalizado queda "cal20.a", que
+  // contiene "cal20".
+  { nombre: "Tubo rectangular estructural (cal. 20)", kg: 6.3, claves: ["cal20"] },
   // Tubo presión y sanitario son PVC pero de línea distinta a "Tubería PVC"
   // genérica de abajo — claves específicas para que no se mezclen entre sí.
   { nombre: "Tubo PVC presión", kg: 2, claves: ["tubo presion"] },
@@ -79,7 +86,7 @@ export const CATEGORIAS_PESO = [
   { nombre: "Tanque de agua 500L", kg: 16, claves: ["tanque 500"] },
   { nombre: "Tanque de agua 1000L", kg: 28, claves: ["tanque 1000", "tanque 1.000", "tanque 1,000"] },
   { nombre: "Tanque de agua 2000L", kg: 48, claves: ["tanque 2000", "tanque 2.000", "tanque 2,000"] },
-  { nombre: "Accesorios / menores", kg: 0.2, claves: ["codo", "adaptador", "registro", "tornillo", "puntilla", "silicona", "sifon", "abrazadera", "reduccion"] },
+  { nombre: "Accesorios / menores", kg: 0.2, claves: ["codo", "adaptador", "registro", "puntilla", "silicona", "sifon", "abrazadera", "reduccion"] },
   // Boquilla (lechada de cerámica) siempre viene por bulto de 2kg, y acronal
   // (adhesivo acrílico para pintura/impermeabilización) por kg.
   { nombre: "Boquilla (lechada cerámica)", kg: 2, claves: ["boquilla"] },
@@ -143,14 +150,20 @@ export const cantidadEntregadaDe = entregadoParaPanelDe;
 //   2) varilla: se calcula el peso real del acero con su diámetro y su largo,
 //      así no hay que mantener una lista de calibres.
 //   3) si no, el peso por categoría de CATEGORIAS_PESO (aproximado).
-export function pesoUnitarioDe(prod) {
+//   4) y si tampoco hay categoría, PESO_POR_DEFECTO.
+//
+// resolverPeso devuelve además DE DÓNDE salió el número, porque la lista "Sin
+// categorizar" del Panel debe listar solo lo que de verdad cayó al paso 4.
+// Antes preguntaba solo por la categoría, y un "ESTUCO 25KG" (sin categoría,
+// pero con su peso escrito) aparecía como desconocido.
+function resolverPeso(prod) {
   const desc = normalizarTexto(prod && prod.descripcion);
 
   // 1) Kilos escritos en la descripción.
   const mKg = desc.match(/(\d+(?:[.,]\d+)?)\s*(?:kgs?|kilos?)\b/);
   if (mKg) {
     const n = parseFloat(mKg[1].replace(",", "."));
-    if (n > 0 && n < 2000) return n;
+    if (n > 0 && n < 2000) return { kg: n, origen: "descripcion" };
   }
 
   const cat = categoriaDeProducto(prod && prod.descripcion);
@@ -176,12 +189,22 @@ export function pesoUnitarioDe(prod) {
       const mLargo = desc.match(/x\s*(\d+(?:[.,]\d+)?)\s*m(?:t|ts|etros)?\b/);
       const largo = mLargo ? parseFloat(mLargo[1].replace(",", ".")) : 6; // 6 m es el estándar
       const kg = 0.006165 * diametro * diametro * largo;
-      if (kg > 0 && kg < 500) return kg;
+      if (kg > 0 && kg < 500) return { kg, origen: "varilla" };
     }
   }
 
-  // 3) Aproximado por categoría.
-  return cat ? cat.kg : PESO_POR_DEFECTO;
+  // 3) Aproximado por categoría. 4) Desconocido.
+  return cat ? { kg: cat.kg, origen: "categoria" } : { kg: PESO_POR_DEFECTO, origen: "defecto" };
+}
+
+export function pesoUnitarioDe(prod) {
+  return resolverPeso(prod).kg;
+}
+
+// De dónde salió el peso unitario: "descripcion" | "varilla" | "categoria" |
+// "defecto". Solo "defecto" es un peso supuesto (PESO_POR_DEFECTO).
+export function origenPesoDe(prod) {
+  return resolverPeso(prod).origen;
 }
 
 export function pesoDeProducto(prod) {

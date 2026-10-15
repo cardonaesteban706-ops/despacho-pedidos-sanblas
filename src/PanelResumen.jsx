@@ -135,6 +135,12 @@ export default function PanelResumen({
   historial = [],          // TODOS los pedidos entregados (para el reporte de fletes por rango)
 }) {
   const [sinCatAbierto, setSinCatAbierto] = useState(false);
+  const [sinCatBusqueda, setSinCatBusqueda] = useState("");
+  const sinCatFiltrados = useMemo(() => {
+    const q = normalizarTexto(sinCatBusqueda.trim());
+    if (!q) return sinCategorizar;
+    return sinCategorizar.filter((item) => normalizarTexto(item.descripcion).includes(q));
+  }, [sinCategorizar, sinCatBusqueda]);
   // Factura del día cuyo detalle de ítems está desplegado (para verificar el conteo).
   const [filaAbierta, setFilaAbierta] = useState(null);
   const [fleteDesde, setFleteDesde] = useState(primerDiaMesISO);
@@ -512,18 +518,31 @@ export default function PanelResumen({
               <button onClick={() => setSinCatAbierto((s) => !s)} aria-expanded={sinCatAbierto} style={{ width: "100%", background: "transparent", border: "none", padding: 16, display: "flex", alignItems: "center", gap: 8, textAlign: "left", cursor: "pointer" }}>
                 <div style={{ flex: 1 }}>
                   <div style={cardTitle}>Sin categorizar</div>
-                  <div style={{ fontSize: 11.5, color: "var(--color-text-tertiary, #9aa0a6)", marginTop: -8 }}>{sinCategorizar.length} productos sin peso — no suman a los kilos</div>
+                  <div style={{ fontSize: 11.5, color: "var(--color-text-tertiary, #9aa0a6)", marginTop: -8 }}>{sinCategorizar.length} {sinCategorizar.length === 1 ? "producto" : "productos"} sin peso conocido — cuentan 1 kg c/u</div>
                 </div>
                 <i className={`ti ${sinCatAbierto ? "ti-chevron-up" : "ti-chevron-down"}`} style={{ fontSize: 16, color: "var(--color-text-tertiary, #9aa0a6)" }} />
               </button>
               {sinCatAbierto && (
                 <div style={{ padding: "0 16px 8px" }}>
-                  {sinCategorizar.slice(0, 30).map((item, i) => (
-                    <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "8px 0", borderTop: "0.5px solid var(--color-border-tertiary, #e6e8ec)", fontSize: 12.5 }}>
-                      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--color-text-primary, #1a1a1a)" }}>{item.descripcion}</span>
-                      <span style={{ color: "var(--color-text-tertiary, #9aa0a6)", whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" }}>{item.veces} {item.veces === 1 ? "vez" : "veces"} · {formatCantidad(item.unidades)} u</span>
-                    </div>
-                  ))}
+                  <input
+                    type="search"
+                    value={sinCatBusqueda}
+                    onChange={(e) => setSinCatBusqueda(e.target.value)}
+                    placeholder="Buscar producto…"
+                    aria-label="Buscar producto sin categorizar"
+                    style={{ width: "100%", boxSizing: "border-box", fontSize: 12.5, padding: "6px 8px", marginBottom: 8, border: "0.5px solid var(--color-border-tertiary, #e6e8ec)", borderRadius: 8 }}
+                  />
+                  <div style={{ maxHeight: 320, overflowY: "auto" }}>
+                    {sinCatFiltrados.map((item) => (
+                      <div key={item.descripcion} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "8px 0", borderTop: "0.5px solid var(--color-border-tertiary, #e6e8ec)", fontSize: 12.5 }}>
+                        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--color-text-primary, #1a1a1a)" }}>{item.descripcion}</span>
+                        <span style={{ color: "var(--color-text-tertiary, #9aa0a6)", whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" }}>{item.veces} {item.veces === 1 ? "vez" : "veces"} · {formatCantidad(item.unidades)} u</span>
+                      </div>
+                    ))}
+                    {sinCatFiltrados.length === 0 && (
+                      <div style={{ padding: "8px 0", fontSize: 12.5, color: "var(--color-text-tertiary, #9aa0a6)" }}>Ningún producto coincide con la búsqueda.</div>
+                    )}
+                  </div>
                 </div>
               )}
             </div>

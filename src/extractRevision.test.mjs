@@ -137,7 +137,7 @@ test("un documento completo no estorba: cero clics de más", () => {
 });
 
 test("el vehículo no se exige si el pedido va sin fecha definida", () => {
-  // Pendientes y "Por viaje" no ocupan columna de tablero.
+  // "Por entregar" no ocupa columna de tablero.
   assert.equal(motivoBloqueo(completo({ vehiculo: "", sinFechaDefinida: true }), { seguimiento: false }), null);
 });
 

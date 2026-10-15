@@ -51,14 +51,10 @@ export default function ExtractReviewCard({ data, onChange, onConfirm, onCancel,
   };
 
   const today = todayISO();
-  const esViaje = data.fechaDespacho === "viaje";
-  const esPendiente = !!data.sinFechaDefinida && !esViaje;
-  const fechaSel =
-    data.fechaDespacho && data.fechaDespacho !== "pendiente" && data.fechaDespacho !== "viaje"
-      ? data.fechaDespacho
-      : today;
-  const esHoy = !esPendiente && !esViaje && fechaSel === today;
-  const esProgramado = !esPendiente && !esViaje && fechaSel !== today;
+  const esPendiente = !!data.sinFechaDefinida;
+  const fechaSel = data.fechaDespacho && data.fechaDespacho !== "pendiente" ? data.fechaDespacho : today;
+  const esHoy = !esPendiente && fechaSel === today;
+  const esProgramado = !esPendiente && fechaSel !== today;
   const enEspera = !!data.sinFechaDefinida;
 
   const productos = data.productos || [];
@@ -362,12 +358,9 @@ export default function ExtractReviewCard({ data, onChange, onConfirm, onCancel,
                   )}
 
                   <div style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: ".05em", textTransform: "uppercase", color: "var(--color-text-tertiary)", marginBottom: 6 }}>Queda en espera</div>
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 8 }}>
                     <button onClick={() => set({ sinFechaDefinida: true, fechaDespacho: "pendiente", vehiculo: null })} aria-pressed={esPendiente} style={warn(esPendiente)}>
                       <i className="ti ti-clock-pause" style={{ fontSize: 16 }} aria-hidden="true"></i>Por entregar
-                    </button>
-                    <button onClick={() => set({ sinFechaDefinida: true, fechaDespacho: "viaje", vehiculo: null })} aria-pressed={esViaje} style={warn(esViaje)}>
-                      <i className="ti ti-route" style={{ fontSize: 16 }} aria-hidden="true"></i>Por viaje
                     </button>
                   </div>
                 </div>
@@ -376,9 +369,7 @@ export default function ExtractReviewCard({ data, onChange, onConfirm, onCancel,
                   <div style={{ display: "flex", gap: 9, alignItems: "flex-start", fontSize: 12.5, color: "var(--color-text-secondary)", background: "var(--color-background-secondary)", borderRadius: "var(--border-radius-md)", padding: "11px 13px", marginBottom: 12 }}>
                     <i className="ti ti-info-circle" style={{ fontSize: 16, color: "var(--color-text-tertiary)", flexShrink: 0, marginTop: 1 }} aria-hidden="true"></i>
                     <span>
-                      {esViaje
-                        ? 'Sin vehículo por ahora — va a la pestaña "Por viaje". Se le asigna vehículo cuando salga un viaje a esa zona.'
-                        : 'Sin vehículo por ahora — va a "Por entregar" hasta que sepas cuándo y en qué vehículo sale.'}
+                      {'Sin vehículo por ahora — va a "Por entregar" hasta que sepas cuándo y en qué vehículo sale.'}
                     </span>
                   </div>
                 ) : (

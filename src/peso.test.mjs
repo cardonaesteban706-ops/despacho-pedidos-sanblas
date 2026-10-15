@@ -16,6 +16,7 @@ import assert from "node:assert/strict";
 import {
   PESO_POR_DEFECTO,
   categoriaDeProducto,
+  origenPesoDe,
   pesoUnitarioDe,
   pesoDeProducto,
   cargaDePedido,
@@ -114,6 +115,40 @@ test("las categorías específicas ganan a las genéricas", () => {
   assert.equal(categoriaDeProducto("LADRILLO TOLETE").nombre, "Ladrillo");
 });
 
+test("un TORNILLO DRYWALL es tornillería, no una placa de 22 kg", () => {
+  // "Placa yesocartón (drywall)" tiene la clave "drywall", y el tornillo para
+  // drywall la lleva en la descripción: cada tornillo contaba 22 kg en el Panel.
+  for (const desc of ['TORNILLO DRYWALL 6X1" UNF LAMINA', "TORNILLO DRYWALL 7X7/16 UNF"]) {
+    assert.equal(categoriaDeProducto(desc).nombre, "Tornillería", desc);
+    assert.equal(pesoUnitarioDe(d(desc)), 0.002, desc);
+  }
+  // Y la placa de verdad sigue pesando lo de una placa.
+  assert.equal(categoriaDeProducto("PLACA DRYWALL 1/2 1.22X2.44 GYPLAC").nombre, "Placa yesocartón (drywall)");
+  assert.equal(pesoUnitarioDe(d("PLACA DRYWALL 1/2 1.22X2.44 GYPLAC")), 22);
+});
+
+test("el tubo rectangular calibre 20 se reconoce como viene en la factura (CAL20.A)", () => {
+  assert.equal(categoriaDeProducto("TUBO RECT 2 X 1 CAL20.A x 6Mts").nombre, "Tubo rectangular estructural (cal. 20)");
+  assert.equal(pesoUnitarioDe(d("TUBO RECT 2 X 1 CAL20.A x 6Mts")), 6.3);
+});
+
+test("el peso escrito en la descripción sirve aunque no haya categoría", () => {
+  assert.equal(categoriaDeProducto("ESTUCO POLVO 25KG INTERIOR"), null);
+  assert.equal(pesoUnitarioDe(d("ESTUCO POLVO 25KG INTERIOR")), 25);
+});
+
+test("origenPesoDe dice de dónde salió el peso; solo 'defecto' es desconocido", () => {
+  // Es lo que usa la lista "Sin categorizar" del Panel: un ESTUCO 25KG no tiene
+  // categoría, pero su peso SÍ se conoce, así que no debe aparecer ahí.
+  assert.equal(origenPesoDe(d("ESTUCO POLVO 25KG INTERIOR")), "descripcion");
+  assert.equal(origenPesoDe(d("VARILLA 1/2 12mm X 6Mts")), "varilla");
+  assert.equal(origenPesoDe(d("BLOQUE No 4")), "categoria");
+  assert.equal(origenPesoDe(d("GUANTE DE CARNAZA")), "defecto");
+  for (const p of [null, undefined, {}, { descripcion: "" }]) {
+    assert.equal(origenPesoDe(p), "defecto", JSON.stringify(p));
+  }
+});
+
 test("categoriaDeProducto no distingue tildes ni mayúsculas", () => {
   // Las facturas escriben "CERÁMICA", "Ceramica" y "cerámica" indistintamente.
   const a = categoriaDeProducto("CERAMICA SANTA MARTA");
@@ -124,7 +159,7 @@ test("categoriaDeProducto no distingue tildes ni mayúsculas", () => {
 
 test("un material desconocido pesa 1 kg, nunca cero", () => {
   // Contar 0 haría desaparecer del Panel material que sí viajó en el camión.
-  // (Un tornillo NO sirve de ejemplo: cae en "Accesorios / menores", 0,2 kg.)
+  // (Un tornillo NO sirve de ejemplo: cae en "Tornillería", 0,002 kg.)
   assert.equal(categoriaDeProducto("GUANTE DE CARNAZA"), null);
   assert.equal(pesoUnitarioDe(d("GUANTE DE CARNAZA")), PESO_POR_DEFECTO);
   assert.ok(PESO_POR_DEFECTO > 0);

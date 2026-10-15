@@ -38,7 +38,7 @@ import {
 } from "./saldo.js";
 // Kilos: lógica pura y testeada (peso.test.mjs). Salió del monolito porque las
 // tarjetas la necesitaban y las tenía amarradas acá.
-import { cargaDePedido, cargaPorEntregar, categoriaDeProducto, pesoDeProducto, cantidadEntregadaDe } from "./peso.js";
+import { cargaDePedido, cargaPorEntregar, categoriaDeProducto, origenPesoDe, pesoDeProducto, cantidadEntregadaDe } from "./peso.js";
 // Deshacer un cambio optimista con operaciones RELATIVAS al estado actual, en
 // vez de restaurar una foto de la lista entera. Ver la cabecera de listas.js.
 import { quitarPorId, reponerPorId, reemplazarPorId } from "./listas.js";
@@ -56,10 +56,10 @@ import {
   todayStr,
   todayISO,
   addDaysISO,
-  formatFechaCorta,
   etiquetaFecha,
   nowTimeStr,
   compararOrden,
+  MOSTRAR_COTIZACIONES,
 } from "./constants.js";
 // Lectura y parseo de PDF (antes acá arriba, ~340 líneas). El parseo vive en un
 // módulo puro y testeado (pdfParser.test.mjs, `npm test`); la lectura del PDF
@@ -300,10 +300,6 @@ export default function DespachoPedidos() {
   // un banner que dice qué hacer, en vez de dejar que reviente con "column does
   // not exist" al crear una remisión.
   const [faltaSql, setFaltaSql] = useState([]);
-  // Texto del buscador de Despachos. Cuando tiene algo, el tablero por fecha se
-  // reemplaza por una lista plana con los pedidos activos que coincidan (útil
-  // cuando hay muchas facturas cargadas y no sabes en qué día quedó una).
-  const [busquedaDespacho, setBusquedaDespacho] = useState("");
   const [selectedDate, setSelectedDate] = useState(todayISO());
 
   // --- Estado del Panel (resumen del día, protegido con PIN) ---
@@ -331,7 +327,11 @@ export default function DespachoPedidos() {
   const cotizacionFileInputRef = useRef(null);
 
   const hoyIso = todayISO();
-  const fechaDe = (p) => p.fechaDespacho || hoyIso;
+  // La pestaña "Por viaje" (fechaDespacho = "viaje") se quitó. Si alguna fila
+  // vieja todavía trae ese valor —p. ej. un pedido del historial que se
+  // devuelve a despacho—, se trata como "pendiente" para que no quede huérfana
+  // fuera de toda pestaña.
+  const fechaDe = (p) => (p.fechaDespacho === "viaje" ? "pendiente" : p.fechaDespacho || hoyIso);
   const fileInputRef = useRef(null);
 
   const toastTimerRef = useRef(null);
@@ -365,11 +365,13 @@ export default function DespachoPedidos() {
         // y el usuario podía duplicar registros o sacar conclusiones falsas.
         showToast("No se pudo cargar el historial. Recarga la página.", 5000);
       }
-      try {
-        const cots = await cargarCotizaciones();
-        setCotizaciones(cots);
-      } catch (e) {
-        showToast("No se pudieron cargar las cotizaciones. Recarga la página.", 5000);
+      if (MOSTRAR_COTIZACIONES) {
+        try {
+          const cots = await cargarCotizaciones();
+          setCotizaciones(cots);
+        } catch (e) {
+          showToast("No se pudieron cargar las cotizaciones. Recarga la página.", 5000);
+        }
       }
       setLoading(false);
       // Se comprueba de último y sin bloquear: si el SQL de la tanda no se corrió,
@@ -468,12 +470,11 @@ export default function DespachoPedidos() {
       showToast("Escribe el nombre del cliente antes de guardar");
       return;
     }
-    // Fecha de despacho elegida en la tarjeta: hoy, un día futuro, "pendiente"
-    // (sin fecha) o "viaje" (se lleva cuando salga un viaje a la zona). El orden
-    // se calcula en la columna de ESE día, no siempre en la de hoy.
-    const esViaje = data.fechaDespacho === "viaje";
-    const sinTablero = data.sinFechaDefinida || esViaje;
-    const fechaDestino = esViaje ? "viaje" : data.sinFechaDefinida ? "pendiente" : data.fechaDespacho || todayISO();
+    // Fecha de despacho elegida en la tarjeta: hoy, un día futuro o "pendiente"
+    // (sin fecha). El orden se calcula en la columna de ESE día, no siempre en
+    // la de hoy.
+    const sinTablero = !!data.sinFechaDefinida;
+    const fechaDestino = data.sinFechaDefinida ? "pendiente" : data.fechaDespacho || todayISO();
     const maxOrden = sinTablero
       ? 0
       : pedidos
@@ -519,13 +520,10 @@ export default function DespachoPedidos() {
 
     setPendingExtract(null);
     // Llevamos la vista a donde cayó el pedido, para que se vea de inmediato.
-    if (esViaje) setSelectedDate("viaje");
-    else if (!data.sinFechaDefinida) setSelectedDate(fechaDestino);
+    if (!data.sinFechaDefinida) setSelectedDate(fechaDestino);
     const vehiculoLabel = (VEHICULOS.find((v) => v.id === data.vehiculo) || {}).label || "";
     showToast(
-      esViaje
-        ? "Pedido agregado a Por viaje"
-        : data.sinFechaDefinida
+      data.sinFechaDefinida
         ? "Pedido agregado a Pendientes"
         : fechaDestino === hoyIso
         ? "Pedido agregado a " + vehiculoLabel
@@ -867,7 +865,7 @@ export default function DespachoPedidos() {
       showToast("Agrega al menos un material con cantidad.");
       return;
     }
-    const esConFecha = data.fechaDespacho !== "pendiente" && data.fechaDespacho !== "viaje";
+    const esConFecha = data.fechaDespacho !== "pendiente";
     const vehiculoDest = esConFecha ? data.vehiculo || VEHICULOS[0].id : null;
     let orden = 0;
     if (esConFecha) {
@@ -903,7 +901,6 @@ export default function DespachoPedidos() {
     // obligaba a cerrarlo cada vez. Queda en el menú de la tarjeta ("Imprimir
     // tirilla") para cuando se necesite.
     if (esConFecha) setSelectedDate(data.fechaDespacho);
-    else if (data.fechaDespacho === "viaje") setSelectedDate("viaje");
     else setSelectedDate("pendiente");
     showToast(`Remisión manual ${nuevo.numeroFactura} creada.`);
   }
@@ -930,6 +927,8 @@ export default function DespachoPedidos() {
       return copia;
     });
     const restaurado = { ...pedido, productos: productosLimpios, entregadoEn: null, fechaEntrega: null };
+    // "viaje" ya no tiene pestaña (ver fechaDe): vuelve a "Por entregar".
+    if (restaurado.fechaDespacho === "viaje") restaurado.fechaDespacho = "pendiente";
     setHistorial((prev) => quitarPorId(prev, id));
     setPedidos((prev) => [restaurado, ...prev]);
     showToast("Pedido devuelto a despacho");
@@ -961,7 +960,7 @@ export default function DespachoPedidos() {
     // columna y la posición quedaba ambigua (cambiaba entre recargas).
     const cambioColumna =
       actualizado.vehiculo !== anterior.vehiculo || actualizado.fechaDespacho !== anterior.fechaDespacho;
-    if (cambioColumna && actualizado.fechaDespacho !== "pendiente" && actualizado.fechaDespacho !== "viaje") {
+    if (cambioColumna && actualizado.fechaDespacho !== "pendiente") {
       const fechaDestino = actualizado.fechaDespacho || hoyIso;
       const maxOrden = pedidos
         .filter((p) => p.id !== id && p.vehiculo === actualizado.vehiculo && fechaDe(p) === fechaDestino)
@@ -1432,11 +1431,6 @@ export default function DespachoPedidos() {
 
   const pedidosPendientes = useMemo(() => pedidos.filter((p) => fechaDe(p) === "pendiente"), [pedidos, hoyIso]);
 
-  // Pedidos que ya están listos pero se llevan solo cuando salga un viaje a
-  // esa zona. Usan el valor especial "viaje" en fechaDespacho (hermano de
-  // "pendiente"): no ocupan una fecha real ni el tablero de un día.
-  const pedidosEsperaViaje = useMemo(() => pedidos.filter((p) => fechaDe(p) === "viaje"), [pedidos, hoyIso]);
-
   // Datos derivados para la pantalla "Por entregar": cuánto lleva entregado
   // cada factura, cuántas remisiones se le han hecho y hace cuántos días se
   // movió por última vez. Se calculan aquí (no en el componente) porque hay que
@@ -1533,24 +1527,11 @@ export default function DespachoPedidos() {
       const f = fechaDe(existente);
       const veh = (VEHICULOS.find((v) => v.id === existente.vehiculo) || {}).label;
       const cuando =
-        f === "pendiente" ? "Por entregar" : f === "viaje" ? "Por viaje" : etiquetaFecha(f, hoyIso);
+        f === "pendiente" ? "Por entregar" : etiquetaFecha(f, hoyIso);
       donde = `ya está en despacho (${[veh, cuando].filter(Boolean).join(", ")})`;
     }
     return { numero: num, cliente: existente.cliente || "", donde };
   }, [pendingExtract, pedidos, historial, hoyIso]);
-
-  // Resultados del buscador de Despachos: pedidos activos (de cualquier fecha,
-  // incluidos Pendientes y Por viaje) que coincidan por cliente, número de
-  // factura, dirección, destino o vendedor. Sin acentos ni mayúsculas para que
-  // "corozal" encuentre "Corozal". Vacío = no se filtra (se usa el tablero).
-  const busquedaNorm = normalizarTexto(busquedaDespacho).trim();
-  const resultadosBusqueda = useMemo(() => {
-    if (!busquedaNorm) return [];
-    return pedidos.filter((p) => {
-      const campos = [p.cliente, p.numeroFactura, p.direccion, p.destino, p.vendedor];
-      return campos.some((c) => normalizarTexto(c).includes(busquedaNorm));
-    });
-  }, [pedidos, busquedaNorm]);
 
   // --- Cálculos del Panel (resumen del día) ---
   function intentarDesbloquearPanel() {
@@ -1660,19 +1641,18 @@ export default function DespachoPedidos() {
   }, [entregasPorDia, panelDiaMostrado]);
 
   // "Sin categorizar": productos entregados (en TODO el historial, no solo el
-  // día mostrado — para tener datos suficientes) cuya descripción no coincidió
-  // con ninguna clave de CATEGORIAS_PESO y cayeron en "Otros". Se agrupan por
-  // descripción normalizada para ver cuáles se repiten más — esas son las que
-  // vale la pena agregar a la tabla de pesos. No es un cálculo "en vivo": es
-  // una foto de lo que ya se entregó, así que un ajuste a la tabla no lo hace
-  // desaparecer de aquí retroactivamente hasta la próxima entrega.
+  // día mostrado — para tener datos suficientes) cuyo peso terminó siendo
+  // PESO_POR_DEFECTO: ni lo trae escrito la descripción ("ESTUCO 25KG"), ni es
+  // varilla calculable, ni coincidió con ninguna clave de CATEGORIAS_PESO. Antes
+  // bastaba con no tener categoría, y salían productos cuyo peso SÍ se conocía.
+  // Se agrupan por descripción normalizada para ver cuáles se repiten más —
+  // esas son las que vale la pena agregar a la tabla de pesos.
   const sinCategorizar = useMemo(() => {
     const mapa = new Map();
     for (const p of historial) {
       for (const prod of p.productos || []) {
         if (esLineaFlete(prod && prod.descripcion)) continue; // no es material, se reporta aparte
-        const cat = categoriaDeProducto(prod && prod.descripcion);
-        if (cat) continue; // ya tiene categoría, no nos interesa aquí
+        if (origenPesoDe(prod) !== "defecto") continue; // su peso se conoce, no nos interesa aquí
         const desc = (prod && prod.descripcion ? prod.descripcion.trim() : "") || "(sin descripción)";
         const clave = normalizarTexto(desc);
         if (!mapa.has(clave)) mapa.set(clave, { descripcion: desc, veces: 0, unidades: 0 });
@@ -1736,7 +1716,7 @@ export default function DespachoPedidos() {
   // salir. El botón "Mover a hoy" de la tarjeta sí lo pone al día formalmente.
   const esAtrasado = (p) => {
     const f = fechaDe(p);
-    return f !== "pendiente" && f !== "viaje" && f < hoyIso;
+    return f !== "pendiente" && f < hoyIso;
   };
 
   // Un pedido aparece en la columna de su vehículo principal y, si tiene un
@@ -1772,14 +1752,14 @@ export default function DespachoPedidos() {
   // en "Hoy", que es donde se muestra.
   const { fechasTabs, conteoPorFecha } = useMemo(() => {
     const fechasConPedidos = Array.from(new Set(pedidos.map(fechaDe))).filter(
-      (f) => f !== "pendiente" && f !== "viaje" && f >= hoyIso
+      (f) => f !== "pendiente" && f >= hoyIso
     );
     const tabs = Array.from(new Set([hoyIso, addDaysISO(hoyIso, 1), ...fechasConPedidos])).sort();
     const conteo = {};
     for (const f of tabs) conteo[f] = 0;
     for (const p of pedidos) {
       const f = fechaDe(p);
-      if (f === "pendiente" || f === "viaje") continue;
+      if (f === "pendiente") continue;
       const tab = f < hoyIso ? hoyIso : f;
       if (conteo[tab] !== undefined) conteo[tab] += 1;
     }
@@ -1791,7 +1771,7 @@ export default function DespachoPedidos() {
   // "hoy" ya es otra fecha), volvemos a la pestaña de hoy en vez de dejar
   // el tablero apuntando a una fecha sin pestaña.
   useEffect(() => {
-    if (selectedDate !== "pendiente" && selectedDate !== "viaje" && !fechasTabs.includes(selectedDate)) {
+    if (selectedDate !== "pendiente" && !fechasTabs.includes(selectedDate)) {
       setSelectedDate(hoyIso);
     }
   }, [selectedDate, fechasTabs.join(","), hoyIso]);
@@ -1986,23 +1966,25 @@ export default function DespachoPedidos() {
             <i className="ti ti-history" style={{ fontSize: 16, verticalAlign: "-2px", marginRight: 6 }} aria-hidden="true"></i>
             Historial
           </button>
-          <button
-            onClick={() => setView("cotizaciones")}
-            aria-pressed={view === "cotizaciones"}
-            style={{
-              border: view === "cotizaciones" ? "none" : "0.5px solid var(--color-border-tertiary)",
-              background: view === "cotizaciones" ? MARCA.azulOscuro : "transparent",
-              color: view === "cotizaciones" ? "white" : "var(--color-text-primary)",
-              fontWeight: view === "cotizaciones" ? 500 : 400,
-              padding: "6px 14px",
-              minHeight: 40,
-              borderRadius: "var(--border-radius-md)",
-              fontSize: 14,
-            }}
-          >
-            <i className="ti ti-file-text" style={{ fontSize: 16, verticalAlign: "-2px", marginRight: 6 }} aria-hidden="true"></i>
-            Cotizaciones
-          </button>
+          {MOSTRAR_COTIZACIONES && (
+            <button
+              onClick={() => setView("cotizaciones")}
+              aria-pressed={view === "cotizaciones"}
+              style={{
+                border: view === "cotizaciones" ? "none" : "0.5px solid var(--color-border-tertiary)",
+                background: view === "cotizaciones" ? MARCA.azulOscuro : "transparent",
+                color: view === "cotizaciones" ? "white" : "var(--color-text-primary)",
+                fontWeight: view === "cotizaciones" ? 500 : 400,
+                padding: "6px 14px",
+                minHeight: 40,
+                borderRadius: "var(--border-radius-md)",
+                fontSize: 14,
+              }}
+            >
+              <i className="ti ti-file-text" style={{ fontSize: 16, verticalAlign: "-2px", marginRight: 6 }} aria-hidden="true"></i>
+              Cotizaciones
+            </button>
+          )}
           <button
             onClick={() => setView("panel")}
             aria-pressed={view === "panel"}
@@ -2061,7 +2043,7 @@ export default function DespachoPedidos() {
           </div>
         )}
 
-        {view === "cotizaciones" && (
+        {MOSTRAR_COTIZACIONES && view === "cotizaciones" && (
           <div>
             <input
               ref={cotizacionFileInputRef}
@@ -2204,146 +2186,6 @@ export default function DespachoPedidos() {
 
       {view === "despacho" ? (
         <>
-          {/* Buscador del tablero. Va ARRIBA de los avisos y pestañas: mientras
-              se escribe, abajo solo se ven los resultados (filas compactas y
-              estables), sin que los banners/pestañas/tarjetas brinquen. Tocar
-              un resultado lleva a la pestaña donde vive ese pedido.
-              En "Por entregar" se esconde: esa pantalla trae su propio buscador
-              (con orden y agrupación) y dos barras seguidas confundían. */}
-          <div style={{ position: "relative", marginBottom: 12, display: selectedDate === "pendiente" ? "none" : "block" }}>
-            <i
-              className="ti ti-search"
-              style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", fontSize: 15, color: "var(--color-text-tertiary)" }}
-              aria-hidden="true"
-            ></i>
-            <input
-              type="text"
-              placeholder="Buscar pedido por cliente, factura, dirección..."
-              value={busquedaDespacho}
-              onChange={(e) => setBusquedaDespacho(e.target.value)}
-              aria-label="Buscar pedidos en despacho"
-              style={{ width: "100%", paddingLeft: 34, paddingRight: busquedaDespacho ? 40 : 12 }}
-            />
-            {busquedaDespacho && (
-              <button
-                onClick={() => setBusquedaDespacho("")}
-                aria-label="Borrar búsqueda"
-                style={{ position: "absolute", right: 6, top: "50%", transform: "translateY(-50%)", minWidth: 32, minHeight: 32, padding: 0, border: "none", background: "transparent", color: "var(--color-text-tertiary)" }}
-              >
-                <i className="ti ti-x" style={{ fontSize: 14 }} aria-hidden="true"></i>
-              </button>
-            )}
-          </div>
-
-          {busquedaNorm ? (
-            <div>
-              <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 8, minHeight: 18 }}>
-                {resultadosBusqueda.length === 0
-                  ? `No se encontró ningún pedido con "${busquedaDespacho.trim()}".`
-                  : `${resultadosBusqueda.length} ${resultadosBusqueda.length === 1 ? "coincidencia" : "coincidencias"} — toca una para ir a su pestaña.`}
-              </div>
-              <div>
-                {resultadosBusqueda.map((p) => {
-                  const f = fechaDe(p);
-                  const esAtras = f !== "pendiente" && f !== "viaje" && f < hoyIso;
-                  const etiqueta =
-                    f === "pendiente" ? "Por entregar" : f === "viaje" ? "Por viaje" : esAtras ? `Atrasado (${formatFechaCorta(f)})` : etiquetaFecha(f, hoyIso);
-                  // Los atrasados no tienen pestaña propia: se muestran en "Hoy".
-                  const tabDestino = f === "pendiente" || f === "viaje" ? f : esAtras ? hoyIso : f;
-                  const veh = (VEHICULOS.find((v) => v.id === p.vehiculo) || {}).label || "Sin vehículo";
-                  return (
-                    <div
-                      key={p.id}
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 6,
-                        background: "var(--color-background-primary)",
-                        border: "0.5px solid var(--color-border-tertiary)",
-                        borderRadius: "var(--border-radius-md)",
-                        padding: "8px 10px",
-                        marginBottom: 8,
-                      }}
-                    >
-                      <button
-                        onClick={() => {
-                          setSelectedDate(tabDestino);
-                          setBusquedaDespacho("");
-                          showToast(`Mostrando ${f === "pendiente" ? "Por entregar" : f === "viaje" ? "Por viaje" : etiquetaFecha(tabDestino, hoyIso)}`);
-                        }}
-                        style={{ flex: 1, minWidth: 0, textAlign: "left", border: "none", background: "transparent", padding: "4px 0", minHeight: 44, cursor: "pointer" }}
-                      >
-                        <div style={{ fontSize: 14, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                          {p.cliente || "Sin nombre"}
-                          {p.numeroFactura ? <span style={{ fontWeight: 400, color: "var(--color-text-tertiary)" }}> · {p.numeroFactura}</span> : ""}
-                        </div>
-                        <div style={{ fontSize: 12, color: esAtras ? "var(--color-text-danger)" : "var(--color-text-tertiary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginTop: 2 }}>
-                          {etiqueta} · {veh}
-                          {p.destino && p.destino.trim() ? ` · ${p.destino}` : ""}
-                          {p.entregaPendiente ? " · debe material" : ""}
-                        </div>
-                      </button>
-                      {(p.tienePdf || p.pdfDataUrl) && (
-                        <button
-                          onClick={() => setViewingPdf(p)}
-                          aria-label="Ver documento"
-                          title="Ver documento"
-                          style={{ minWidth: 40, minHeight: 40, padding: 0, border: "0.5px solid var(--color-border-tertiary)", background: "transparent", borderRadius: "var(--border-radius-md)", color: "var(--color-text-secondary)" }}
-                        >
-                          <i className="ti ti-file-text" style={{ fontSize: 16 }} aria-hidden="true"></i>
-                        </button>
-                      )}
-                      <button
-                        onClick={() => setEditing(p)}
-                        aria-label="Editar pedido"
-                        title="Editar"
-                        style={{ minWidth: 40, minHeight: 40, padding: 0, border: "0.5px solid var(--color-border-tertiary)", background: "transparent", borderRadius: "var(--border-radius-md)", color: "var(--color-text-secondary)" }}
-                      >
-                        <i className="ti ti-pencil" style={{ fontSize: 16 }} aria-hidden="true"></i>
-                      </button>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          ) : (
-          <>
-          {/* Recordatorio de pedidos que esperan un viaje a su zona. No sale
-              cuando ya estás en la pestaña "Por viaje" (ahí ves la lista completa).
-              Se puede tocar para saltar a esa pestaña. */}
-          {pedidosEsperaViaje.length > 0 && selectedDate !== "viaje" && (
-            <button
-              onClick={() => setSelectedDate("viaje")}
-              style={{
-                display: "block",
-                width: "100%",
-                textAlign: "left",
-                background: "var(--color-background-info)",
-                border: "0.5px solid var(--color-border-info)",
-                borderRadius: "var(--border-radius-md)",
-                padding: "10px 14px",
-                marginBottom: 14,
-                cursor: "pointer",
-              }}
-            >
-              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6, color: "var(--color-text-info)" }}>
-                <i className="ti ti-map-pin" style={{ fontSize: 16 }} aria-hidden="true"></i>
-                <span style={{ fontWeight: 500, fontSize: 13 }}>
-                  Esperando viaje a la zona ({pedidosEsperaViaje.length})
-                </span>
-                <i className="ti ti-chevron-right" style={{ fontSize: 15, marginLeft: "auto" }} aria-hidden="true"></i>
-              </div>
-              {pedidosEsperaViaje.map((p) => {
-                const zona = (p.destino && p.destino.trim()) || (p.direccion && p.direccion.trim()) || "";
-                return (
-                  <div key={p.id} style={{ fontSize: 12, color: "var(--color-text-info)", padding: "2px 0" }}>
-                    {p.cliente}
-                    {zona ? ` — ${zona}` : ""}
-                  </div>
-                );
-              })}
-            </button>
-          )}
           <div
             style={{
               display: "flex",
@@ -2419,36 +2261,6 @@ export default function DespachoPedidos() {
                 </span>
               )}
             </button>
-            <button
-              onClick={() => setSelectedDate("viaje")}
-              aria-pressed={selectedDate === "viaje"}
-              style={{
-                flexShrink: 0,
-                border: selectedDate === "viaje" ? "2px solid var(--color-border-info)" : "0.5px solid var(--color-border-tertiary)",
-                background: selectedDate === "viaje" ? "var(--color-background-info)" : "var(--color-background-primary)",
-                color: selectedDate === "viaje" ? "var(--color-text-info)" : "var(--color-text-primary)",
-                fontWeight: selectedDate === "viaje" ? 600 : 400,
-                padding: "8px 16px",
-                minHeight: 44,
-                borderRadius: "var(--border-radius-md)",
-                fontSize: 14,
-                whiteSpace: "nowrap",
-              }}
-            >
-              <i className="ti ti-map-pin" style={{ fontSize: 14, verticalAlign: "-2px", marginRight: 4 }} aria-hidden="true"></i>
-              Por viaje
-              {pedidosEsperaViaje.length > 0 && (
-                <span
-                  style={{
-                    marginLeft: 6,
-                    fontSize: 12,
-                    color: selectedDate === "viaje" ? "var(--color-text-info)" : "var(--color-text-tertiary)",
-                  }}
-                >
-                  ({pedidosEsperaViaje.length})
-                </span>
-              )}
-            </button>
           </div>
 
           {selectedDate === "pendiente" ? (
@@ -2476,49 +2288,6 @@ export default function DespachoPedidos() {
               }}
               onEliminar={(id) => deletePedido(id)}
             />
-          ) : selectedDate === "viaje" ? (
-            (() => {
-              const esViaje = true;
-              const lista = pedidosEsperaViaje;
-              const ayuda =
-                "Pedidos listos que se llevan cuando salga un viaje a su zona. Cuando salga el viaje, toca \u201CMover a despacho\u201D para asignarles fecha y vehículo.";
-              const vacio =
-                "No hay pedidos esperando viaje. Al subir una factura, o al editar un pedido, elige \u201CPor viaje\u201D para que aparezca aquí.";
-              return (
-                <div
-                  style={{
-                    background: "var(--color-background-secondary)",
-                    borderRadius: "var(--border-radius-lg)",
-                    padding: "12px",
-                  }}
-                >
-                  <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 10 }}>{ayuda}</div>
-                  {lista.length === 0 && (
-                    <div style={{ fontSize: 13, color: "var(--color-text-tertiary)", padding: "8px 4px" }}>{vacio}</div>
-                  )}
-                  {lista.map((p) => (
-                    <PedidoCard
-                      key={p.id}
-                      pedido={p}
-                      posicion={null}
-                      isDragging={false}
-                      onDragStart={() => {}}
-                      onDragOverItem={() => {}}
-                      onDropItem={() => {}}
-                      onDelete={() => deletePedido(p.id)}
-                      onEntregado={() => solicitarEntrega(p)}
-                      onEdit={() => setEditing(p)}
-                      onVerPdf={() => setViewingPdf(p)}
-                      onProgramar={() => setEditing(p)}
-                      onMaterialUnidades={esViaje ? undefined : () => setMaterialDe(p)}
-                      onCrearRemision={esViaje ? undefined : () => setRemisionDeModal(p)}
-                      onDescontarMaterial={() => setDescontarDe(p)}
-                      onImprimirTirilla={() => setTirillaDe(p)}
-                    />
-                  ))}
-                </div>
-              );
-            })()
           ) : (
           <>
           {/* Modo juntar: agrupar varios pedidos del mismo vehículo y día en un
@@ -2722,8 +2491,6 @@ export default function DespachoPedidos() {
           </div>
           </>
           )}
-          </>
-          )}
         </>
       ) : view === "historial" ? (
         <div>
@@ -2767,7 +2534,7 @@ export default function DespachoPedidos() {
             </div>
           )}
         </div>
-      ) : view === "cotizaciones" ? (
+      ) : MOSTRAR_COTIZACIONES && view === "cotizaciones" ? (
         <div>
           {cotizacionesConSeguimientoVencido.length > 0 && (
             <div
@@ -2978,8 +2745,7 @@ export default function DespachoPedidos() {
             const pasaADespacho =
               fechaAnterior === "pendiente" &&
               patch.fechaDespacho &&
-              patch.fechaDespacho !== "pendiente" &&
-              patch.fechaDespacho !== "viaje";
+              patch.fechaDespacho !== "pendiente";
             let patchFinal = patch;
             let notaAuto = "";
             if (pasaADespacho) {
@@ -2994,15 +2760,11 @@ export default function DespachoPedidos() {
               // "pendiente" no es una fecha ISO: etiquetaFecha la partía con
               // split("-") y el toast decía "movido a undefined undefined".
               showToast("Pedido movido a Pendientes");
-            } else if (patch.fechaDespacho === "viaje" && fechaAnterior !== "viaje") {
-              // "viaje" tampoco es una fecha ISO: mismo cuidado que "pendiente".
-              showToast("Pedido movido a Por viaje");
             } else if (notaAuto) {
               showToast("Movido a despacho — quedó material pendiente");
             } else if (
               patch.fechaDespacho &&
               patch.fechaDespacho !== "pendiente" &&
-              patch.fechaDespacho !== "viaje" &&
               patch.fechaDespacho !== fechaAnterior
             ) {
               showToast(`Pedido movido a ${etiquetaFecha(patch.fechaDespacho, hoyIso)}`);
@@ -3059,12 +2821,12 @@ export default function DespachoPedidos() {
           pedido={materialDe}
           onClose={() => setMaterialDe(null)}
           onGuardar={(productos) => {
-            // En Pendientes/Por viaje solo se guarda lo marcado (el aviso de
+            // En Pendientes solo se guarda lo marcado (el aviso de
             // "debe material" se prende después, al programarlo a una fecha).
             // En una fecha de día, el marcado ES la entrega: si algo quedó
             // faltando, se prende solo el aviso rojo con una nota automática
             // (sin escribir nada); si se entregó todo, se apaga.
-            const enDia = fechaDe(materialDe) !== "pendiente" && fechaDe(materialDe) !== "viaje";
+            const enDia = fechaDe(materialDe) !== "pendiente";
             if (enDia) {
               const faltan = faltantesDeProductos(productos);
               updatePedido(
@@ -3327,13 +3089,12 @@ function RemisionModal({ pedido, hoyIso, onClose, onCrear }) {
   const excedidas = textos.map((t, i) => parseCantidad(t) > dispo(productos[i]));
 
   const totalUnidades = cantidades.reduce((s, c) => s + c, 0);
-  const fechaResuelta = fechaOpcion === "hoy" ? hoyIso : fechaOpcion === "manana" ? manana : fechaOpcion === "viaje" ? "viaje" : fechaOtro;
+  const fechaResuelta = fechaOpcion === "hoy" ? hoyIso : fechaOpcion === "manana" ? manana : fechaOtro;
   const puedeCrear = totalUnidades > 0 && (fechaOpcion !== "otro" || !!fechaOtro);
 
   const opcionesFecha = [
     { id: "hoy", label: "Hoy" },
     { id: "manana", label: "Mañana" },
-    { id: "viaje", label: "Por viaje" },
     { id: "otro", label: "Otro día" },
   ];
 
@@ -3558,13 +3319,13 @@ function ConfirmarEntregaModal({ pedido, onClose, onConfirm }) {
 function EditModal({ pedido, onClose, onSave }) {
   const [form, setForm] = useState({ ...pedido, estadoPago: pedido.estadoPago || "pendiente" });
   const [aviso, setAviso] = useState("");
-  // Tres modos de despacho: con fecha (va al tablero), sin fecha ("Pendientes")
-  // o por viaje ("Por viaje"). Los dos últimos no llevan fecha ni vehículo, así
-  // que reutilizamos "sinFecha" para ocultar esos campos en ambos casos.
-  const modo = form.fechaDespacho === "pendiente" ? "pendiente" : form.fechaDespacho === "viaje" ? "viaje" : "fecha";
+  // Dos modos de despacho: con fecha (va al tablero) o sin fecha ("Por
+  // entregar"). El segundo no lleva fecha ni vehículo: "sinFecha" oculta esos
+  // campos.
+  const modo = form.fechaDespacho === "pendiente" ? "pendiente" : "fecha";
   const sinFecha = modo !== "fecha";
   const fechaRealActual =
-    form.fechaDespacho && form.fechaDespacho !== "pendiente" && form.fechaDespacho !== "viaje"
+    form.fechaDespacho && form.fechaDespacho !== "pendiente"
       ? form.fechaDespacho
       : todayISO();
   const opcionModo = (activo) => ({
@@ -3610,22 +3371,10 @@ function EditModal({ pedido, onClose, onSave }) {
             >
               Por entregar
             </button>
-            <button
-              aria-pressed={modo === "viaje"}
-              onClick={() => setForm({ ...form, fechaDespacho: "viaje", vehiculo: null, vehiculoSecundario: null })}
-              style={opcionModo(modo === "viaje")}
-            >
-              Por viaje
-            </button>
           </div>
           {modo === "pendiente" && (
             <span style={{ fontSize: 12, color: "var(--color-text-tertiary)", display: "block", marginTop: 4 }}>
               Va a la pestaña "Por entregar" hasta que sepas cuándo y en qué vehículo se entrega.
-            </span>
-          )}
-          {modo === "viaje" && (
-            <span style={{ fontSize: 12, color: "var(--color-text-tertiary)", display: "block", marginTop: 4 }}>
-              Va a la pestaña "Por viaje". Se lleva cuando salga un viaje a esa zona; ahí le asignas fecha y vehículo.
             </span>
           )}
         </div>

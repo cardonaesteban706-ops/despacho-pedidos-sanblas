@@ -19,7 +19,7 @@ function RemisionManualModal({ hoyIso, onClose, onCrear }) {
   const [vehiculo, setVehiculo] = useState(VEHICULOS[0].id);
 
   const esConFecha = fechaOpcion === "hoy" || fechaOpcion === "otro";
-  const fechaResuelta = fechaOpcion === "hoy" ? hoyIso : fechaOpcion === "otro" ? fechaOtro : fechaOpcion; // "pendiente" | "viaje"
+  const fechaResuelta = fechaOpcion === "hoy" ? hoyIso : fechaOpcion === "otro" ? fechaOtro : fechaOpcion; // "pendiente"
 
   const setProd = (i, campo, valor) => setProductos((prev) => prev.map((p, idx) => (idx === i ? { ...p, [campo]: valor } : p)));
   const agregarFila = () => setProductos((prev) => [...prev, { descripcion: "", cantidad: "", unidad: "", precio: "" }]);
@@ -38,7 +38,6 @@ function RemisionManualModal({ hoyIso, onClose, onCrear }) {
     { id: "hoy", label: "Hoy" },
     { id: "otro", label: "Otro día" },
     { id: "pendiente", label: "Por entregar" },
-    { id: "viaje", label: "Por viaje" },
   ];
 
   const chipFecha = (activo) => ({
