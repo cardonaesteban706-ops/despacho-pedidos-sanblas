@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { cargarAgotados, guardarAgotado, guardarAgotados, eliminarAgotado } from "./supabaseClient";
+import { cargarAgotados, cargarCatalogoProductos, guardarAgotado, guardarAgotados, eliminarAgotado } from "./supabaseClient";
+import { categoriaDeProducto } from "./peso.js";
 import { uid, formatCantidad, MARCA } from "./constants.js";
 import { quitarPorId, reponerPorId, reemplazarPorId } from "./listas.js";
 import ModalOverlay from "./ModalOverlay.jsx";
@@ -461,17 +462,18 @@ function VistaReportar({ reportes, catalogo, onReportar, onQuitar }) {
               <div className="ag-sug">
                 {sugerencias.map((s) => {
                   const ya = reporteAbiertoDe(reportes, s);
+                  const cat = categoriaDeProducto(s);
                   return (
                     <button type="button" key={s} onClick={() => elegir(s)}>
-                      <span>{s}</span>
-                      {ya && <span className="ag-tag amar">ya reportado</span>}
+                      <span style={{ minWidth: 0 }}>{s}</span>
+                      {ya ? <span className="ag-tag amar">ya reportado</span> : cat && <span className="ag-meta" style={{ fontSize: 12, whiteSpace: "nowrap" }}>{cat.nombre}</span>}
                     </button>
                   );
                 })}
                 {!exacto && (
                   <button type="button" onClick={() => elegir(texto.trim())} style={{ color: "var(--color-text-info)" }}>
                     <span>
-                      <Icono n="plus" size={14} /> Usar "{texto.trim()}"
+                      <Icono n="plus" size={14} /> Usar "{texto.trim()}" (no está en World Office)
                     </span>
                   </button>
                 )}
@@ -887,8 +889,9 @@ function VistaProveedor({ reportes, onMarcarPedidos, onCambiar }) {
 // Módulo
 // ---------------------------------------------------------------------
 
-export default function Agotados({ pedidos, onConteo }) {
+export default function Agotados({ onConteo }) {
   const [reportes, setReportes] = useState([]);
+  const [productosWO, setProductosWO] = useState([]);
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState("");
   const [aviso, setAviso] = useState("");
@@ -913,6 +916,18 @@ export default function Agotados({ pedidos, onConteo }) {
 
   // Se carga al entrar y cada vez que el celular vuelve a la app: bodega
   // reporta desde el celular y Compras lo ve en el computador sin refrescar.
+  // Nombres de World Office para el buscador. Se piden una vez: cambian solo
+  // cuando entran facturas nuevas, y si falla el buscador sigue con lo reportado.
+  useEffect(() => {
+    let vivo = true;
+    cargarCatalogoProductos()
+      .then((lista) => vivo && setProductosWO(lista))
+      .catch(() => {});
+    return () => {
+      vivo = false;
+    };
+  }, []);
+
   useEffect(() => {
     recargar();
     const alVolver = () => document.visibilityState === "visible" && recargar();
@@ -932,7 +947,7 @@ export default function Agotados({ pedidos, onConteo }) {
     avisoTimer.current = setTimeout(() => setAviso(""), 3500);
   }
 
-  const catalogo = useMemo(() => catalogoProductos(reportes, pedidos), [reportes, pedidos]);
+  const catalogo = useMemo(() => catalogoProductos(reportes, productosWO), [reportes, productosWO]);
   // Guardado optimista: se pinta ya y se deshace solo lo propio si falla.
   async function guardar(nuevo, previo) {
     setReportes((prev) => (previo ? reemplazarPorId(prev, nuevo) : [nuevo, ...prev]));

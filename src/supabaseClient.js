@@ -516,6 +516,14 @@ export async function cargarAgotados() {
   return filas.map(filaAAgotado);
 }
 
+// Nombres de producto tal como vienen en World Office (vista de
+// sql/catalogo-productos.sql: facturas y cotizaciones leídas del PDF, sin las
+// remisiones manuales). Para el buscador de Agotados.
+export async function cargarCatalogoProductos() {
+  const filas = await traerTodo(() => supabase.from("catalogo_productos").select("descripcion, veces").order("veces", { ascending: false }));
+  return filas;
+}
+
 export async function guardarAgotado(reporte) {
   const { error } = await supabase.from("agotados").upsert(agotadoAFila(reporte));
   if (error) throw error;

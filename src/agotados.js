@@ -90,41 +90,38 @@ export function ultimaCantidadPedir(lista, producto) {
   return previos.length ? Number(previos[0].pedir) : null;
 }
 
-// Nombres de producto para autocompletar: lo ya reportado (pesa más, va
-// primero) y las descripciones de las facturas que ya están en la app.
-export function catalogoProductos(reportes, pedidos) {
+// Nombres de producto para autocompletar. Primero los de World Office: los que
+// leyó el lector de PDF en facturas y cotizaciones (vista catalogo_productos,
+// sql/catalogo-productos.sql), el más vendido arriba. Los nombres escritos a
+// mano en las remisiones manuales NO entran. Al final, los productos que ya se
+// reportaron aquí con un nombre que no está en World Office.
+export function catalogoProductos(reportes, productosWO) {
   const vistos = new Map();
   const agregar = (nombre) => {
     const limpio = String(nombre || "").replace(/\s+/g, " ").trim();
-    if (limpio.length < 3) return;
+    if (limpio.length < 3 || esLineaFlete(limpio)) return;
     const clave = normalizarTexto(limpio);
     if (!vistos.has(clave)) vistos.set(clave, limpio);
   };
+  const wo = [...(productosWO || [])].sort((a, b) => (Number(b.veces) || 0) - (Number(a.veces) || 0));
+  for (const p of wo) agregar(p.descripcion);
   for (const r of reportes || []) agregar(r.producto);
-  for (const p of pedidos || []) {
-    for (const prod of p.productos || []) {
-      if (prod && !esLineaFlete(prod.descripcion)) agregar(prod.descripcion);
-    }
-  }
   return [...vistos.values()];
 }
 
 // Busca por palabras sueltas, sin tildes ni mayúsculas: "torn dry" encuentra
-// "Tornillo drywall 6x1". Primero los que EMPIEZAN por lo escrito.
+// "Tornillo drywall 6x1". Primero los que EMPIEZAN por lo escrito; entre
+// iguales se respeta el orden del catálogo (lo más vendido primero).
 export function buscarEnCatalogo(catalogo, texto, max = 6) {
   const palabras = normalizarTexto(texto).split(/\s+/).filter(Boolean);
   if (palabras.length === 0) return [];
-  const hallados = (catalogo || []).filter((nombre) => {
-    const n = normalizarTexto(nombre);
-    return palabras.every((p) => n.includes(p));
-  });
   const inicio = normalizarTexto(texto).trim();
-  hallados.sort((a, b) => {
-    const ea = normalizarTexto(a).startsWith(inicio) ? 0 : 1;
-    const eb = normalizarTexto(b).startsWith(inicio) ? 0 : 1;
-    return ea - eb || a.length - b.length;
-  });
-  return hallados.slice(0, max);
+  return (catalogo || [])
+    .map((nombre, i) => ({ nombre, i, n: normalizarTexto(nombre) }))
+    .filter((x) => palabras.every((p) => x.n.includes(p)))
+    .sort((a, b) => (a.n.startsWith(inicio) ? 0 : 1) - (b.n.startsWith(inicio) ? 0 : 1) || a.i - b.i)
+    .slice(0, max)
+    .map((x) => x.nombre);
 }
 
 // ---------------------------------------------------------------------

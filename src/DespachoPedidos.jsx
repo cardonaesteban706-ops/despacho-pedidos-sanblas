@@ -256,9 +256,6 @@ export default function DespachoPedidos() {
   // Agotados abiertos (0 unidades) para el contador rojo del botón. Lo mantiene
   // al día el propio módulo (onConteo) mientras está abierto.
   const [conteoAgotados, setConteoAgotados] = useState(0);
-  // Productos de las facturas cargadas: el módulo de Agotados los usa para
-  // autocompletar. Se calcula aquí porque aquí viven pedidos e historial.
-  const pedidosParaCatalogo = useMemo(() => [...pedidos, ...historial], [pedidos, historial]);
   const [view, setView] = useState("despacho");
   const [loading, setLoading] = useState(true);
   const [uploadState, setUploadState] = useState("idle");
@@ -2738,7 +2735,7 @@ export default function DespachoPedidos() {
         </div>
       ) : null}
 
-      {view === "agotados" && <Agotados pedidos={pedidosParaCatalogo} onConteo={setConteoAgotados} />}
+      {view === "agotados" && <Agotados onConteo={setConteoAgotados} />}
 
       {view === "panel" &&
         (!panelDesbloqueado ? (

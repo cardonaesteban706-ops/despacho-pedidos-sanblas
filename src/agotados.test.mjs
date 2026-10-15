@@ -82,12 +82,14 @@ test("ultimaCantidadPedir sugiere lo último que se pidió de ese producto", () 
   assert.equal(ultimaCantidadPedir(lista, "Varilla"), null);
 });
 
-test("catalogoProductos junta reportes y facturas sin repetir ni meter el flete", () => {
-  const pedidos = [
-    { productos: [{ descripcion: "TUBO PVC 1/2" }, { descripcion: "Transporte de carga de cliente" }, { descripcion: "Cemento gris 50kg" }] },
+test("catalogoProductos: primero World Office por lo más vendido, sin fletes ni repetidos", () => {
+  const wo = [
+    { descripcion: "TUBO PVC 1/2", veces: 3 },
+    { descripcion: "TRANSPORTE DE CARGA CLIENTE", veces: 289 },
+    { descripcion: "CEMENTO GRIS KOLCEM", veces: 116 },
   ];
-  const cat = catalogoProductos([r("a", "Tubo PVC 1/2", 0)], pedidos);
-  assert.deepEqual(cat, ["Tubo PVC 1/2", "Cemento gris 50kg"]);
+  const reportes = [r("a", "Tubo PVC 1/2", 0), r("b", "Producto escrito a mano", 0)];
+  assert.deepEqual(catalogoProductos(reportes, wo), ["CEMENTO GRIS KOLCEM", "TUBO PVC 1/2", "Producto escrito a mano"]);
 });
 
 test("buscarEnCatalogo busca por palabras sueltas y pone primero lo que empieza igual", () => {
