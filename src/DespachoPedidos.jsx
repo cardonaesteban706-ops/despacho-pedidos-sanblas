@@ -3,6 +3,9 @@ import { cargarPedidosActivos, cargarHistorial, guardarPedido, actualizarPedido,
 import { cargarCotizaciones, guardarCotizacion, eliminarCotizacion, cargarPdfCotizacion } from "./supabaseClient";
 import { buscarHistorial, maxNumeroRemision, columnasFaltantes, moverPedidoAEstado, salir, DIAS_HISTORIAL_PRECARGADO } from "./supabaseClient";
 import PanelResumen from "./PanelResumen.jsx";
+import Agotados from "./Agotados.jsx";
+import { cargarAgotados } from "./supabaseClient";
+import { esAgotado, estaAbierto } from "./agotados.js";
 import PorEntregar from "./PorEntregar.jsx";
 import ExtractReviewCard, { ExtractReviewCardCotizacion } from "./ExtractReviewCard.jsx";
 // Modales y tarjetas extraídos del monolito. Son componentes hoja: reciben props
@@ -250,6 +253,12 @@ function fileToDataUrl(file) {
 export default function DespachoPedidos() {
   const [pedidos, setPedidos] = useState([]);
   const [historial, setHistorial] = useState([]);
+  // Agotados abiertos (0 unidades) para el contador rojo del botón. Lo mantiene
+  // al día el propio módulo (onConteo) mientras está abierto.
+  const [conteoAgotados, setConteoAgotados] = useState(0);
+  // Productos de las facturas cargadas: el módulo de Agotados los usa para
+  // autocompletar. Se calcula aquí porque aquí viven pedidos e historial.
+  const pedidosParaCatalogo = useMemo(() => [...pedidos, ...historial], [pedidos, historial]);
   const [view, setView] = useState("despacho");
   const [loading, setLoading] = useState(true);
   const [uploadState, setUploadState] = useState("idle");
@@ -365,6 +374,11 @@ export default function DespachoPedidos() {
         // y el usuario podía duplicar registros o sacar conclusiones falsas.
         showToast("No se pudo cargar el historial. Recarga la página.", 5000);
       }
+      // Solo para el contador del botón Agotados: si falla (sin red, o falta la
+      // tabla), el botón sale sin número y el módulo dice qué pasó al abrirlo.
+      cargarAgotados()
+        .then((lista) => setConteoAgotados(lista.filter((r) => estaAbierto(r) && esAgotado(r)).length))
+        .catch(() => {});
       if (MOSTRAR_COTIZACIONES) {
         try {
           const cots = await cargarCotizaciones();
@@ -1931,7 +1945,7 @@ export default function DespachoPedidos() {
       </div>
 
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "1.25rem", gap: 12, flexWrap: "wrap" }}>
-        <div style={{ display: "flex", gap: 8 }}>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <button
             onClick={() => setView("despacho")}
             aria-pressed={view === "despacho"}
@@ -2001,6 +2015,45 @@ export default function DespachoPedidos() {
           >
             <i className="ti ti-chart-bar" style={{ fontSize: 16, verticalAlign: "-2px", marginRight: 6 }} aria-hidden="true"></i>
             Panel
+          </button>
+          <button
+            onClick={() => setView("agotados")}
+            aria-pressed={view === "agotados"}
+            style={{
+              border: view === "agotados" ? "none" : "0.5px solid var(--color-border-tertiary)",
+              background: view === "agotados" ? MARCA.azulOscuro : "transparent",
+              color: view === "agotados" ? "white" : "var(--color-text-primary)",
+              fontWeight: view === "agotados" ? 500 : 400,
+              padding: "6px 14px",
+              minHeight: 40,
+              borderRadius: "var(--border-radius-md)",
+              fontSize: 14,
+              display: "inline-flex",
+              alignItems: "center",
+            }}
+          >
+            <i className="ti ti-package-off" style={{ fontSize: 16, marginRight: 6 }} aria-hidden="true"></i>
+            Agotados
+            {conteoAgotados > 0 && (
+              <span
+                aria-label={`${conteoAgotados} agotados`}
+                style={{
+                  marginLeft: 6,
+                  minWidth: 18,
+                  height: 18,
+                  padding: "0 5px",
+                  borderRadius: 9,
+                  background: "#CC3333",
+                  color: "white",
+                  fontSize: 11,
+                  fontWeight: 600,
+                  lineHeight: "18px",
+                  textAlign: "center",
+                }}
+              >
+                {conteoAgotados}
+              </span>
+            )}
           </button>
         </div>
 
@@ -2684,6 +2737,8 @@ export default function DespachoPedidos() {
           </div>
         </div>
       ) : null}
+
+      {view === "agotados" && <Agotados pedidos={pedidosParaCatalogo} onConteo={setConteoAgotados} />}
 
       {view === "panel" &&
         (!panelDesbloqueado ? (

@@ -469,3 +469,70 @@ export async function eliminarCotizacion(id) {
   const { error } = await supabase.from("cotizaciones").delete().eq("id", id);
   if (error) throw error;
 }
+
+// --- Agotados (módulo de Bodega, tabla de sql/agotados.sql) ---
+
+function filaAAgotado(fila) {
+  return {
+    id: fila.id,
+    producto: fila.producto,
+    quedan: fila.quedan,
+    pedir: fila.pedir === null || fila.pedir === undefined ? null : Number(fila.pedir),
+    nota: fila.nota || "",
+    reportadoPor: fila.reportado_por,
+    reportadoEn: fila.reportado_en,
+    proveedores: fila.proveedores || [],
+    estado: fila.estado,
+    proveedorPedido: fila.proveedor_pedido,
+    pedidoPor: fila.pedido_por,
+    pedidoEn: fila.pedido_en,
+    llegoEn: fila.llego_en,
+  };
+}
+
+function agotadoAFila(r) {
+  return {
+    id: r.id,
+    producto: r.producto,
+    quedan: Math.max(0, Math.round(Number(r.quedan) || 0)),
+    pedir: r.pedir === null || r.pedir === undefined || r.pedir === "" ? null : Number(r.pedir),
+    nota: r.nota ? String(r.nota) : null,
+    reportado_por: r.reportadoPor,
+    reportado_en: r.reportadoEn,
+    proveedores: r.proveedores || [],
+    estado: r.estado || "reportado",
+    proveedor_pedido: r.proveedorPedido || null,
+    pedido_por: r.pedidoPor || null,
+    pedido_en: r.pedidoEn || null,
+    llego_en: r.llegoEn || null,
+    actualizado_en: new Date().toISOString(),
+  };
+}
+
+// Los abiertos todos, y lo cerrado de los últimos 90 días: alcanza para
+// "Llegaron esta semana", para sugerir cuánto pedir y para autocompletar
+// productos y proveedores, sin bajar años de historial.
+export async function cargarAgotados() {
+  const desde = new Date(Date.now() - 90 * 86400000).toISOString();
+  const filas = await traerTodo(() =>
+    supabase.from("agotados").select("*").or(`estado.neq.llego,reportado_en.gte.${desde}`).order("reportado_en", { ascending: false })
+  );
+  return filas.map(filaAAgotado);
+}
+
+export async function guardarAgotado(reporte) {
+  const { error } = await supabase.from("agotados").upsert(agotadoAFila(reporte));
+  if (error) throw error;
+}
+
+// Varios a la vez (el botón "Marcar N como pedidos" de Por proveedor).
+export async function guardarAgotados(reportes) {
+  if (!reportes.length) return;
+  const { error } = await supabase.from("agotados").upsert(reportes.map(agotadoAFila));
+  if (error) throw error;
+}
+
+export async function eliminarAgotado(id) {
+  const { error } = await supabase.from("agotados").delete().eq("id", id);
+  if (error) throw error;
+}
