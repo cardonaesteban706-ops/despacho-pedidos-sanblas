@@ -545,7 +545,7 @@ export async function eliminarAgotado(id) {
 
 // Sin "foto": pesa ~150 KB cada una y solo se trae al tocar "Ver foto"
 // (cargarFotoLlegada), igual que los PDF de pedidos con tiene_pdf.
-const COLUMNAS_LLEGADA = "id, proveedor, llego_en, estado, novedades, observacion, tiene_foto";
+const COLUMNAS_LLEGADA = "id, proveedor, llego_en, estado, novedades, observacion, recibio, tiene_foto";
 
 function filaALlegada(fila) {
   return {
@@ -555,6 +555,7 @@ function filaALlegada(fila) {
     estado: fila.estado,
     novedades: fila.novedades || [],
     observacion: fila.observacion || "",
+    recibio: fila.recibio || "",
     tieneFoto: !!fila.tiene_foto,
   };
 }
@@ -576,6 +577,7 @@ export async function guardarLlegada(llegada) {
     estado: llegada.estado,
     novedades: llegada.novedades || [],
     observacion: llegada.observacion || null,
+    recibio: llegada.recibio || null,
     foto: llegada.foto || null,
   });
   if (error) throw error;

@@ -12,6 +12,7 @@ import {
   filtrarLlegadas,
   proveedoresParaLlegada,
   proveedoresRecientes,
+  nombresRecibio,
   pedidosPendientesDe,
   armarLlegada,
 } from "./llegadas.js";
@@ -66,6 +67,26 @@ function comprimirFoto(archivo, maxLado = 1400, calidad = 0.65) {
   });
 }
 
+// Cada celular recuerda quién lo usó la última vez para recibir: casi siempre
+// es la misma persona, así que el campo ya viene lleno (se puede cambiar).
+const CLAVE_RECIBIO = "sanblas.recibioLlegadas";
+
+function leerRecibio() {
+  try {
+    return window.localStorage.getItem(CLAVE_RECIBIO) || "";
+  } catch {
+    return "";
+  }
+}
+
+function recordarRecibio(nombre) {
+  try {
+    if (nombre) window.localStorage.setItem(CLAVE_RECIBIO, nombre);
+  } catch {
+    // Almacenamiento bloqueado: la próxima vez el campo sale vacío, nada más.
+  }
+}
+
 function partirHora(iso) {
   const h = horaCorta(iso);
   const i = h.indexOf(" ");
@@ -76,12 +97,13 @@ function partirHora(iso) {
 // Formulario: llegó mercancía
 // ---------------------------------------------------------------------
 
-function FormLlegada({ proveedores, recientes, reportes, onGuardar, onCancelar }) {
+function FormLlegada({ proveedores, recientes, nombres, reportes, onGuardar, onCancelar }) {
   const [texto, setTexto] = useState("");
   const [proveedor, setProveedor] = useState("");
   const [estado, setEstado] = useState(null);
   const [novedades, setNovedades] = useState([]);
   const [observacion, setObservacion] = useState("");
+  const [recibio, setRecibio] = useState(leerRecibio);
   const [foto, setFoto] = useState(null);
   const [procesandoFoto, setProcesandoFoto] = useState(false);
   const [guardando, setGuardando] = useState(false);
@@ -123,7 +145,9 @@ function FormLlegada({ proveedores, recientes, reportes, onGuardar, onCancelar }
   async function enviar() {
     if (!listo) return;
     setGuardando(true);
-    const ok = await onGuardar(armarLlegada({ id: uid(), proveedor, estado, novedades, observacion, foto }));
+    const nueva = armarLlegada({ id: uid(), proveedor, estado, novedades, observacion, recibio, foto });
+    const ok = await onGuardar(nueva);
+    if (ok) recordarRecibio(nueva.recibio);
     if (!ok) setGuardando(false);
   }
 
@@ -209,6 +233,30 @@ function FormLlegada({ proveedores, recientes, reportes, onGuardar, onCancelar }
         <Icono n="clock" />
         Hoy · {horaCorta(ahora)}
       </div>
+
+      <label className="ag-label" htmlFor="ll-recibio">
+        ¿Quién recibió? <span style={{ fontWeight: 400 }}>(opcional)</span>
+      </label>
+      <input
+        id="ll-recibio"
+        className="ag-field"
+        placeholder="Nombre del trabajador"
+        autoComplete="off"
+        value={recibio}
+        onChange={(e) => setRecibio(e.target.value)}
+      />
+      {nombres.filter((n) => n.toLowerCase() !== recibio.trim().toLowerCase()).length > 0 && (
+        <div className="ag-chips" style={{ marginTop: 8 }}>
+          {nombres
+            .filter((n) => n.toLowerCase() !== recibio.trim().toLowerCase())
+            .map((n) => (
+              <button type="button" key={n} className="ag-chip" onClick={() => setRecibio(n)}>
+                <Icono n="user" size={14} />
+                {n}
+              </button>
+            ))}
+        </div>
+      )}
 
       <label className="ag-label">¿Cómo llegó?</label>
       <div className="ll-est">
@@ -432,6 +480,7 @@ export default function Llegadas({ onConteoAgotados }) {
 
   const proveedores = useMemo(() => proveedoresParaLlegada(llegadas, reportes, catalogoProv), [llegadas, reportes, catalogoProv]);
   const recientes = useMemo(() => proveedoresRecientes(llegadas), [llegadas]);
+  const nombres = useMemo(() => nombresRecibio(llegadas), [llegadas]);
   const provEnLista = useMemo(() => proveedoresParaLlegada(llegadas, []), [llegadas]);
   const visibles = filtrarLlegadas(llegadas, { soloNovedad, proveedor: filtroProv });
   const grupos = agruparPorDia(visibles);
@@ -520,7 +569,7 @@ export default function Llegadas({ onConteoAgotados }) {
           Cargando llegadas…
         </div>
       ) : formAbierto ? (
-        <FormLlegada proveedores={proveedores} recientes={recientes} reportes={reportes} onGuardar={registrar} onCancelar={() => setFormAbierto(false)} />
+        <FormLlegada proveedores={proveedores} recientes={recientes} nombres={nombres} reportes={reportes} onGuardar={registrar} onCancelar={() => setFormAbierto(false)} />
       ) : (
         <>
           {llegadas.length > 0 && (
@@ -594,6 +643,12 @@ export default function Llegadas({ onConteoAgotados }) {
                           </div>
                         )}
                         <div style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 4 }}>
+                          {l.recibio && (
+                            <span className="ag-meta" style={{ display: "flex", gap: 4, alignItems: "center", marginRight: 8 }}>
+                              <Icono n="user" size={14} />
+                              Recibió {l.recibio}
+                            </span>
+                          )}
                           {l.tieneFoto && (
                             <button type="button" className="ag-link" onClick={() => setVerFoto(l)} style={{ display: "flex", gap: 4, alignItems: "center", paddingLeft: 0 }}>
                               <Icono n="photo" size={15} />

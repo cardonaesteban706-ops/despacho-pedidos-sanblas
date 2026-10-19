@@ -5,7 +5,7 @@
 //
 // Una llegada es una fila de la tabla `llegadas` (sql/llegadas.sql) en camelCase:
 //   { id, proveedor, llegoEn, estado: "todo_bien" | "con_novedad",
-//     novedades: [], observacion, tieneFoto }
+//     novedades: [], observacion, recibio, tieneFoto }
 
 import { normalizarTexto } from "./constants.js";
 import { mismoDia, cuandoCorto, proveedoresConocidos, vistaProveedor, unirProveedores } from "./agotados.js";
@@ -77,6 +77,22 @@ export function proveedoresRecientes(llegadas, n = 3) {
   return out;
 }
 
+// Nombres de quienes han recibido mercancía, el más reciente primero y sin
+// repetir por mayúsculas o tildes: se ofrecen como fichas de un toque.
+export function nombresRecibio(llegadas, max = 6) {
+  const vistos = new Set();
+  const out = [];
+  for (const l of [...(llegadas || [])].sort((a, b) => ms(b.llegoEn) - ms(a.llegoEn))) {
+    const nombre = String(l.recibio || "").replace(/\s+/g, " ").trim();
+    const k = clave(nombre);
+    if (!k || vistos.has(k)) continue;
+    vistos.add(k);
+    out.push(nombre);
+    if (out.length >= max) break;
+  }
+  return out;
+}
+
 // Conexión con Agotados: lo que estaba PEDIDO a este proveedor y no ha
 // llegado. Es lo que se ofrece marcar como "Llegó" al registrar su llegada.
 export function pedidosPendientesDe(reportes, proveedor) {
@@ -86,7 +102,7 @@ export function pedidosPendientesDe(reportes, proveedor) {
 
 // Datos listos para guardar a partir del formulario. Si no hay novedad, se
 // limpian las fichas y la observación (no quedan restos de un toque anterior).
-export function armarLlegada({ id, proveedor, estado, novedades = [], observacion = "", foto = null, ahora = new Date() }) {
+export function armarLlegada({ id, proveedor, estado, novedades = [], observacion = "", recibio = "", foto = null, ahora = new Date() }) {
   const novedad = estado === "con_novedad";
   return {
     id,
@@ -95,6 +111,7 @@ export function armarLlegada({ id, proveedor, estado, novedades = [], observacio
     estado: novedad ? "con_novedad" : "todo_bien",
     novedades: novedad ? novedades : [],
     observacion: novedad ? String(observacion || "").trim() : "",
+    recibio: String(recibio || "").replace(/\s+/g, " ").trim(),
     foto,
     tieneFoto: !!foto,
   };

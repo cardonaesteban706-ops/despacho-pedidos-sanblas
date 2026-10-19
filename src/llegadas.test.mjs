@@ -13,6 +13,7 @@ import {
   proveedoresRecientes,
   pedidosPendientesDe,
   armarLlegada,
+  nombresRecibio,
 } from "./llegadas.js";
 
 const AHORA = new Date(2026, 9, 15, 11, 0); // jue 15 oct 2026, 11:00 a. m.
@@ -72,8 +73,22 @@ test("armarLlegada: sin novedad no guarda fichas ni observación sueltas", () =>
   assert.equal(bien.observacion, "");
   assert.equal(bien.llegoEn, AHORA.toISOString());
 
+  assert.equal(armarLlegada({ ...base, estado: "todo_bien", recibio: "  Wilmer   Barrios " }).recibio, "Wilmer Barrios");
+  assert.equal(bien.recibio, "", "quién recibió es opcional");
+
   const mal = armarLlegada({ ...base, estado: "con_novedad" });
   assert.deepEqual(mal.novedades, ["Faltantes"]);
   assert.equal(mal.observacion, "faltaron 6");
   assert.equal(mal.tieneFoto, false);
+});
+
+test("nombresRecibio: los que han recibido, el más reciente primero, sin repetir", () => {
+  const llegadas = [
+    l("a", "Argos", en(15, 8), { recibio: "Wilmer" }),
+    l("b", "PAVCO", en(15, 10), { recibio: "Yeison" }),
+    l("c", "Gyplac", en(14, 15), { recibio: "wilmer" }),
+    l("d", "Diaco", en(13, 9), { recibio: "" }),
+    l("e", "Corona", en(12, 9), { recibio: "Andrés" }),
+  ];
+  assert.deepEqual(nombresRecibio(llegadas), ["Yeison", "Wilmer", "Andrés"]);
 });
