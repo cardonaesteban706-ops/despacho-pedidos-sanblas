@@ -184,3 +184,74 @@ export function colorDeTipo(tipo, tipos = []) {
   if (tipo && /^#[0-9a-f]{6}$/i.test(tipo.color || "")) return tipo.color;
   return colorSugerido(tipo ? tipo.nombre : "", (tipos || []).map((t) => t.color));
 }
+
+// ---------------------------------------------------------------------
+// Saldo del día y cuadre
+// ---------------------------------------------------------------------
+//
+// movimiento = { id, fecha: "YYYY-MM-DD", tipoId, clase: "salida" | "entrada",
+//                cantidad, creadoEn }       (tabla movimientos_cemento)
+//
+// Así trabaja la bodega: en la mañana se cuenta, durante el día se va restando
+// lo que sale (y sumando si entra cemento), y al día siguiente se vuelve a
+// contar para ver si cuadra con lo que se llevaba anotado.
+//
+// Regla: los movimientos de un día van DESPUÉS del conteo de ese día (primero
+// se cuenta, después se resta).
+
+// Entradas − salidas de un tipo entre `desde` (incluido) y `hasta` (excluido).
+export function netoMovimientos(movimientos, tipoId, desde, hasta) {
+  let neto = 0;
+  for (const m of movimientos || []) {
+    if (m.tipoId !== tipoId || m.fecha < desde || m.fecha >= hasta) continue;
+    neto += m.clase === "entrada" ? Number(m.cantidad) || 0 : -(Number(m.cantidad) || 0);
+  }
+  return neto;
+}
+
+// Lo que se debería encontrar al contar en `fecha`: el último conteo anterior,
+// menos lo que salió y más lo que entró desde ese conteo hasta el día antes.
+// { esperado, desde: conteo base } o null si nunca se ha contado ese tipo.
+export function saldoEsperado(conteos, movimientos, tipoId, fecha) {
+  const base = anteriorA(conteos, tipoId, fecha);
+  if (!base) return null;
+  return { esperado: base.bultos + netoMovimientos(movimientos, tipoId, base.fecha, fecha), desde: base };
+}
+
+// Salidas y entradas de un tipo en un día, y la lista (lo más reciente arriba).
+export function movimientosDelDia(movimientos, tipoId, fecha) {
+  const lista = (movimientos || []).filter((m) => m.tipoId === tipoId && m.fecha === fecha).sort((a, b) => (a.creadoEn < b.creadoEn ? 1 : -1));
+  let salidas = 0;
+  let entradas = 0;
+  for (const m of lista) {
+    if (m.clase === "entrada") entradas += Number(m.cantidad) || 0;
+    else salidas += Number(m.cantidad) || 0;
+  }
+  return { salidas, entradas, lista };
+}
+
+// El saldo de ahora: el conteo de hoy (o, si hoy no se ha contado, lo que se
+// esperaba encontrar) menos lo que ha salido hoy y más lo que ha entrado.
+// { saldo, base, contadoHoy, salidas, entradas } o null si no hay de dónde partir.
+export function saldoActual(conteos, movimientos, tipoId, hoy) {
+  const deHoy = (conteos || []).find((c) => c.tipoId === tipoId && c.fecha === hoy);
+  const esp = deHoy ? null : saldoEsperado(conteos, movimientos, tipoId, hoy);
+  if (!deHoy && !esp) return null;
+  const base = deHoy ? deHoy.bultos : esp.esperado;
+  const { salidas, entradas } = movimientosDelDia(movimientos, tipoId, hoy);
+  return { saldo: base - salidas + entradas, base, contadoHoy: !!deHoy, salidas, entradas };
+}
+
+// Lo contado contra lo esperado: { estado: "cuadra" | "faltan" | "sobran", n }.
+export function cuadre(contado, esperado) {
+  if (contado === null || contado === undefined || esperado === null || esperado === undefined) return null;
+  const d = Number(contado) - Number(esperado);
+  return d === 0 ? { estado: "cuadra", n: 0 } : d < 0 ? { estado: "faltan", n: -d } : { estado: "sobran", n: d };
+}
+
+// Un movimiento listo para guardar. Cantidad inválida o 0 -> null.
+export function armarMovimiento({ id, tipoId, clase = "salida", cantidad, fecha, ahora = new Date() }) {
+  const n = leerBultos(cantidad);
+  if (!n) return null;
+  return { id, fecha, tipoId, clase: clase === "entrada" ? "entrada" : "salida", cantidad: n, creadoEn: ahora.toISOString() };
+}

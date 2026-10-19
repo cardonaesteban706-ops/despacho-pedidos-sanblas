@@ -632,3 +632,25 @@ export async function guardarConteosCemento(conteos) {
     .upsert(conteos.map((c) => ({ id: c.id, fecha: c.fecha, tipo_id: c.tipoId, bultos: c.bultos, contado_en: c.contadoEn })));
   if (error) throw error;
 }
+
+// Salidas y entradas de cemento de los últimos `dias` días (saldo del día y cuadre).
+export async function cargarMovimientosCemento({ dias = 45 } = {}) {
+  const d = new Date(Date.now() - dias * 86400000);
+  const desde = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  const filas = await traerTodo(() =>
+    supabase.from("movimientos_cemento").select("id, fecha, tipo_id, clase, cantidad, creado_en").gte("fecha", desde).order("creado_en", { ascending: false })
+  );
+  return filas.map((f) => ({ id: f.id, fecha: f.fecha, tipoId: f.tipo_id, clase: f.clase, cantidad: f.cantidad, creadoEn: f.creado_en }));
+}
+
+export async function guardarMovimientoCemento(m) {
+  const { error } = await supabase
+    .from("movimientos_cemento")
+    .upsert({ id: m.id, fecha: m.fecha, tipo_id: m.tipoId, clase: m.clase, cantidad: m.cantidad, creado_en: m.creadoEn });
+  if (error) throw error;
+}
+
+export async function eliminarMovimientoCemento(id) {
+  const { error } = await supabase.from("movimientos_cemento").delete().eq("id", id);
+  if (error) throw error;
+}

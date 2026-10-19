@@ -120,3 +120,52 @@ test("colorSugerido: el color del bulto según la marca", async () => {
   assert.equal(colorDeTipo({ nombre: "CEMENTO GRIS KOLCEM", color: "#123456" }), "#123456", "si ya tiene color, se respeta");
   assert.equal(colorDeTipo({ nombre: "CEMENTO GRIS KOLCEM", color: null }), hex("naranja"));
 });
+
+// ---------------------------------------------------------------------
+// Saldo del día y cuadre
+// ---------------------------------------------------------------------
+
+const mov = (fecha, tipoId, clase, cantidad, creadoEn = `${fecha}T15:00:00.000Z`) => ({ id: `${fecha}-${tipoId}-${clase}-${cantidad}-${creadoEn}`, fecha, tipoId, clase, cantidad, creadoEn });
+
+test("saldoActual: conteo de hoy menos lo que sale y más lo que entra", async () => {
+  const { saldoActual } = await import("./cemento.js");
+  const conteos = [c(HOY, "g", 286)];
+  const movs = [mov(HOY, "g", "salida", 10), mov(HOY, "g", "salida", 8), mov(HOY, "g", "entrada", 50), mov("2026-10-14", "g", "salida", 99)];
+  assert.deepEqual(saldoActual(conteos, movs, "g", HOY), { saldo: 318, base: 286, contadoHoy: true, salidas: 18, entradas: 50 });
+});
+
+test("saldoActual: si hoy no se ha contado, parte de lo esperado", async () => {
+  const { saldoActual } = await import("./cemento.js");
+  const conteos = [c("2026-10-14", "g", 300)];
+  const movs = [mov("2026-10-14", "g", "salida", 20), mov(HOY, "g", "salida", 5)];
+  assert.deepEqual(saldoActual(conteos, movs, "g", HOY), { saldo: 275, base: 280, contadoHoy: false, salidas: 5, entradas: 0 });
+  assert.equal(saldoActual([], movs, "g", HOY), null, "sin ningún conteo no hay de dónde partir");
+});
+
+test("saldoEsperado: el conteo anterior con todo lo que salió desde ese día", async () => {
+  const { saldoEsperado } = await import("./cemento.js");
+  // Se contó el sábado 10; el domingo no se cuenta pero se vendió; el lunes 12 se cuenta.
+  const conteos = [c("2026-10-10", "g", 400), c("2026-10-12", "g", 330)];
+  const movs = [mov("2026-10-10", "g", "salida", 40), mov("2026-10-11", "g", "salida", 30), mov("2026-10-12", "g", "salida", 99)];
+  const esp = saldoEsperado(conteos, movs, "g", "2026-10-12");
+  assert.equal(esp.esperado, 330, "400 − 40 (sáb) − 30 (dom); lo del lunes va después del conteo del lunes");
+  assert.equal(esp.desde.fecha, "2026-10-10");
+  assert.equal(saldoEsperado(conteos, movs, "g", "2026-10-10"), null);
+});
+
+test("cuadre: cuadra, faltan o sobran", async () => {
+  const { cuadre } = await import("./cemento.js");
+  assert.deepEqual(cuadre(330, 330), { estado: "cuadra", n: 0 });
+  assert.deepEqual(cuadre(327, 330), { estado: "faltan", n: 3 });
+  assert.deepEqual(cuadre(332, 330), { estado: "sobran", n: 2 });
+  assert.equal(cuadre(null, 330), null);
+});
+
+test("armarMovimiento: cantidad con punto de miles, y 0 o vacío no se guarda", async () => {
+  const { armarMovimiento } = await import("./cemento.js");
+  const ahora = new Date("2026-10-15T15:00:00.000Z");
+  assert.deepEqual(armarMovimiento({ id: "m1", tipoId: "g", cantidad: "1.000", fecha: HOY, ahora }), { id: "m1", fecha: HOY, tipoId: "g", clase: "salida", cantidad: 1000, creadoEn: ahora.toISOString() });
+  assert.equal(armarMovimiento({ id: "m2", tipoId: "g", clase: "entrada", cantidad: "5", fecha: HOY, ahora }).clase, "entrada");
+  assert.equal(armarMovimiento({ id: "m3", tipoId: "g", cantidad: "0", fecha: HOY }), null);
+  assert.equal(armarMovimiento({ id: "m4", tipoId: "g", cantidad: "", fecha: HOY }), null);
+});

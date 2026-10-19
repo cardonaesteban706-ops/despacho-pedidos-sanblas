@@ -1,5 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { cargarTiposCemento, guardarTipoCemento, cargarConteosCemento, guardarConteosCemento, cargarCatalogoProductos } from "./supabaseClient";
+import {
+  cargarTiposCemento,
+  guardarTipoCemento,
+  cargarConteosCemento,
+  guardarConteosCemento,
+  cargarCatalogoProductos,
+  cargarMovimientosCemento,
+  guardarMovimientoCemento,
+  eliminarMovimientoCemento,
+} from "./supabaseClient";
 import { uid, todayISO, formatCantidad, MARCA } from "./constants.js";
 import { AG_CSS, Icono, Vacio } from "./Agotados.jsx";
 import { horaCorta } from "./agotados.js";
@@ -8,7 +17,6 @@ import {
   leerBultos,
   conteosDelDia,
   anteriorA,
-  diferencia,
   etiquetaDia,
   fechaLarga,
   ultimoGuardado,
@@ -19,11 +27,21 @@ import {
   COLORES_BULTO,
   colorSugerido,
   colorDeTipo,
+  saldoEsperado,
+  saldoActual,
+  movimientosDelDia,
+  cuadre,
+  armarMovimiento,
 } from "./cemento.js";
 
 // Módulo Conteo de cemento (Bodega). Reemplaza el papel donde se anotaba a
-// diario cuántos bultos hay: un número grande por tipo, la diferencia con el
-// conteo anterior, y el historial de 30 días.
+// diario cuántos bultos hay. Así trabaja la bodega:
+//
+//   Conteo  en la mañana se cuenta cada tipo; al lado sale lo que se esperaba
+//           encontrar (lo de ayer menos lo que salió) y si cuadra o no.
+//   Saldo   durante el día se va restando lo que sale ("Sacar") y sumando si
+//           entra cemento ("Entró"): el saldo del momento, sin papel.
+//   30 días gráfica y tabla de los conteos.
 //
 // La lógica pura vive en cemento.js. Estilos y piezas: los de Agotados.
 
@@ -47,10 +65,6 @@ const CC_CSS = `
 .cc-num { width:118px; height:56px; border:0.5px solid var(--color-border-secondary); border-radius:var(--border-radius-md); background:var(--color-background-primary); font-size:28px; font-weight:600; text-align:center; font-variant-numeric:tabular-nums; padding:0; flex-shrink:0; }
 .cc-num:focus { border:2px solid var(--color-border-info); outline:none; }
 .cc-num[readonly] { background:var(--color-background-secondary); border-color:var(--color-border-tertiary); color:var(--color-text-primary); }
-.cc-dif { display:inline-flex; align-items:center; gap:2px; font-weight:600; }
-.cc-dif.baja { color:var(--ag-rojo); }
-.cc-dif.sube { color:var(--ag-verde); }
-.cc-dif.igual { color:var(--color-text-secondary); }
 .cc-hist { width:100%; border-collapse:collapse; font-size:13px; }
 .cc-hist th { font-size:12px; font-weight:500; color:var(--color-text-secondary); text-align:right; padding:6px 4px; border-bottom:0.5px solid var(--color-border-secondary); }
 .cc-hist td { padding:9px 4px; border-bottom:0.5px solid var(--color-border-tertiary); text-align:right; font-variant-numeric:tabular-nums; }
@@ -59,20 +73,21 @@ const CC_CSS = `
 .cc-leg i { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:4px; vertical-align:-1px; }
 `;
 
-function Diferencia({ actual, anterior }) {
-  const d = diferencia(actual, anterior);
-  if (!d) return null;
-  if (d.sentido === "igual")
+// "Cuadra" / "Faltan 3" / "Sobran 2": lo contado contra lo que se esperaba.
+function Cuadre({ contado, esperado }) {
+  const q = cuadre(contado, esperado);
+  if (!q) return null;
+  if (q.estado === "cuadra")
     return (
-      <span className="cc-dif igual">
-        <Icono n="minus" size={13} />
-        igual
+      <span className="ag-tag verde">
+        <Icono n="check" size={13} />
+        Cuadra
       </span>
     );
   return (
-    <span className={"cc-dif " + d.sentido} aria-label={`${d.sentido === "sube" ? "subió" : "bajó"} ${d.n}`}>
-      <Icono n={d.sentido === "sube" ? "arrow-up" : "arrow-down"} size={13} />
-      {formatCantidad(d.n)}
+    <span className={"ag-tag " + (q.estado === "faltan" ? "rojo" : "amar")}>
+      <Icono n="alert-triangle" size={13} />
+      {q.estado === "faltan" ? "Faltan" : "Sobran"} {formatCantidad(q.n)}
     </span>
   );
 }
@@ -169,9 +184,179 @@ function AgregarTipo({ sugerencias, onAgregar, onCancelar }) {
   );
 }
 
+// Cantidades de un toque para "Sacar" / "Entró": lo que más se despacha.
+const CANTIDADES_RAPIDAS = [1, 2, 5, 10, 20, 50];
+
+// Vista Saldo: el saldo de cada tipo en este momento y los botones para restar
+// lo que sale (o sumar si entra). Pensada para ir anotando durante el día.
+function VistaSaldo({ activos, tipos, conteos, movimientos, hoy, onMovimiento, onBorrar, onIrAContar }) {
+  const [abierto, setAbierto] = useState(null); // { tipoId, clase }
+  const [cantidad, setCantidad] = useState("");
+  const [guardando, setGuardando] = useState(false);
+  const [borrando, setBorrando] = useState(null);
+  const [verTodos, setVerTodos] = useState({});
+
+  function abrir(tipoId, clase) {
+    if (abierto && abierto.tipoId === tipoId && abierto.clase === clase) {
+      setAbierto(null);
+      return;
+    }
+    setAbierto({ tipoId, clase });
+    setCantidad("");
+  }
+
+  async function registrar() {
+    if (!abierto || guardando) return;
+    setGuardando(true);
+    const ok = await onMovimiento(abierto.tipoId, abierto.clase, cantidad);
+    setGuardando(false);
+    if (ok) {
+      setAbierto(null);
+      setCantidad("");
+    }
+  }
+
+  const sinBase = activos.every((t) => !saldoActual(conteos, movimientos, t.id, hoy));
+  if (sinBase) {
+    return (
+      <>
+        <Vacio icono="bucket-droplet" titulo="Primero hay que contar">
+          El saldo parte del conteo. Cuenta los bultos en la pestaña Conteo y aquí se irá restando lo que salga en el día.
+        </Vacio>
+        <div style={{ textAlign: "center" }}>
+          <button type="button" className="ag-btn pri" onClick={onIrAContar}>
+            Ir a contar
+          </button>
+        </div>
+      </>
+    );
+  }
+
+  return (
+    <div className="ag-form" style={{ marginTop: 14 }}>
+      {activos.map((t) => {
+        const s = saldoActual(conteos, movimientos, t.id, hoy);
+        const { lista } = movimientosDelDia(movimientos, t.id, hoy);
+        const panel = abierto && abierto.tipoId === t.id ? abierto.clase : null;
+        const n = leerBultos(cantidad);
+        const visibles = verTodos[t.id] ? lista : lista.slice(0, 4);
+        return (
+          <div key={t.id} className="ag-item" style={{ marginBottom: 8 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <Bulto color={colorDeTipo(t, tipos)} size={34} />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 15, lineHeight: "20px", fontWeight: 500 }}>{t.nombre}</div>
+                <div className="ag-meta" style={{ marginTop: 2 }}>
+                  {!s
+                    ? "Sin conteo todavía"
+                    : `${s.contadoHoy ? "Contado hoy" : "Esperado hoy"} ${formatCantidad(s.base)}${s.salidas ? ` · salió ${formatCantidad(s.salidas)}` : ""}${s.entradas ? ` · entró ${formatCantidad(s.entradas)}` : ""}`}
+                </div>
+              </div>
+              <div style={{ textAlign: "right", flexShrink: 0 }}>
+                <div style={{ fontSize: 30, lineHeight: "34px", fontWeight: 700, fontVariantNumeric: "tabular-nums", color: s && s.saldo < 0 ? "var(--ag-rojo)" : "var(--color-text-primary)" }}>
+                  {s ? formatCantidad(s.saldo) : "—"}
+                </div>
+                <div className="ag-meta" style={{ fontSize: 12 }}>
+                  saldo
+                </div>
+              </div>
+            </div>
+
+            {s && (
+              <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                <button type="button" className={"ag-btn" + (panel === "salida" ? "" : " pri")} style={{ flex: 2, minHeight: 48 }} aria-expanded={panel === "salida"} onClick={() => abrir(t.id, "salida")}>
+                  <Icono n="minus" size={17} />
+                  Sacar
+                </button>
+                <button type="button" className="ag-btn" style={{ flex: 1, minHeight: 48 }} aria-expanded={panel === "entrada"} onClick={() => abrir(t.id, "entrada")}>
+                  <Icono n="plus" size={17} />
+                  Entró
+                </button>
+              </div>
+            )}
+
+            {panel && (
+              <div style={{ marginTop: 10, padding: 10, borderRadius: "var(--border-radius-md)", background: panel === "salida" ? "var(--color-background-secondary)" : "var(--ag-verde-bg)" }}>
+                <div className="ag-meta" style={{ marginBottom: 6, color: "var(--color-text-primary)", fontWeight: 500 }}>
+                  {panel === "salida" ? "¿Cuántos bultos salieron?" : "¿Cuántos bultos entraron?"}
+                </div>
+                <div className="ag-chips" style={{ marginBottom: 8 }}>
+                  {CANTIDADES_RAPIDAS.map((q) => (
+                    <button type="button" key={q} className="ag-chip" aria-pressed={n === q} onClick={() => setCantidad(String(q))} style={{ minWidth: 46, justifyContent: "center" }}>
+                      {q}
+                    </button>
+                  ))}
+                </div>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <input
+                    className="cc-num"
+                    style={{ width: 96, height: 48, fontSize: 22 }}
+                    inputMode="numeric"
+                    placeholder="0"
+                    aria-label="Cantidad de bultos"
+                    value={cantidad}
+                    autoFocus
+                    onChange={(e) => setCantidad(e.target.value.replace(/[^\d.]/g, "").slice(0, 6))}
+                    onKeyDown={(e) => e.key === "Enter" && registrar()}
+                  />
+                  <button type="button" className="ag-btn pri" style={{ flex: 1, minHeight: 48 }} disabled={!n || guardando} onClick={registrar}>
+                    {guardando ? "Guardando…" : !n ? "Elige cuántos" : panel === "salida" ? `Restar ${formatCantidad(n)}` : `Sumar ${formatCantidad(n)}`}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {lista.length > 0 && (
+              <div style={{ marginTop: 10, borderTop: "0.5px solid var(--color-border-tertiary)", paddingTop: 6 }}>
+                {visibles.map((m) => (
+                  <div key={m.id} style={{ display: "flex", alignItems: "center", gap: 8, minHeight: 36, fontSize: 14 }}>
+                    <b style={{ width: 56, fontVariantNumeric: "tabular-nums", color: m.clase === "entrada" ? "var(--ag-verde)" : "var(--color-text-primary)" }}>
+                      {m.clase === "entrada" ? "+" : "−"}
+                      {formatCantidad(m.cantidad)}
+                    </b>
+                    <span className="ag-meta" style={{ flex: 1 }}>
+                      {m.clase === "entrada" ? "entró" : "salió"} · {horaCorta(m.creadoEn)}
+                    </span>
+                    <button
+                      type="button"
+                      className="ag-link"
+                      style={{ minHeight: 36, minWidth: 40, color: borrando === m.id ? "var(--color-text-danger)" : "var(--color-text-secondary)" }}
+                      aria-label={borrando === m.id ? "Confirmar borrar" : "Borrar este movimiento"}
+                      onClick={() => {
+                        if (borrando === m.id) {
+                          setBorrando(null);
+                          onBorrar(m);
+                        } else {
+                          setBorrando(m.id);
+                          setTimeout(() => setBorrando((b) => (b === m.id ? null : b)), 4000);
+                        }
+                      }}
+                    >
+                      {borrando === m.id ? "¿Borrar?" : <Icono n="x" size={16} />}
+                    </button>
+                  </div>
+                ))}
+                {lista.length > 4 && (
+                  <button type="button" className="ag-link" onClick={() => setVerTodos((v) => ({ ...v, [t.id]: !v[t.id] }))}>
+                    {verTodos[t.id] ? "Ver menos" : `Ver los ${lista.length} de hoy`}
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })}
+      <p className="ag-meta" style={{ margin: "12px 2px 0" }}>
+        Mañana, al contar, la app compara lo contado con este saldo y dice si cuadra.
+      </p>
+    </div>
+  );
+}
+
 export default function ConteoCemento() {
   const [tipos, setTipos] = useState([]);
   const [conteos, setConteos] = useState([]);
+  const [movimientos, setMovimientos] = useState([]);
   const [catalogoWO, setCatalogoWO] = useState([]);
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState("");
@@ -194,13 +379,14 @@ export default function ConteoCemento() {
 
   const recargar = useCallback(async () => {
     try {
-      const [t, c] = await Promise.all([cargarTiposCemento(), cargarConteosCemento()]);
+      const [t, c, m] = await Promise.all([cargarTiposCemento(), cargarConteosCemento(), cargarMovimientosCemento()]);
       setTipos(t);
       setConteos(c);
+      setMovimientos(m);
       setError("");
     } catch (e) {
       const msg = String((e && e.message) || "");
-      setError(/cemento/.test(msg) && /exist|relation/i.test(msg) ? "Falta crear las tablas en Supabase: corre sql/conteo-cemento.sql." : "No se pudo cargar el conteo. Revisa la conexión.");
+      setError(/cemento/.test(msg) && /exist|relation/i.test(msg) ? "Falta crear las tablas en Supabase: corre sql/conteo-cemento.sql y sql/movimientos-cemento.sql." : "No se pudo cargar el conteo. Revisa la conexión.");
     } finally {
       setCargando(false);
     }
@@ -229,6 +415,42 @@ export default function ConteoCemento() {
   }, []);
 
   useEffect(() => () => avisoTimer.current && clearTimeout(avisoTimer.current), []);
+
+  // Al abrir: si hoy ya se contó, lo que sigue es ir restando (Saldo); si no,
+  // toca contar. Solo la primera vez, después manda la pestaña que se toque.
+  const vistaElegida = useRef(false);
+  useEffect(() => {
+    if (cargando || vistaElegida.current) return;
+    vistaElegida.current = true;
+    if (conteos.some((c) => c.fecha === hoy)) setVista("saldo");
+  }, [cargando, conteos, hoy]);
+
+  async function registrarMovimiento(tipoId, clase, cantidad) {
+    const m = armarMovimiento({ id: uid(), tipoId, clase, cantidad, fecha: hoy });
+    if (!m) return false;
+    setMovimientos((prev) => [m, ...prev]);
+    try {
+      await guardarMovimientoCemento(m);
+      const t = tipos.find((x) => x.id === tipoId);
+      avisar(`${clase === "entrada" ? "Entraron" : "Salieron"} ${formatCantidad(m.cantidad)} · ${t ? t.nombre : ""}`);
+      return true;
+    } catch {
+      setMovimientos((prev) => prev.filter((x) => x.id !== m.id));
+      setError("No se pudo guardar. Revisa la conexión e inténtalo otra vez.");
+      return false;
+    }
+  }
+
+  async function borrarMovimiento(m) {
+    setMovimientos((prev) => prev.filter((x) => x.id !== m.id));
+    try {
+      await eliminarMovimientoCemento(m.id);
+      avisar("Movimiento borrado");
+    } catch {
+      setMovimientos((prev) => (prev.some((x) => x.id === m.id) ? prev : [m, ...prev]));
+      setError("No se pudo borrar. Revisa la conexión.");
+    }
+  }
 
   function avisar(t) {
     setAviso(t);
@@ -323,12 +545,16 @@ export default function ConteoCemento() {
       </div>
       <div className="ag-seg" role="group" aria-label="Vista">
         <button type="button" aria-pressed={vista === "hoy"} onClick={() => setVista("hoy")}>
-          <Icono n="bucket-droplet" size={15} />
-          Hoy
+          <Icono n="clipboard-check" size={15} />
+          Conteo
+        </button>
+        <button type="button" aria-pressed={vista === "saldo"} onClick={() => setVista("saldo")}>
+          <Icono n="minus" size={15} />
+          Saldo
         </button>
         <button type="button" aria-pressed={vista === "historial"} onClick={() => setVista("historial")}>
           <Icono n="chart-line" size={15} />
-          Últimos 30 días
+          30 días
         </button>
       </div>
 
@@ -358,6 +584,17 @@ export default function ConteoCemento() {
           </Vacio>
           <AgregarTipo sugerencias={sugerencias} onAgregar={agregarTipo} />
         </>
+      ) : vista === "saldo" ? (
+        <VistaSaldo
+          activos={activos}
+          tipos={tipos}
+          conteos={conteos}
+          movimientos={movimientos}
+          hoy={hoy}
+          onMovimiento={registrarMovimiento}
+          onBorrar={borrarMovimiento}
+          onIrAContar={() => setVista("hoy")}
+        />
       ) : vista === "hoy" ? (
         <div className="ag-form" style={{ marginTop: 14 }}>
           {guardado && !editando && (
@@ -380,6 +617,7 @@ export default function ConteoCemento() {
 
           {activos.map((t, i) => {
             const ant = anteriorA(conteos, t.id, hoy);
+            const esp = saldoEsperado(conteos, movimientos, t.id, hoy);
             const actual = leerBultos(valorDe(t));
             return (
               <div key={t.id} className="cc-fila">
@@ -387,15 +625,20 @@ export default function ConteoCemento() {
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 15, lineHeight: "20px", fontWeight: 500 }}>{t.nombre}</div>
                   <div className="ag-meta" style={{ marginTop: 2 }}>
-                    {ant ? (
+                    {esp ? (
                       <>
-                        {etiquetaDia(ant.fecha, hoy)} {formatCantidad(ant.bultos)}
+                        Esperado {formatCantidad(esp.esperado)}
                         {actual !== null && (
                           <>
-                            {" · "}
-                            <Diferencia actual={actual} anterior={ant.bultos} />
+                            {" "}
+                            <Cuadre contado={actual} esperado={esp.esperado} />
                           </>
                         )}
+                        <span style={{ display: "block", fontSize: 12 }}>
+                          {etiquetaDia(ant.fecha, hoy)} se contaron {formatCantidad(ant.bultos)}
+                          {esp.esperado < ant.bultos ? ` y salieron ${formatCantidad(ant.bultos - esp.esperado)}` : ""}
+                          {esp.esperado > ant.bultos ? ` y entraron ${formatCantidad(esp.esperado - ant.bultos)}` : ""}
+                        </span>
                       </>
                     ) : (
                       "Primer conteo"
