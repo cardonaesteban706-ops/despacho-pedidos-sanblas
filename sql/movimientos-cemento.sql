@@ -26,6 +26,16 @@ create table if not exists public.movimientos_cemento (
   creado_en   timestamptz not null default now()
 );
 
+-- A quién se le entregó y de dónde salió el movimiento:
+--   origen "manual"   lo restó alguien en la pestaña Saldo (cliente opcional).
+--   origen "despacho" lo descontó solo la app al entregar un pedido en
+--                     Despacho: pedido_id y referencia ("Factura 18574").
+alter table public.movimientos_cemento add column if not exists cliente text;
+alter table public.movimientos_cemento add column if not exists pedido_id text;
+alter table public.movimientos_cemento add column if not exists referencia text;
+alter table public.movimientos_cemento add column if not exists origen text not null default 'manual';
+create index if not exists movimientos_cemento_pedido_idx on public.movimientos_cemento (pedido_id);
+
 create index if not exists movimientos_cemento_fecha_idx on public.movimientos_cemento (fecha desc);
 create index if not exists movimientos_cemento_tipo_idx on public.movimientos_cemento (tipo_id);
 

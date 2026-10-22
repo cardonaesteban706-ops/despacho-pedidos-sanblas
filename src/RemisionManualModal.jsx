@@ -1,8 +1,55 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import ModalOverlay from "./ModalOverlay.jsx";
 import DestinoSelector from "./DestinoSelector.jsx";
 import { VEHICULOS, MARCA, addDaysISO, formatCOP } from "./constants.js";
 import { cantidadNum } from "./saldo.js";
+import { cargarCatalogoProductos, cargarCatalogoClientes } from "./supabaseClient";
+import { catalogoProductos, buscarEnCatalogo } from "./agotados.js";
+
+// Lista de sugerencias debajo de un campo (material o cliente): los nombres tal
+// como salen en las facturas y cotizaciones de World Office, igual que en el
+// buscador de Agotados. Se elige con un toque; escribir a mano sigue sirviendo.
+function Sugerencias({ items, onElegir }) {
+  if (!items.length) return null;
+  return (
+    <div
+      role="listbox"
+      style={{
+        marginTop: 4,
+        background: "var(--color-background-primary)",
+        border: "0.5px solid var(--color-border-secondary)",
+        borderRadius: "var(--border-radius-md)",
+        boxShadow: "0 6px 16px rgba(4,44,83,.10)",
+        overflow: "hidden",
+      }}
+    >
+      {items.map((n, i) => (
+        <button
+          type="button"
+          role="option"
+          aria-selected={false}
+          key={n}
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => onElegir(n)}
+          style={{
+            display: "block",
+            width: "100%",
+            textAlign: "left",
+            minHeight: 44,
+            padding: "0 12px",
+            border: 0,
+            borderTop: i === 0 ? 0 : "0.5px solid var(--color-border-tertiary)",
+            borderRadius: 0,
+            background: "none",
+            fontSize: 13.5,
+          }}
+        >
+          {n}
+        </button>
+      ))}
+    </div>
+  );
+}
 
 // Formulario para crear una remisión a mano (sin PDF): pedidos que llegan en
 // hoja aparte de remisiones (arena, bloque, etc.), ajenos a World Office. El
@@ -17,6 +64,26 @@ function RemisionManualModal({ hoyIso, onClose, onCrear }) {
   const [fechaOpcion, setFechaOpcion] = useState("hoy");
   const [fechaOtro, setFechaOtro] = useState(addDaysISO(hoyIso, 1));
   const [vehiculo, setVehiculo] = useState(VEHICULOS[0].id);
+  // Catálogos para las sugerencias (se piden una vez al abrir).
+  const [productosWO, setProductosWO] = useState([]);
+  const [clientesWO, setClientesWO] = useState([]);
+  const [foco, setFoco] = useState(null); // "cliente" | índice de la fila de material
+
+  useEffect(() => {
+    let vivo = true;
+    cargarCatalogoProductos()
+      .then((l) => vivo && setProductosWO(l))
+      .catch(() => {});
+    cargarCatalogoClientes()
+      .then((l) => vivo && setClientesWO(l))
+      .catch(() => {});
+    return () => {
+      vivo = false;
+    };
+  }, []);
+
+  const materiales = useMemo(() => catalogoProductos([], productosWO), [productosWO]);
+  const sugerir = (lista, texto) => (String(texto || "").trim().length >= 2 ? buscarEnCatalogo(lista, texto, 6).filter((n) => n.toLowerCase() !== String(texto).trim().toLowerCase()) : []);
 
   const esConFecha = fechaOpcion === "hoy" || fechaOpcion === "otro";
   const fechaResuelta = fechaOpcion === "hoy" ? hoyIso : fechaOpcion === "otro" ? fechaOtro : fechaOpcion; // "pendiente"
@@ -64,8 +131,31 @@ function RemisionManualModal({ hoyIso, onClose, onCrear }) {
 
       <label style={{ display: "block", marginBottom: 10 }}>
         <span style={{ fontSize: 12, color: "var(--color-text-secondary)", display: "block", marginBottom: 4 }}>Cliente</span>
-        <input type="text" value={cliente} onChange={(e) => setCliente(e.target.value)} placeholder="Nombre del cliente" style={{ width: "100%" }} />
+        <input
+          type="text"
+          value={cliente}
+          onChange={(e) => {
+            setCliente(e.target.value);
+            setFoco("cliente");
+          }}
+          onFocus={() => setFoco("cliente")}
+          onBlur={() => setTimeout(() => setFoco((f) => (f === "cliente" ? null : f)), 150)}
+          placeholder="Nombre del cliente"
+          autoComplete="off"
+          style={{ width: "100%" }}
+        />
       </label>
+      {foco === "cliente" && (
+        <div style={{ marginTop: -6, marginBottom: 10 }}>
+          <Sugerencias
+            items={sugerir(clientesWO, cliente)}
+            onElegir={(n) => {
+              setCliente(n);
+              setFoco(null);
+            }}
+          />
+        </div>
+      )}
 
       <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
         <label style={{ flex: 1, minWidth: 140 }}>
@@ -81,51 +171,69 @@ function RemisionManualModal({ hoyIso, onClose, onCrear }) {
       <span style={{ fontSize: 12, color: "var(--color-text-secondary)", display: "block", marginBottom: 6 }}>Material</span>
       <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 8 }}>
         {productos.map((p, i) => (
-          <div key={i} style={{ display: "flex", gap: 6, alignItems: "center" }}>
-            <input
-              type="text"
-              value={p.descripcion}
-              onChange={(e) => setProd(i, "descripcion", e.target.value)}
-              placeholder="Material (arena, bloque...)"
-              style={{ flex: 1, minWidth: 0 }}
-            />
-            <input
-              type="number"
-              inputMode="decimal"
-              value={p.cantidad}
-              onChange={(e) => setProd(i, "cantidad", e.target.value)}
-              placeholder="Cant."
-              style={{ width: 66 }}
-            />
-            <input
-              type="text"
-              value={p.unidad}
-              onChange={(e) => setProd(i, "unidad", e.target.value)}
-              placeholder="und"
-              style={{ width: 54 }}
-            />
-            {/* Precio POR UNIDAD. El total de la línea lo calcula
-                crearRemisionManual multiplicándolo por la cantidad: antes este
-                campo se guardaba tal cual como total, y 5 bultos a 32.000
-                quedaban en 32.000 en vez de 160.000. */}
-            <input
-              type="number"
-              inputMode="numeric"
-              value={p.precio}
-              onChange={(e) => setProd(i, "precio", e.target.value)}
-              placeholder="$ c/u"
-              aria-label="Precio por unidad"
-              title="Precio de UNA unidad. El total de la línea se calcula solo."
-              style={{ width: 78 }}
-            />
-            <button
-              onClick={() => quitarFila(i)}
-              aria-label="Quitar material"
-              disabled={productos.length === 1}
-              style={{ minWidth: 36, minHeight: 36, padding: 0, border: "0.5px solid var(--color-border-tertiary)", background: "transparent", opacity: productos.length === 1 ? 0.4 : 1 }}
-            >
-              <i className="ti ti-trash" style={{ fontSize: 14 }} aria-hidden="true"></i>
-            </button>
+          <div key={i}>
+            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <input
+                type="text"
+                value={p.descripcion}
+                onChange={(e) => {
+                  setProd(i, "descripcion", e.target.value);
+                  setFoco(i);
+                }}
+                onFocus={() => setFoco(i)}
+                onBlur={() => setTimeout(() => setFoco((f) => (f === i ? null : f)), 150)}
+                placeholder="Material (escribe y elige)"
+                autoComplete="off"
+                aria-label={`Material ${i + 1}`}
+                style={{ flex: 1, minWidth: 0 }}
+              />
+              <input
+                type="number"
+                inputMode="decimal"
+                value={p.cantidad}
+                onChange={(e) => setProd(i, "cantidad", e.target.value)}
+                placeholder="Cant."
+                style={{ width: 66 }}
+              />
+              <input
+                type="text"
+                value={p.unidad}
+                onChange={(e) => setProd(i, "unidad", e.target.value)}
+                placeholder="und"
+                style={{ width: 54 }}
+              />
+              {/* Precio POR UNIDAD. El total de la línea lo calcula
+                  crearRemisionManual multiplicándolo por la cantidad: antes este
+                  campo se guardaba tal cual como total, y 5 bultos a 32.000
+                  quedaban en 32.000 en vez de 160.000. */}
+              <input
+                type="number"
+                inputMode="numeric"
+                value={p.precio}
+                onChange={(e) => setProd(i, "precio", e.target.value)}
+                placeholder="$ c/u"
+                aria-label="Precio por unidad"
+                title="Precio de UNA unidad. El total de la línea se calcula solo."
+                style={{ width: 78 }}
+              />
+              <button
+                onClick={() => quitarFila(i)}
+                aria-label="Quitar material"
+                disabled={productos.length === 1}
+                style={{ minWidth: 36, minHeight: 36, padding: 0, border: "0.5px solid var(--color-border-tertiary)", background: "transparent", opacity: productos.length === 1 ? 0.4 : 1 }}
+              >
+                <i className="ti ti-trash" style={{ fontSize: 14 }} aria-hidden="true"></i>
+              </button>
+            </div>
+            {foco === i && (
+              <Sugerencias
+                items={sugerir(materiales, p.descripcion)}
+                onElegir={(n) => {
+                  setProd(i, "descripcion", n);
+                  setFoco(null);
+                }}
+              />
+            )}
           </div>
         ))}
       </div>

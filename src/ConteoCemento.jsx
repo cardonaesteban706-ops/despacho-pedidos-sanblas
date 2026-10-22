@@ -5,6 +5,8 @@ import {
   cargarConteosCemento,
   guardarConteosCemento,
   cargarCatalogoProductos,
+  cargarCatalogoClientes,
+  guardarContadoPor,
   cargarMovimientosCemento,
   guardarMovimientoCemento,
   eliminarMovimientoCemento,
@@ -32,7 +34,10 @@ import {
   movimientosDelDia,
   cuadre,
   armarMovimiento,
+  contadoPorDelDia,
+  nombresContadores,
 } from "./cemento.js";
+import { buscarEnCatalogo } from "./agotados.js";
 
 // Módulo Conteo de cemento (Bodega). Reemplaza el papel donde se anotaba a
 // diario cuántos bultos hay. Así trabaja la bodega:
@@ -184,14 +189,91 @@ function AgregarTipo({ sugerencias, onAgregar, onCancelar }) {
   );
 }
 
+// Campo de nombre con sugerencias: escribe 2 letras y salen los nombres que
+// coinciden (clientes de las facturas, trabajadores que ya contaron...). Las
+// fichas son los de siempre, de un toque.
+function CampoNombre({ id, valor, onCambio, nombres = [], fichas = [], placeholder }) {
+  const [abierto, setAbierto] = useState(false);
+  const texto = valor || "";
+  const sugerencias = abierto && texto.trim().length >= 2 ? buscarEnCatalogo(nombres, texto, 5).filter((n) => n.toLowerCase() !== texto.trim().toLowerCase()) : [];
+  const fichasVisibles = fichas.filter((n) => n.toLowerCase() !== texto.trim().toLowerCase());
+  return (
+    <div>
+      <input
+        id={id}
+        className="ag-field"
+        placeholder={placeholder}
+        autoComplete="off"
+        value={texto}
+        onChange={(e) => {
+          onCambio(e.target.value);
+          setAbierto(true);
+        }}
+        onFocus={() => setAbierto(true)}
+        onBlur={() => setTimeout(() => setAbierto(false), 150)}
+      />
+      {sugerencias.length > 0 && (
+        <div className="ag-sug">
+          {sugerencias.map((n) => (
+            <button
+              type="button"
+              key={n}
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => {
+                onCambio(n);
+                setAbierto(false);
+              }}
+            >
+              <span>{n}</span>
+            </button>
+          ))}
+        </div>
+      )}
+      {fichasVisibles.length > 0 && (
+        <div className="ag-chips" style={{ marginTop: 8 }}>
+          {fichasVisibles.map((n) => (
+            <button type="button" key={n} className="ag-chip" onClick={() => onCambio(n)}>
+              <Icono n="user" size={14} />
+              {n}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Cada celular recuerda quién contó la última vez (casi siempre es el mismo).
+const CLAVE_CONTADOR = "sanblas.contadorCemento";
+function leerContador() {
+  try {
+    return window.localStorage.getItem(CLAVE_CONTADOR) || "";
+  } catch {
+    return "";
+  }
+}
+function recordarContador(nombre) {
+  try {
+    if (nombre) window.localStorage.setItem(CLAVE_CONTADOR, nombre);
+  } catch {
+    // Almacenamiento bloqueado: la próxima vez el campo sale vacío.
+  }
+}
+
 // Cantidades de un toque para "Sacar" / "Entró": lo que más se despacha.
 const CANTIDADES_RAPIDAS = [1, 2, 5, 10, 20, 50];
 
 // Vista Saldo: el saldo de cada tipo en este momento y los botones para restar
 // lo que sale (o sumar si entra). Pensada para ir anotando durante el día.
-function VistaSaldo({ activos, tipos, conteos, movimientos, hoy, onMovimiento, onBorrar, onIrAContar }) {
+function VistaSaldo({ activos, tipos, conteos, movimientos, hoy, clientes, onMovimiento, onBorrar, onIrAContar, onGuardarContador }) {
   const [abierto, setAbierto] = useState(null); // { tipoId, clase }
   const [cantidad, setCantidad] = useState("");
+  const [cliente, setCliente] = useState("");
+  const contadoHoy = contadoPorDelDia(conteos, hoy);
+  const hayConteoHoy = conteos.some((c) => c.fecha === hoy);
+  const [cambiandoContador, setCambiandoContador] = useState(false);
+  const [contador, setContador] = useState(() => contadoHoy || leerContador());
+  const [guardandoContador, setGuardandoContador] = useState(false);
   const [guardando, setGuardando] = useState(false);
   const [borrando, setBorrando] = useState(null);
   const [verTodos, setVerTodos] = useState({});
@@ -203,16 +285,30 @@ function VistaSaldo({ activos, tipos, conteos, movimientos, hoy, onMovimiento, o
     }
     setAbierto({ tipoId, clase });
     setCantidad("");
+    setCliente("");
+  }
+
+  async function guardarContador() {
+    const nombre = contador.replace(/\s+/g, " ").trim();
+    if (!nombre || guardandoContador) return;
+    setGuardandoContador(true);
+    const ok = await onGuardarContador(nombre);
+    setGuardandoContador(false);
+    if (ok) {
+      recordarContador(nombre);
+      setCambiandoContador(false);
+    }
   }
 
   async function registrar() {
     if (!abierto || guardando) return;
     setGuardando(true);
-    const ok = await onMovimiento(abierto.tipoId, abierto.clase, cantidad);
+    const ok = await onMovimiento(abierto.tipoId, abierto.clase, cantidad, abierto.clase === "salida" ? cliente : "");
     setGuardando(false);
     if (ok) {
       setAbierto(null);
       setCantidad("");
+      setCliente("");
     }
   }
 
@@ -234,6 +330,35 @@ function VistaSaldo({ activos, tipos, conteos, movimientos, hoy, onMovimiento, o
 
   return (
     <div className="ag-form" style={{ marginTop: 14 }}>
+      {hayConteoHoy && (
+        <div className="ag-item" style={{ marginBottom: 10 }}>
+          {contadoHoy && !cambiandoContador ? (
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <Icono n="user" size={20} />
+              <div style={{ flex: 1, fontSize: 14 }}>
+                Contó hoy: <b style={{ fontWeight: 600 }}>{contadoHoy}</b>
+              </div>
+              <button type="button" className="ag-link" onClick={() => (setContador(contadoHoy), setCambiandoContador(true))}>
+                Cambiar
+              </button>
+            </div>
+          ) : (
+            <>
+              <label className="ag-label" htmlFor="cc-contador" style={{ marginTop: 0 }}>
+                ¿Quién contó hoy?
+              </label>
+              <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <CampoNombre id="cc-contador" valor={contador} onCambio={setContador} nombres={nombresContadores(conteos, 20)} fichas={nombresContadores(conteos)} placeholder="Nombre del trabajador" />
+                </div>
+                <button type="button" className="ag-btn pri" style={{ minHeight: 48 }} disabled={!contador.trim() || guardandoContador} onClick={guardarContador}>
+                  {guardandoContador ? "…" : "Guardar"}
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
       {activos.map((t) => {
         const s = saldoActual(conteos, movimientos, t.id, hoy);
         const { lista } = movimientosDelDia(movimientos, t.id, hoy);
@@ -287,6 +412,14 @@ function VistaSaldo({ activos, tipos, conteos, movimientos, hoy, onMovimiento, o
                     </button>
                   ))}
                 </div>
+                {panel === "salida" && (
+                  <div style={{ marginBottom: 8 }}>
+                    <label className="ag-label" htmlFor={`cc-cliente-${t.id}`} style={{ marginTop: 0 }}>
+                      ¿A quién se le entregó? <span style={{ fontWeight: 400 }}>(opcional)</span>
+                    </label>
+                    <CampoNombre id={`cc-cliente-${t.id}`} valor={cliente} onCambio={setCliente} nombres={clientes} placeholder="Nombre del cliente" />
+                  </div>
+                )}
                 <div style={{ display: "flex", gap: 8 }}>
                   <input
                     className="cc-num"
@@ -295,7 +428,6 @@ function VistaSaldo({ activos, tipos, conteos, movimientos, hoy, onMovimiento, o
                     placeholder="0"
                     aria-label="Cantidad de bultos"
                     value={cantidad}
-                    autoFocus
                     onChange={(e) => setCantidad(e.target.value.replace(/[^\d.]/g, "").slice(0, 6))}
                     onKeyDown={(e) => e.key === "Enter" && registrar()}
                   />
@@ -314,8 +446,19 @@ function VistaSaldo({ activos, tipos, conteos, movimientos, hoy, onMovimiento, o
                       {m.clase === "entrada" ? "+" : "−"}
                       {formatCantidad(m.cantidad)}
                     </b>
-                    <span className="ag-meta" style={{ flex: 1 }}>
+                    <span className="ag-meta" style={{ flex: 1, minWidth: 0 }}>
                       {m.clase === "entrada" ? "entró" : "salió"} · {horaCorta(m.creadoEn)}
+                      {m.origen === "despacho" && (
+                        <span className="ag-tag azul" style={{ marginLeft: 6, height: 20, fontSize: 11 }}>
+                          <Icono n="truck-delivery" size={12} />
+                          Despacho
+                        </span>
+                      )}
+                      {(m.cliente || m.referencia) && (
+                        <span style={{ display: "block", color: "var(--color-text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {[m.cliente, m.referencia].filter(Boolean).join(" · ")}
+                        </span>
+                      )}
                     </span>
                     <button
                       type="button"
@@ -358,6 +501,8 @@ export default function ConteoCemento() {
   const [conteos, setConteos] = useState([]);
   const [movimientos, setMovimientos] = useState([]);
   const [catalogoWO, setCatalogoWO] = useState([]);
+  const [clientes, setClientes] = useState([]);
+  const [contador, setContador] = useState(leerContador);
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState("");
   const [aviso, setAviso] = useState("");
@@ -409,6 +554,9 @@ export default function ConteoCemento() {
     cargarCatalogoProductos()
       .then((l) => vivo && setCatalogoWO(l))
       .catch(() => {});
+    cargarCatalogoClientes()
+      .then((l) => vivo && setClientes(l))
+      .catch(() => {});
     return () => {
       vivo = false;
     };
@@ -425,8 +573,22 @@ export default function ConteoCemento() {
     if (conteos.some((c) => c.fecha === hoy)) setVista("saldo");
   }, [cargando, conteos, hoy]);
 
-  async function registrarMovimiento(tipoId, clase, cantidad) {
-    const m = armarMovimiento({ id: uid(), tipoId, clase, cantidad, fecha: hoy });
+  async function guardarContadorDelDia(nombre) {
+    const previos = conteos;
+    setConteos((prev) => prev.map((c) => (c.fecha === hoy ? { ...c, contadoPor: nombre } : c)));
+    try {
+      await guardarContadoPor(hoy, nombre);
+      avisar(`Contó hoy: ${nombre}`);
+      return true;
+    } catch {
+      setConteos((prev) => prev.map((c) => (c.fecha === hoy ? { ...c, contadoPor: (previos.find((x) => x.id === c.id) || {}).contadoPor || "" } : c)));
+      setError("No se pudo guardar quién contó. Revisa la conexión.");
+      return false;
+    }
+  }
+
+  async function registrarMovimiento(tipoId, clase, cantidad, cliente = "") {
+    const m = armarMovimiento({ id: uid(), tipoId, clase, cantidad, fecha: hoy, cliente });
     if (!m) return false;
     setMovimientos((prev) => [m, ...prev]);
     try {
@@ -468,7 +630,8 @@ export default function ConteoCemento() {
   async function guardar() {
     const conValores = {};
     for (const t of activos) conValores[t.id] = valorDe(t);
-    const nuevos = armarConteos(conValores, activos, hoy);
+    const quien = contador.replace(/\s+/g, " ").trim();
+    const nuevos = armarConteos(conValores, activos, hoy).map((c) => ({ ...c, contadoPor: quien || contadoPorDelDia(conteos, hoy) }));
     if (!nuevos.length) {
       setError("Escribe cuántos bultos hay de al menos un tipo.");
       return;
@@ -478,6 +641,7 @@ export default function ConteoCemento() {
     setConteos((prev) => [...prev.filter((c) => !nuevos.some((n) => n.id === c.id)), ...nuevos]);
     try {
       await guardarConteosCemento(nuevos);
+      recordarContador(quien);
       setEditando(false);
       setValores({});
       setError("");
@@ -591,6 +755,8 @@ export default function ConteoCemento() {
           conteos={conteos}
           movimientos={movimientos}
           hoy={hoy}
+          clientes={clientes}
+          onGuardarContador={guardarContadorDelDia}
           onMovimiento={registrarMovimiento}
           onBorrar={borrarMovimiento}
           onIrAContar={() => setVista("hoy")}
@@ -605,6 +771,7 @@ export default function ConteoCemento() {
               <div style={{ flex: 1 }}>
                 <div style={{ fontWeight: 500 }}>Conteo de hoy guardado</div>
                 <div className="ag-meta">
+                  {contadoPorDelDia(conteos, hoy) ? `Contó ${contadoPorDelDia(conteos, hoy)} · ` : ""}
                   {horaGuardado ? `a las ${horaCorta(horaGuardado)}` : ""} · {delDia.size} de {activos.length} {activos.length === 1 ? "tipo" : "tipos"}
                 </div>
               </div>
@@ -734,6 +901,15 @@ export default function ConteoCemento() {
               <button type="button" className="ag-btn" style={{ color: "var(--color-text-secondary)" }} onClick={() => (setEditTipos((x) => !x), setQuitando(null))}>
                 {editTipos ? "Listo" : "Editar tipos"}
               </button>
+            </div>
+          )}
+
+          {editable && !editTipos && (
+            <div style={{ marginTop: 14 }}>
+              <label className="ag-label" htmlFor="cc-contador-conteo">
+                ¿Quién contó? <span style={{ fontWeight: 400 }}>(opcional)</span>
+              </label>
+              <CampoNombre id="cc-contador-conteo" valor={contador} onCambio={setContador} nombres={nombresContadores(conteos, 20)} fichas={nombresContadores(conteos)} placeholder="Nombre del trabajador" />
             </div>
           )}
 

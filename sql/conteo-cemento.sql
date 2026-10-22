@@ -37,6 +37,9 @@ create table if not exists public.conteos_cemento (
 -- reconocer cada tipo de un vistazo en la lista y en la gráfica.
 alter table public.tipos_cemento add column if not exists color text;
 
+-- Quién de los trabajadores hizo el conteo ese día (opcional).
+alter table public.conteos_cemento add column if not exists contado_por text;
+
 create index if not exists conteos_cemento_fecha_idx on public.conteos_cemento (fecha desc);
 create index if not exists conteos_cemento_tipo_idx on public.conteos_cemento (tipo_id);
 

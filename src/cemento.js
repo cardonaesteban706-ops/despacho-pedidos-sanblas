@@ -250,8 +250,38 @@ export function cuadre(contado, esperado) {
 }
 
 // Un movimiento listo para guardar. Cantidad inválida o 0 -> null.
-export function armarMovimiento({ id, tipoId, clase = "salida", cantidad, fecha, ahora = new Date() }) {
+export function armarMovimiento({ id, tipoId, clase = "salida", cantidad, fecha, cliente = "", ahora = new Date() }) {
   const n = leerBultos(cantidad);
   if (!n) return null;
-  return { id, fecha, tipoId, clase: clase === "entrada" ? "entrada" : "salida", cantidad: n, creadoEn: ahora.toISOString() };
+  return {
+    id,
+    fecha,
+    tipoId,
+    clase: clase === "entrada" ? "entrada" : "salida",
+    cantidad: n,
+    creadoEn: ahora.toISOString(),
+    cliente: String(cliente || "").replace(/\s+/g, " ").trim(),
+    origen: "manual",
+  };
+}
+
+// Quién contó ese día (el nombre que tenga cualquiera de los conteos de la
+// fecha) y los nombres de quienes han contado, el más reciente primero.
+export function contadoPorDelDia(conteos, fecha) {
+  const c = (conteos || []).find((x) => x.fecha === fecha && x.contadoPor);
+  return c ? c.contadoPor : "";
+}
+
+export function nombresContadores(conteos, max = 6) {
+  const vistos = new Set();
+  const out = [];
+  for (const c of [...(conteos || [])].sort((a, b) => (a.fecha < b.fecha ? 1 : -1))) {
+    const nombre = String(c.contadoPor || "").replace(/\s+/g, " ").trim();
+    const k = normalizarTexto(nombre);
+    if (!k || vistos.has(k)) continue;
+    vistos.add(k);
+    out.push(nombre);
+    if (out.length >= max) break;
+  }
+  return out;
 }

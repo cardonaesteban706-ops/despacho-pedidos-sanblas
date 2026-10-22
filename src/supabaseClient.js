@@ -594,6 +594,15 @@ export async function eliminarLlegada(id) {
   if (error) throw error;
 }
 
+// --- Catálogo de clientes (sql/catalogo-clientes.sql) ---
+
+// Nombres de clientes tal como vienen en las facturas y cotizaciones (sin las
+// remisiones manuales), el que más compra primero. Para el autocompletado.
+export async function cargarCatalogoClientes() {
+  const filas = await traerTodo(() => supabase.from("catalogo_clientes").select("nombre, veces").order("veces", { ascending: false }));
+  return filas.map((f) => f.nombre);
+}
+
 // --- Catálogo de proveedores (sql/proveedores.sql) ---
 
 // Solo los nombres, para las sugerencias de Llegadas y Agotados.
@@ -622,17 +631,55 @@ export async function cargarConteosCemento({ dias = 45 } = {}) {
   const d = new Date(Date.now() - dias * 86400000);
   const desde = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
   const filas = await traerTodo(() =>
-    supabase.from("conteos_cemento").select("id, fecha, tipo_id, bultos, contado_en").gte("fecha", desde).order("fecha", { ascending: false })
+    supabase.from("conteos_cemento").select("id, fecha, tipo_id, bultos, contado_en, contado_por").gte("fecha", desde).order("fecha", { ascending: false })
   );
-  return filas.map((f) => ({ id: f.id, fecha: f.fecha, tipoId: f.tipo_id, bultos: f.bultos, contadoEn: f.contado_en }));
+  return filas.map((f) => ({ id: f.id, fecha: f.fecha, tipoId: f.tipo_id, bultos: f.bultos, contadoEn: f.contado_en, contadoPor: f.contado_por || "" }));
 }
 
 export async function guardarConteosCemento(conteos) {
   if (!conteos.length) return;
   const { error } = await supabase
     .from("conteos_cemento")
-    .upsert(conteos.map((c) => ({ id: c.id, fecha: c.fecha, tipo_id: c.tipoId, bultos: c.bultos, contado_en: c.contadoEn })));
+    .upsert(conteos.map((c) => ({ id: c.id, fecha: c.fecha, tipo_id: c.tipoId, bultos: c.bultos, contado_en: c.contadoEn, contado_por: c.contadoPor || null })));
   if (error) throw error;
+}
+
+// Quién contó ese día: se escribe en todos los conteos de esa fecha.
+export async function guardarContadoPor(fecha, nombre) {
+  const { error } = await supabase.from("conteos_cemento").update({ contado_por: nombre || null }).eq("fecha", fecha);
+  if (error) throw error;
+}
+
+const COLUMNAS_MOVIMIENTO = "id, fecha, tipo_id, clase, cantidad, creado_en, cliente, pedido_id, referencia, origen";
+
+function filaAMovimiento(f) {
+  return {
+    id: f.id,
+    fecha: f.fecha,
+    tipoId: f.tipo_id,
+    clase: f.clase,
+    cantidad: f.cantidad,
+    creadoEn: f.creado_en,
+    cliente: f.cliente || "",
+    pedidoId: f.pedido_id || null,
+    referencia: f.referencia || "",
+    origen: f.origen || "manual",
+  };
+}
+
+function movimientoAFila(m) {
+  return {
+    id: m.id,
+    fecha: m.fecha,
+    tipo_id: m.tipoId,
+    clase: m.clase,
+    cantidad: m.cantidad,
+    creado_en: m.creadoEn,
+    cliente: m.cliente || null,
+    pedido_id: m.pedidoId || null,
+    referencia: m.referencia || null,
+    origen: m.origen || "manual",
+  };
 }
 
 // Salidas y entradas de cemento de los últimos `dias` días (saldo del día y cuadre).
@@ -640,15 +687,33 @@ export async function cargarMovimientosCemento({ dias = 45 } = {}) {
   const d = new Date(Date.now() - dias * 86400000);
   const desde = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
   const filas = await traerTodo(() =>
-    supabase.from("movimientos_cemento").select("id, fecha, tipo_id, clase, cantidad, creado_en").gte("fecha", desde).order("creado_en", { ascending: false })
+    supabase.from("movimientos_cemento").select(COLUMNAS_MOVIMIENTO).gte("fecha", desde).order("creado_en", { ascending: false })
   );
-  return filas.map((f) => ({ id: f.id, fecha: f.fecha, tipoId: f.tipo_id, clase: f.clase, cantidad: f.cantidad, creadoEn: f.creado_en }));
+  return filas.map(filaAMovimiento);
+}
+
+// Los movimientos que ya descontó un pedido de Despacho (para no contarlo dos
+// veces y para deshacerlo si se devuelve a despacho).
+export async function cargarMovimientosDePedido(pedidoId) {
+  const { data, error } = await supabase.from("movimientos_cemento").select(COLUMNAS_MOVIMIENTO).eq("pedido_id", pedidoId);
+  if (error) throw error;
+  return (data || []).map(filaAMovimiento);
+}
+
+export async function guardarMovimientosCemento(lista) {
+  if (!lista.length) return;
+  const { error } = await supabase.from("movimientos_cemento").upsert(lista.map(movimientoAFila));
+  if (error) throw error;
+}
+
+export async function eliminarMovimientosCemento(ids) {
+  if (!ids.length) return;
+  const { error } = await supabase.from("movimientos_cemento").delete().in("id", ids);
+  if (error) throw error;
 }
 
 export async function guardarMovimientoCemento(m) {
-  const { error } = await supabase
-    .from("movimientos_cemento")
-    .upsert({ id: m.id, fecha: m.fecha, tipo_id: m.tipoId, clase: m.clase, cantidad: m.cantidad, creado_en: m.creadoEn });
+  const { error } = await supabase.from("movimientos_cemento").upsert(movimientoAFila(m));
   if (error) throw error;
 }
 

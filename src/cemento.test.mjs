@@ -164,8 +164,23 @@ test("cuadre: cuadra, faltan o sobran", async () => {
 test("armarMovimiento: cantidad con punto de miles, y 0 o vacío no se guarda", async () => {
   const { armarMovimiento } = await import("./cemento.js");
   const ahora = new Date("2026-10-15T15:00:00.000Z");
-  assert.deepEqual(armarMovimiento({ id: "m1", tipoId: "g", cantidad: "1.000", fecha: HOY, ahora }), { id: "m1", fecha: HOY, tipoId: "g", clase: "salida", cantidad: 1000, creadoEn: ahora.toISOString() });
+  assert.deepEqual(armarMovimiento({ id: "m1", tipoId: "g", cantidad: "1.000", fecha: HOY, ahora }), { id: "m1", fecha: HOY, tipoId: "g", clase: "salida", cantidad: 1000, creadoEn: ahora.toISOString(), cliente: "", origen: "manual" });
+  assert.equal(armarMovimiento({ id: "m5", tipoId: "g", cantidad: "3", fecha: HOY, cliente: "  CESAR  TULIO ", ahora }).cliente, "CESAR TULIO");
   assert.equal(armarMovimiento({ id: "m2", tipoId: "g", clase: "entrada", cantidad: "5", fecha: HOY, ahora }).clase, "entrada");
   assert.equal(armarMovimiento({ id: "m3", tipoId: "g", cantidad: "0", fecha: HOY }), null);
   assert.equal(armarMovimiento({ id: "m4", tipoId: "g", cantidad: "", fecha: HOY }), null);
+});
+
+test("contadoPorDelDia y nombresContadores", async () => {
+  const { contadoPorDelDia, nombresContadores } = await import("./cemento.js");
+  const conteos = [
+    { ...c(HOY, "g", 1), contadoPor: "Wilmer" },
+    { ...c(HOY, "e", 1), contadoPor: "Wilmer" },
+    { ...c("2026-10-14", "g", 1), contadoPor: "Yeison" },
+    { ...c("2026-10-13", "g", 1), contadoPor: "wilmer" },
+    { ...c("2026-10-12", "g", 1), contadoPor: "" },
+  ];
+  assert.equal(contadoPorDelDia(conteos, HOY), "Wilmer");
+  assert.equal(contadoPorDelDia(conteos, "2026-10-12"), "");
+  assert.deepEqual(nombresContadores(conteos), ["Wilmer", "Yeison"]);
 });

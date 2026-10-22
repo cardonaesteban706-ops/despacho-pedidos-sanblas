@@ -4,6 +4,7 @@ import { cargarCotizaciones, guardarCotizacion, eliminarCotizacion, cargarPdfCot
 import { buscarHistorial, maxNumeroRemision, columnasFaltantes, moverPedidoAEstado, salir, DIAS_HISTORIAL_PRECARGADO } from "./supabaseClient";
 import PanelResumen from "./PanelResumen.jsx";
 import Bodega from "./Bodega.jsx";
+import { sincronizarCemento } from "./cementoSync.js";
 import { cargarAgotados } from "./supabaseClient";
 import { esAgotado, estaAbierto } from "./agotados.js";
 import PorEntregar from "./PorEntregar.jsx";
@@ -599,6 +600,16 @@ export default function DespachoPedidos() {
     }
   }
 
+  // Bodega > Cemento: si salió cemento de un pedido (o se devolvió), se
+  // descuenta solo del saldo con el nombre del cliente. Va DESPUÉS de guardar
+  // la entrega y sin bloquearla: si falla, la entrega queda bien hecha y solo
+  // se avisa (ver cementoSync.js y cementoDespacho.js).
+  function descontarCemento(antes, despues) {
+    sincronizarCemento(antes, despues).catch(() => {
+      showToast("La entrega quedó guardada, pero no se pudo descontar el cemento en Bodega. Réstalo a mano en Cemento > Saldo.", 6000);
+    });
+  }
+
   // extra permite fijar el estado de pago decidido al confirmar la entrega
   // (p. ej. { estadoPago: "pagado" } cuando el cliente pagó al recibir).
   async function marcarEntregado(id, extra = {}) {
@@ -629,6 +640,8 @@ export default function DespachoPedidos() {
         setPedidos(prevPedidos.filter((p) => p.id !== id));
         setHistorial(prevHistorial);
         showToast("Ese pedido ya no existe (lo borraron desde otro dispositivo).", 5000);
+      } else {
+        descontarCemento(pedido, entregado);
       }
     } catch (e) {
       setPedidos(prevPedidos);
@@ -725,6 +738,7 @@ export default function DespachoPedidos() {
       // update, no upsert (ver moverPedidoAEstado): no resucitamos pedidos
       // que otro dispositivo haya borrado.
       for (const e of entregados) await moverPedidoAEstado(e, "entregado");
+      for (const e of entregados) descontarCemento(miembros.find((m) => m.id === e.id), e);
     } catch (err) {
       setPedidos(prevPedidos);
       setHistorial(prevHistorial);
@@ -785,6 +799,7 @@ export default function DespachoPedidos() {
       showToast(`Material descontado. Factura ${madre.numeroFactura || ""} completada, pasó al historial.`, 4500);
       try {
         await moverPedidoAEstado(completada, "entregado");
+        descontarCemento(madre, completada);
       } catch (e) {
         // Deshacer = devolver la madre a despacho y sacarla del historial, sin
         // pisar lo que haya cambiado durante el await (ver listas.js).
@@ -804,6 +819,7 @@ export default function DespachoPedidos() {
       showToast("Material descontado del saldo.");
       try {
         await actualizarPedido(actualizada);
+        descontarCemento(madre, actualizada);
       } catch (e) {
         // Deshacer = volver a dejar la versión ANTERIOR de la madre. Si otro
         // dispositivo la borró mientras tanto, reemplazarPorId no la resucita.
@@ -847,6 +863,7 @@ export default function DespachoPedidos() {
     showToast("Saldo corregido.");
     try {
       await actualizarPedido(actualizada);
+      descontarCemento(madre, actualizada);
     } catch (e) {
       setPedidos((prev) => reemplazarPorId(prev, madre));
       showToast("No se pudo guardar la corrección. Nada cambió.", 5000);
@@ -953,6 +970,9 @@ export default function DespachoPedidos() {
         // historial (justamente porque lo borraron).
         setPedidos((prev) => quitarPorId(prev, id));
         showToast("Ese pedido ya no existe (lo borraron desde otro dispositivo).", 5000);
+      } else {
+        // Lo que se descontó de cemento al entregarlo vuelve al saldo.
+        descontarCemento(pedido, restaurado);
       }
     } catch (e) {
       // Deshacer = sacarlo de despacho y devolverlo al historial (ver listas.js).
@@ -2879,6 +2899,8 @@ export default function DespachoPedidos() {
             // faltando, se prende solo el aviso rojo con una nota automática
             // (sin escribir nada); si se entregó todo, se apaga.
             const enDia = fechaDe(materialDe) !== "pendiente";
+            // Marcar unidades entregadas es material que salió: va al cemento.
+            descontarCemento(materialDe, { ...materialDe, productos });
             if (enDia) {
               const faltan = faltantesDeProductos(productos);
               updatePedido(
