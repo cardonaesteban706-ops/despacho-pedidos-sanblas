@@ -1,0 +1,11 @@
+{
+  "name": "San Blas ERP",
+  "short_name": "San Blas",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#F4F6F9",
+  "theme_color": "#F4F6F9",
+  "lang": "es"
+}
