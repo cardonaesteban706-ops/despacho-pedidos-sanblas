@@ -60,6 +60,7 @@ import {
   nowTimeStr,
   compararOrden,
   MOSTRAR_COTIZACIONES,
+  MODULO_CEMENTO_ACTIVO,
 } from "./constants.js";
 // Lectura y parseo de PDF (antes acá arriba, ~340 líneas). El parseo vive en un
 // módulo puro y testeado (pdfParser.test.mjs, `npm test`); la lectura del PDF
@@ -600,7 +601,13 @@ export default function DespachoPedidos() {
   // descuenta solo del saldo con el nombre del cliente. Va DESPUÉS de guardar
   // la entrega y sin bloquearla: si falla, la entrega queda bien hecha y solo
   // se avisa (ver cementoSync.js y cementoDespacho.js).
+  //
+  // Con el módulo de Cemento oculto (MODULO_CEMENTO_ACTIVO en constants.js) no
+  // se hace nada: nadie está mirando ese saldo, así que no tiene sentido
+  // escribir movimientos en Supabase, y si la escritura fallara el toast
+  // mandaría a "Cemento > Saldo", una pantalla que ya no se ve.
   function descontarCemento(antes, despues) {
+    if (!MODULO_CEMENTO_ACTIVO) return;
     sincronizarCemento(antes, despues).catch(() => {
       showToast("La entrega quedó guardada, pero no se pudo descontar el cemento en Bodega. Réstalo a mano en Cemento > Saldo.", 6000);
     });

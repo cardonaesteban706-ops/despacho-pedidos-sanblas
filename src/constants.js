@@ -29,6 +29,17 @@ export const VEHICULOS = [
 // (botón de la barra, panel de subida, vista y la carga inicial).
 export const MOSTRAR_COTIZACIONES = false;
 
+// Módulos de Bodega que no se están usando: ocultos por ahora, queda solo
+// Agotados. El código (ConteoCemento.jsx, Llegadas.jsx), las tablas de Supabase
+// y los tests siguen intactos; poner `true` los reactiva.
+//   MODULO_CEMENTO_ACTIVO: pestaña Cemento de Bodega Y el descuento automático
+//     de cemento al entregar pedidos (descontarCemento en DespachoPedidos.jsx).
+//     Mientras esté en false no se escriben movimientos de cemento: al
+//     reactivarlo hay que hacer un conteo nuevo para que el saldo cuadre.
+//   MODULO_LLEGADAS_ACTIVO: pestaña Llegadas de Bodega.
+export const MODULO_CEMENTO_ACTIVO = false;
+export const MODULO_LLEGADAS_ACTIVO = false;
+
 // Destinos frecuentes para marcar la zona del pedido al montarlo. "Otro" abre
 // un campo de texto para escribir cualquier otro lugar a mano.
 export const DESTINOS = ["Corozal", "Morroa"];

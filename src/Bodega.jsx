@@ -1,28 +1,36 @@
 import { useState } from "react";
-import { MARCA } from "./constants.js";
+import { MARCA, MODULO_CEMENTO_ACTIVO, MODULO_LLEGADAS_ACTIVO } from "./constants.js";
 import ConteoCemento from "./ConteoCemento.jsx";
 import Llegadas from "./Llegadas.jsx";
 import Agotados from "./Agotados.jsx";
 
-// Bodega: los tres módulos bajo un solo botón de la barra superior, como en el
-// diseño "San Blas Bodega". Cada celular recuerda la última pestaña abierta: el
-// de la empleada que reporta agotados abre directo en Agotados, el del que
-// recibe mercancía en Llegadas.
+// Bodega: los módulos de bodega bajo un solo botón de la barra superior, como
+// en el diseño "San Blas Bodega". Hoy solo está visible Agotados: Cemento y
+// Llegadas están ocultos con los interruptores MODULO_CEMENTO_ACTIVO y
+// MODULO_LLEGADAS_ACTIVO de constants.js (no se borraron; `true` los devuelve).
+// Con una sola pestaña visible no se pinta la barra de pestañas. Con varias,
+// cada celular recuerda la última abierta; si la guardada está oculta, abre
+// en la primera visible.
 
 const CLAVE_PESTANA = "sanblas.bodegaPestana";
 
 const PESTANAS = [
-  { id: "cemento", label: "Cemento", icon: "ti-bucket-droplet" },
-  { id: "llegadas", label: "Llegadas", icon: "ti-truck" },
-  { id: "agotados", label: "Agotados", icon: "ti-package-off" },
-];
+  { id: "cemento", label: "Cemento", icon: "ti-bucket-droplet", visible: MODULO_CEMENTO_ACTIVO },
+  { id: "llegadas", label: "Llegadas", icon: "ti-truck", visible: MODULO_LLEGADAS_ACTIVO },
+  { id: "agotados", label: "Agotados", icon: "ti-package-off", visible: true },
+].filter((p) => p.visible);
+
+// Agotados siempre está, así que la lista nunca queda vacía.
+const PESTANA_INICIAL = PESTANAS[0].id;
 
 function leerPestana() {
   try {
     const p = window.localStorage.getItem(CLAVE_PESTANA);
-    return PESTANAS.some((x) => x.id === p) ? p : "cemento";
+    // Un celular que dejó guardado "cemento" o "llegadas" cae acá en la
+    // primera visible. No se borra lo guardado: si el módulo vuelve, vuelve él.
+    return PESTANAS.some((x) => x.id === p) ? p : PESTANA_INICIAL;
   } catch {
-    return "cemento";
+    return PESTANA_INICIAL;
   }
 }
 
@@ -30,7 +38,7 @@ function guardarPestana(p) {
   try {
     window.localStorage.setItem(CLAVE_PESTANA, p);
   } catch {
-    // Almacenamiento bloqueado: la próxima vez abre en Cemento, nada más.
+    // Almacenamiento bloqueado: la próxima vez abre en la primera pestaña, nada más.
   }
 }
 
@@ -44,6 +52,7 @@ export default function Bodega({ conteoAgotados, onConteoAgotados }) {
 
   return (
     <div>
+      {PESTANAS.length > 1 && (
       <div role="tablist" aria-label="Bodega" style={{ display: "flex", borderBottom: "0.5px solid var(--color-border-secondary)", marginBottom: 14, maxWidth: 1180, marginLeft: "auto", marginRight: "auto" }}>
         {PESTANAS.map((p) => {
           const activa = p.id === pestana;
@@ -84,6 +93,7 @@ export default function Bodega({ conteoAgotados, onConteoAgotados }) {
           );
         })}
       </div>
+      )}
 
       {pestana === "cemento" && <ConteoCemento />}
       {pestana === "llegadas" && <Llegadas onConteoAgotados={onConteoAgotados} />}
