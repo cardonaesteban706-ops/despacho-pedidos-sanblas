@@ -935,7 +935,7 @@ export default function ConteoCemento() {
         <div style={{ marginTop: 14, maxWidth: 600 }}>
           <div className="ag-item" style={{ padding: "10px 8px 6px" }}>
             <div className="cc-leg">
-              {activos.map((t, k) => (
+              {activos.map((t) => (
                 <span key={t.id}>
                   <i style={{ background: colorDeTipo(t, activos) }}></i>
                   {t.nombre}
@@ -949,7 +949,7 @@ export default function ConteoCemento() {
               <thead>
                 <tr>
                   <th>Día</th>
-                  {activos.map((t, k) => (
+                  {activos.map((t) => (
                     <th key={t.id} title={t.nombre}>
                       <i style={{ display: "inline-block", width: 8, height: 8, borderRadius: 2, marginRight: 4, background: colorDeTipo(t, activos) }}></i>
                       {t.nombre.replace(/^cemento\s+/i, "").split(" ").slice(0, 2).join(" ")}

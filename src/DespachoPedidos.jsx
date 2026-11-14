@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { cargarPedidosActivos, cargarHistorial, guardarPedido, actualizarPedido, eliminarPedido, cargarPdfPedido } from "./supabaseClient";
 import { cargarCotizaciones, guardarCotizacion, eliminarCotizacion, cargarPdfCotizacion } from "./supabaseClient";
 import { buscarHistorial, maxNumeroRemision, columnasFaltantes, moverPedidoAEstado, salir, DIAS_HISTORIAL_PRECARGADO } from "./supabaseClient";
@@ -30,10 +30,6 @@ import {
   parseCantidad,
   cantidadNum,
   saldoDe,
-  entregadoParaPanelDe,
-  topeEditableDe,
-  valorInicialMaterialDe,
-  aplicarEntregadoDirecto,
   sumarEntregadoDirecto,
   fijarSaldoEn,
   cerrarEntregaCompleta,
@@ -777,8 +773,6 @@ export default function DespachoPedidos() {
     // le inventa ese campo (sigue con la forma de dato de siempre), así que
     // sumar cantidadRestante daba 0 y la archivaba de una al primer descuento.
     const saldoTotal = nuevosProductos.reduce((s, p) => s + saldoDe(p), 0);
-    const prevPedidos = pedidos;
-    const prevHistorial = historial;
 
     if (saldoTotal <= 0) {
       const completada = {
@@ -3194,7 +3188,6 @@ function RemisionModal({ pedido, hoyIso, onClose, onCrear }) {
       <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 14 }}>
         {productos.map((p, idx) => {
           const disponible = dispo(p);
-          const va = cantidades[idx];
           const agotado = disponible <= 0;
           return (
             <div

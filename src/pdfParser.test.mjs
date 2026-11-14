@@ -466,3 +466,53 @@ test("BLINDAJE: sin tramo de tabla, las líneas de producto quedan como ignorada
   assert.equal(r.productos.length, 0, "sin tabla no se inventan productos");
   assert.equal(r.lineasIgnoradas.length, 2, "pero la pérdida SÍ queda registrada");
 });
+
+test("BLINDAJE: m² con el 2 en superíndice llega como \"m 2\" y se lee igual", () => {
+  // En el PDF de World Office el "2" de m² es un superíndice: viene en otro
+  // fragmento de texto y agruparEnFilas lo pega con un espacio. El regex tomaba
+  // "m" como unidad y el "2" como valor unitario, y la línea caía en ignoradas.
+  const r = parseFactura([
+    "Código Descripción Cantidad U Medida Valor Unitario IVA Valor IVA Total",
+    "1 CER24 SANTA MARTA BEIGE 52x52 (2.16)(8) 28,08 m 2 21.008 19% 3.992 589.916",
+    "TOTAL ITÉM CANT. SUBTOTAL DESCUENTO IVA RETEFUENTE TOTAL FACTURA",
+  ]);
+  assert.equal(r.productos.length, 1);
+  assert.equal(r.productos[0].codigo, "CER24");
+  assert.equal(r.productos[0].descripcion, "SANTA MARTA BEIGE 52x52 (2.16)(8)");
+  assert.equal(r.productos[0].cantidad, "28,08");
+  assert.equal(r.productos[0].unidad, "m2");
+  // 589.916 + round(3.992 x 28,08) = 589.916 + 112.095 = 702.011
+  assert.equal(r.productos[0].total, "702011");
+  assert.equal(r.lineasIgnoradas.length, 0);
+});
+
+test("BLINDAJE: cotización con \"m 2\" separado", () => {
+  const r = parseCotizacion([
+    "CODIGO DESCRIPCION CANT UND VR UNITARIO IVA TOTAL",
+    "CER24 SANTA MARTA BEIGE 52x52 (2.16)(8) 28,08 m 2 25.000 19% 702.000",
+    "CANT SUBTOTAL",
+  ]);
+  assert.equal(r.productos.length, 1);
+  assert.equal(r.productos[0].codigo, "CER24");
+  assert.equal(r.productos[0].cantidad, "28,08");
+  assert.equal(r.productos[0].unidad, "m2");
+  assert.equal(r.productos[0].total, "702000");
+  assert.equal(r.lineasIgnoradas.length, 0);
+});
+
+test("BLINDAJE: el arreglo de \"m 2\" no cambia cómo se leen Und. y Kg", () => {
+  const r = parseFactura([
+    "Código Descripción Cantidad U Medida Valor Unitario IVA Valor IVA Total",
+    '1 TUB061 SIFON SANITARIO 2" 2,00 Und. 3.782 19% 718 7.563',
+    "2 PUN01 PUNTILLA 2 PULGADAS 3,00 Kg 5.000 19% 950 15.000",
+    "TOTAL ITÉM CANT. SUBTOTAL DESCUENTO IVA RETEFUENTE TOTAL FACTURA",
+  ]);
+  assert.equal(r.productos.length, 2);
+  assert.equal(r.productos[0].unidad, "Und.");
+  assert.equal(r.productos[0].cantidad, "2,00");
+  assert.equal(r.productos[0].total, "8999"); // 7.563 + 718 x 2
+  assert.equal(r.productos[1].unidad, "Kg");
+  assert.equal(r.productos[1].cantidad, "3,00");
+  assert.equal(r.productos[1].total, "17850"); // 15.000 + 950 x 3
+  assert.equal(r.lineasIgnoradas.length, 0);
+});

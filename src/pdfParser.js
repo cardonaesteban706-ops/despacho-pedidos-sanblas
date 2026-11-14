@@ -283,11 +283,17 @@ export function parseFactura(lines) {
     // lee genérica (cualquier palabra corta + dígito opcional para m2/m3) en
     // vez de una lista fija: cualquier unidad no listada descartaba la línea
     // COMPLETA en silencio.
+    // El dígito de m²/m³ puede venir SEPARADO por un espacio ("m 2"): en el PDF
+    // de World Office es un superíndice, llega en otro fragmento de texto y
+    // agruparEnFilas lo pega con espacio. Sin el " ?" el regex tomaba "m" como
+    // unidad y el "2" como valor unitario, las columnas se corrían y la línea
+    // caía en lineasIgnoradas (caso real: cerámica CER24). La unidad se guarda
+    // sin el espacio ("m2").
     // El CÓDIGO admite guion y punto ("TUB-061", "CER.22"): con [A-Z0-9] puro
     // esas líneas no matcheaban NI acá NI en el filtro de rescate de abajo, así
     // que el material se perdía sin dejar rastro. La CANTIDAD llega a 6 dígitos
     // por lo mismo: 123456 unidades sin separador de miles se descartaba.
-    const productLineRegex = /^(\d{1,4})\s+([A-Z0-9][A-Z0-9.\-]{1,11})\s+(.+?)\s+(\d{1,3}(?:\.\d{3})+(?:,\d{1,2})?|\d{1,6}(?:[.,]\d{1,2})?)\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ]{1,12}\d?\.?)\s+([\d.,]+)\s+(\d{1,2}%)\s+([\d.,]+)\s+([\d.,]+)\s*$/i;
+    const productLineRegex = /^(\d{1,4})\s+([A-Z0-9][A-Z0-9.\-]{1,11})\s+(.+?)\s+(\d{1,3}(?:\.\d{3})+(?:,\d{1,2})?|\d{1,6}(?:[.,]\d{1,2})?)\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ]{1,12}(?: ?\d)?\.?)\s+([\d.,]+)\s+(\d{1,2}%)\s+([\d.,]+)\s+([\d.,]+)\s*$/i;
     let pending = null;
     for (let i = tableHeaderIdx + 1; i < tableEndIdx; i++) {
       const line = lines[i].trim();
@@ -306,7 +312,7 @@ export function parseFactura(lines) {
           codigo: m[2],
           descripcion: m[3].trim(),
           cantidad: m[4],
-          unidad: m[5],
+          unidad: m[5].replace(/\s+/g, ""),
           total: String(totalConIva),
         });
         pending = result.productos[result.productos.length - 1];
@@ -453,13 +459,14 @@ export function parseCotizacion(lines) {
   for (const [tableHeaderIdx, tableEndIdx] of tramos) {
     // Igual que en la factura: la cantidad acepta separador de miles.
     // La UNIDAD se lee genérica (cualquier palabra corta, con dígito opcional
-    // para m2/m3). Antes era una lista fija y cualquier unidad que no estuviera
+    // para m2/m3, que puede venir separado por un espacio — "m 2" — cuando el
+    // PDF lo trae como superíndice; ver parseFactura). Antes era una lista fija y cualquier unidad que no estuviera
     // ahí hacía que la línea COMPLETA se descartara en silencio: "galon" fue el
     // caso real (la lista tenía "Gal." y se atoraba con el "on"). Perder una
     // línea sin avisar es peligroso — por eso además contamos las descartadas.
     // Mismo criterio que en la factura: el código admite guion y punto, y la
     // cantidad llega a 6 dígitos.
-    const productLineRegex = /^([A-Z0-9][A-Z0-9.\-]{1,11})\s+(.+?)\s+(\d{1,3}(?:\.\d{3})+(?:,\d{1,2})?|\d{1,6}(?:[.,]\d{1,2})?)\s*([A-Za-zÁÉÍÓÚÜÑáéíóúüñ]{1,12}\d?\.?)\s+([\d.,]+)\s+(\d{1,2}%)\s+([\d.,]+)\s*$/i;
+    const productLineRegex = /^([A-Z0-9][A-Z0-9.\-]{1,11})\s+(.+?)\s+(\d{1,3}(?:\.\d{3})+(?:,\d{1,2})?|\d{1,6}(?:[.,]\d{1,2})?)\s*([A-Za-zÁÉÍÓÚÜÑáéíóúüñ]{1,12}(?: ?\d)?\.?)\s+([\d.,]+)\s+(\d{1,2}%)\s+([\d.,]+)\s*$/i;
     for (let i = tableHeaderIdx + 1; i < tableEndIdx; i++) {
       const line = lines[i].trim();
       if (!line) continue;
@@ -469,7 +476,7 @@ export function parseCotizacion(lines) {
           codigo: m[1],
           descripcion: m[2].trim(),
           cantidad: m[3],
-          unidad: m[4],
+          unidad: m[4].replace(/\s+/g, ""),
           total: m[7].replace(/\./g, ""),
         });
       } else if (/^[A-Z0-9][A-Z0-9.\-]{1,11}\s+\S.*\d[\d.,]*\s*$/i.test(line) && /\d{1,2}%/.test(line)) {
